@@ -24,6 +24,7 @@ pub struct SystemStatus {
     pub version: &'static str,
     pub port: u16,
     pub uhid_connected: bool,
+    pub usb_sensor_connected: bool,
     pub debug_mode: bool,
     pub credentials_count: usize,
     pub pin_configured: bool,
@@ -129,6 +130,7 @@ async fn get_status(State(state): State<AppState>) -> Json<ApiResponse<SystemSta
         version: "1.0.0",
         port: 10209,
         uhid_connected: state.uhid_connected.load(Ordering::SeqCst),
+        usb_sensor_connected: crate::sensor::UsbSensor::is_hardware_plugged(),
         debug_mode: state.debug_mode.load(Ordering::SeqCst),
         credentials_count: creds.len(),
         pin_configured: sec.pin_enabled,
@@ -259,9 +261,19 @@ async fn add_fingerprint(
     if payload.name.trim().is_empty() {
         return Json(ApiResponse::err("Tên gợi nhớ vân tay không được để trống"));
     }
-    match state.security.enroll_fingerprint(payload.name.trim()) {
-        Ok(row) => Json(ApiResponse::ok(row)),
-        Err(e) => Json(ApiResponse::err(e)),
+    let sec = state.security.clone();
+    let name = payload.name.trim().to_string();
+
+    let res = tokio::task::spawn_blocking(move || {
+        sec.enroll_fingerprint(&name, |stage, total, msg| {
+            println!("[ENROLL] Tiến trình: {}/{} - {}", stage, total, msg);
+        })
+    }).await;
+
+    match res {
+        Ok(Ok(row)) => Json(ApiResponse::ok(row)),
+        Ok(Err(e)) => Json(ApiResponse::err(e)),
+        Err(e) => Json(ApiResponse::err(e.to_string())),
     }
 }
 
@@ -408,6 +420,10 @@ async fn index_html() -> Html<&'static str> {
             <div id="uhidStatus" class="badge-status badge-offline">
                 <span class="dot"></span>
                 <span id="uhidText">UHID Đang kết nối...</span>
+            </div>
+            <div id="usbSensorStatus" class="badge-status badge-offline" style="margin-left: 0.5rem;">
+                <span class="dot"></span>
+                <span id="usbSensorText">USB Sensor 3274:8012</span>
             </div>
             <div id="debugStatus" class="badge-status badge-debug" style="display: none;">
                 DEBUG CLI BẬT
@@ -658,9 +674,18 @@ async fn index_html() -> Html<&'static str> {
                         uhidTxt.innerText = 'UHID Offline';
                     }
 
+                    const usbEl = document.getElementById('usbSensorStatus');
+                    const usbTxt = document.getElementById('usbSensorText');
+                    if (s.usb_sensor_connected) {
+                        usbEl.className = 'badge-status badge-online';
+                        usbTxt.innerText = 'USB 3274:8012 Sẵn sàng';
+                    } else {
+                        usbEl.className = 'badge-status badge-offline';
+                        usbTxt.innerText = 'USB 3274:8012 Chưa cắm';
+                    }
+
                     document.getElementById('debugStatus').style.display = s.debug_mode ? 'inline-flex' : 'none';
                     document.getElementById('credCount').innerText = s.credentials_count;
-                }
             } catch (e) {
                 console.error(e);
             }
@@ -827,17 +852,34 @@ async fn index_html() -> Html<&'static str> {
                 return;
             }
 
-            const res = await fetch('/api/security/fingerprints', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name })
-            });
-            const json = await res.json();
-            if (json.success) {
-                nameInput.value = '';
-                loadSecurity();
-            } else {
-                alert("Lỗi: " + json.error);
+            const btn = event ? event.target : null;
+            const originalText = btn ? btn.innerText : "";
+            if (btn) {
+                btn.disabled = true;
+                btn.innerText = "🖐️ Đang chờ chạm USB (3 lần)...";
+            }
+
+            try {
+                const res = await fetch('/api/security/fingerprints', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name })
+                });
+                const json = await res.json();
+                if (json.success) {
+                    nameInput.value = '';
+                    alert("Quét và thêm vân tay từ USB thành công!");
+                    loadSecurity();
+                } else {
+                    alert("Lỗi quét vân tay: " + json.error);
+                }
+            } catch (e) {
+                alert("Lỗi kết nối: " + e);
+            } finally {
+                if (btn) {
+                    btn.disabled = false;
+                    btn.innerText = originalText;
+                }
             }
         }
 

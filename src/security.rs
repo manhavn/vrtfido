@@ -1,4 +1,5 @@
 use crate::db::Db;
+use crate::sensor::UsbSensor;
 use parking_lot::Mutex;
 use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -19,11 +20,12 @@ pub enum BiometricModality {
 pub struct PendingPrompt {
     pub request_id: u64,
     pub rp_id: String,
-    pub operation: String, // "MakeCredential" or "GetAssertion"
+    pub operation: String,
     pub user_name: String,
     pub is_security_setup: bool,
     pub pin_configured: bool,
     pub fp_count: usize,
+    pub hardware_sensor_available: bool,
     pub available_modalities: Vec<BiometricModality>,
     pub created_at_secs: u64,
     pub timeout_seconds: u64,
@@ -38,20 +40,25 @@ pub struct ActiveVerification {
 #[derive(Clone)]
 pub struct SecurityEngine {
     db: Db,
+    sensor: UsbSensor,
     pending: Arc<Mutex<Option<ActiveVerification>>>,
     req_counter: Arc<AtomicU64>,
 }
 
 impl SecurityEngine {
-    pub fn new(db: Db) -> Self {
+    pub fn new(db: Db, sensor: UsbSensor) -> Self {
         Self {
             db,
+            sensor,
             pending: Arc::new(Mutex::new(None)),
             req_counter: Arc::new(AtomicU64::new(1)),
         }
     }
 
-    /// Kiểm tra định dạng PIN: Bắt buộc đúng 6 chữ số (0-9)
+    pub fn sensor(&self) -> &UsbSensor {
+        &self.sensor
+    }
+
     pub fn validate_pin_format(pin: &str) -> Result<(), &'static str> {
         if pin.len() != 6 {
             return Err("Mã passkey PIN phải có đúng 6 chữ số");
@@ -110,7 +117,36 @@ impl SecurityEngine {
         }
     }
 
-    pub fn enroll_fingerprint(&self, name: &str) -> Result<crate::db::FingerprintRow, String> {
+    /// Thêm vân tay: Quét thực tế từ thiết bị USB Microarray MAFP
+    pub fn enroll_fingerprint<F>(&self, name: &str, progress_cb: F) -> Result<crate::db::FingerprintRow, String>
+    where
+        F: FnMut(u32, u32, &str),
+    {
+        // 1. Kiểm tra giới hạn 10 vân tay trước
+        let fps = self.db.get_fingerprints().map_err(|e| e.to_string())?;
+        if fps.len() >= 10 {
+            return Err("Đã đạt giới hạn tối đa 10 vân tay".into());
+        }
+
+        // Tìm slot tiếp theo
+        let existing_slots: Vec<u32> = fps.iter().map(|f| f.slot_index).collect();
+        let mut target_slot = 0u32;
+        for s in 0..10 {
+            if !existing_slots.contains(&s) {
+                target_slot = s;
+                break;
+            }
+        }
+
+        // 2. Thử kết nối và quét trực tiếp từ USB
+        if UsbSensor::is_hardware_plugged() {
+            println!("[SECURITY] Bắt đầu chu trình quét vân tay thật trên USB cho slot {}...", target_slot);
+            self.sensor.enroll_fingerprint(target_slot, progress_cb)?;
+        } else {
+            println!("[SECURITY] Không phát hiện USB vân tay, lưu slot ảo.");
+        }
+
+        // 3. Lưu thông tin vào SQLite
         let row = self.db.add_fingerprint(name).map_err(|e| e.to_string())?;
         self.db.log_auth(
             None,
@@ -118,7 +154,7 @@ impl SecurityEngine {
             "FingerprintEnrolled",
             "SUCCESS",
             "FINGERPRINT",
-            Some(&format!("Đã thêm vân tay '{}' vào slot {}", row.name, row.slot_index)),
+            Some(&format!("Đã quét và lưu vân tay '{}' vào USB & DB slot {}", row.name, row.slot_index)),
         );
         Ok(row)
     }
@@ -138,12 +174,10 @@ impl SecurityEngine {
         Ok(ok)
     }
 
-    /// Lấy prompt xác thực đang chờ hiện tại (nếu có và chưa timeout)
     pub fn get_pending_prompt(&self) -> Option<PendingPrompt> {
         let mut guard = self.pending.lock();
         if let Some(active) = guard.as_ref() {
             if active.start_time.elapsed() > Duration::from_secs(active.prompt.timeout_seconds) {
-                // Đã hết hạn
                 *guard = None;
                 None
             } else {
@@ -154,8 +188,6 @@ impl SecurityEngine {
         }
     }
 
-    /// Yêu cầu xác thực người dùng (từ CTAP2 daemon)
-    /// Trả về Ok("PIN" | "FINGERPRINT" | "SETUP_COMPLETED") hoặc Err(...)
     pub async fn request_user_verification(
         &self,
         rp_id: &str,
@@ -164,6 +196,7 @@ impl SecurityEngine {
     ) -> Result<String, String> {
         let settings = self.db.get_security_settings().map_err(|e| e.to_string())?;
         let is_security_setup = settings.pin_enabled || settings.fp_count > 0;
+        let sensor_ok = UsbSensor::is_hardware_plugged();
 
         let req_id = self.req_counter.fetch_add(1, Ordering::SeqCst);
         let prompt = PendingPrompt {
@@ -174,9 +207,10 @@ impl SecurityEngine {
             is_security_setup,
             pin_configured: settings.pin_enabled,
             fp_count: settings.fp_count,
+            hardware_sensor_available: sensor_ok,
             available_modalities: vec![
                 BiometricModality::Fingerprint,
-                BiometricModality::Face, // Sẵn sàng mở rộng
+                BiometricModality::Face,
             ],
             created_at_secs: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -199,13 +233,51 @@ impl SecurityEngine {
             "\n[SECURITY] >>> YÊU CẦU XÁC THỰC MỚI (Request #{} - RP: '{}', Thao tác: '{}') <<<",
             req_id, rp_id, operation
         );
-        println!("[SECURITY] >>> Mở Web CMS http://localhost:10209 để duyệt hoặc từ chối <<<");
+        if sensor_ok {
+            println!("[SECURITY] >>> Bạn có thể chạm ngón tay vào cảm biến USB hoặc dùng Web CMS <<<");
+        } else {
+            println!("[SECURITY] >>> Mở Web CMS http://localhost:10209 để duyệt hoặc từ chối <<<");
+        }
 
-        match tokio::time::timeout(Duration::from_secs(60), rx).await {
-            Ok(Ok(result)) => {
+        // Tự động lắng nghe chạm cảm biến vân tay song song nếu USB đang cắm!
+        let sensor_clone = self.sensor.clone();
+        let pending_ref = self.pending.clone();
+        let db_clone = self.db.clone();
+        let rp_id_owned = rp_id.to_string();
+        let op_owned = operation.to_string();
+
+        let fp_listener = tokio::task::spawn_blocking(move || {
+            if !UsbSensor::is_hardware_plugged() {
+                return;
+            }
+            // Lắng nghe chạm ngón tay trong tối đa 55s
+            if let Ok(true) = sensor_clone.wait_for_finger_press(55) {
+                let mut guard = pending_ref.lock();
+                if let Some(mut active) = guard.take() {
+                    if active.prompt.request_id == req_id {
+                        if let Some(responder) = active.responder.take() {
+                            let _ = responder.send(Ok("USB_FINGERPRINT_HARDWARE".to_string()));
+                        }
+                        db_clone.log_auth(
+                            None,
+                            &rp_id_owned,
+                            &op_owned,
+                            "SUCCESS",
+                            "FINGERPRINT_USB",
+                            Some("Xác thực thành công bằng chạm cảm biến USB phần cứng"),
+                        );
+                    } else {
+                        *guard = Some(active);
+                    }
+                }
+            }
+        });
+
+        let result = match tokio::time::timeout(Duration::from_secs(60), rx).await {
+            Ok(Ok(res)) => {
                 let mut guard = self.pending.lock();
                 *guard = None;
-                result
+                res
             }
             Ok(Err(_)) => {
                 let mut guard = self.pending.lock();
@@ -217,10 +289,12 @@ impl SecurityEngine {
                 *guard = None;
                 Err("Hết thời gian chờ xác thực (Timeout 60s)".to_string())
             }
-        }
+        };
+
+        fp_listener.abort();
+        result
     }
 
-    /// Người dùng bấm phê duyệt trên Web CMS
     pub fn approve_pending(&self, req_id: u64, method: &str, input_pin: Option<&str>) -> Result<(), String> {
         let mut guard = self.pending.lock();
         if let Some(mut active) = guard.take() {
@@ -229,7 +303,6 @@ impl SecurityEngine {
                 return Err("Mã yêu cầu không khớp".to_string());
             }
 
-            // Kiểm tra phương thức
             match method {
                 "PIN" => {
                     let pin = input_pin.ok_or_else(|| "Chưa nhập mã PIN".to_string())?;
@@ -248,7 +321,15 @@ impl SecurityEngine {
                     Ok(())
                 }
                 "FINGERPRINT" => {
-                    // Xác thực vân tay
+                    // Nếu USB cắm, chờ người dùng chạm ngón tay thật trong 15s
+                    if UsbSensor::is_hardware_plugged() {
+                        println!("[SECURITY] Đang chờ bạn chạm ngón tay vào cảm biến USB...");
+                        if let Err(e) = self.sensor.wait_for_finger_press(15) {
+                            *guard = Some(active);
+                            return Err(format!("Chưa phát hiện chạm vân tay trên USB: {}", e));
+                        }
+                    }
+
                     if let Some(responder) = active.responder.take() {
                         let _ = responder.send(Ok("FINGERPRINT".to_string()));
                     }
@@ -258,12 +339,11 @@ impl SecurityEngine {
                         &active.prompt.operation,
                         "SUCCESS",
                         "FINGERPRINT",
-                        Some("Xác thực cảm biến vân tay thành công qua Web CMS"),
+                        Some("Xác thực cảm biến vân tay thành công"),
                     );
                     Ok(())
                 }
                 "SETUP" => {
-                    // Khởi tạo bảo mật mới nếu chưa có
                     if let Some(pin) = input_pin {
                         self.set_pin(pin)?;
                     }
@@ -290,7 +370,6 @@ impl SecurityEngine {
         }
     }
 
-    /// Người dùng bấm từ chối trên Web CMS
     pub fn reject_pending(&self, req_id: u64, reason: &str) -> Result<(), String> {
         let mut guard = self.pending.lock();
         if let Some(mut active) = guard.take() {

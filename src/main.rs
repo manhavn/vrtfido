@@ -1,7 +1,7 @@
 mod db;
 mod security;
+mod sensor;
 mod web;
-
 use ciborium::Value;
 use db::Db;
 use p256::ecdsa::signature::Signer;
@@ -724,7 +724,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     db.log_debug("INFO", "SYSTEM", "Virtual FIDO2 Manager started");
 
     // 3. Khởi tạo SecurityEngine & AppState
-    let security = SecurityEngine::new(db.clone());
+    let sensor = sensor::UsbSensor::new();
+    let security = SecurityEngine::new(db.clone(), sensor.clone());
     let debug_mode_arc = Arc::new(AtomicBool::new(debug_mode));
     let uhid_connected = Arc::new(AtomicBool::new(false));
 
