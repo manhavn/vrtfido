@@ -411,32 +411,36 @@ impl Db {
         Ok(list)
     }
 
-    pub fn add_fingerprint(&self, name: &str) -> Result<FingerprintRow> {
+    pub fn get_fingerprint_by_id(&self, id: i64) -> Result<Option<FingerprintRow>> {
         let conn = self.conn.lock();
-        let mut stmt = conn.prepare("SELECT slot_index FROM fingerprints ORDER BY slot_index ASC")?;
-        let existing: Vec<u32> = stmt.query_map([], |r| r.get(0))?.filter_map(|r| r.ok()).collect();
-        if existing.len() >= 10 {
-            return Err(rusqlite::Error::QueryReturnedNoRows);
+        let mut stmt = conn.prepare("SELECT id, slot_index, name, enrolled_at FROM fingerprints WHERE id = ?1")?;
+        let mut rows = stmt.query_map([id], |row| {
+            Ok(FingerprintRow {
+                id: row.get(0)?,
+                slot_index: row.get(1)?,
+                name: row.get(2)?,
+                enrolled_at: row.get(3)?,
+            })
+        })?;
+        if let Some(r) = rows.next() {
+            Ok(Some(r?))
+        } else {
+            Ok(None)
         }
+    }
 
-        // Tìm slot nhỏ nhất còn trống từ 0..9
-        let mut next_slot = 0u32;
-        for s in 0..10 {
-            if !existing.contains(&s) {
-                next_slot = s;
-                break;
-            }
-        }
-
+    pub fn add_fingerprint(&self, slot_index: u32, name: &str) -> Result<FingerprintRow> {
+        let conn = self.conn.lock();
         conn.execute(
-            "INSERT INTO fingerprints (slot_index, name, enrolled_at) VALUES (?1, ?2, datetime('now'))",
-            params![next_slot, name],
+            "INSERT INTO fingerprints (slot_index, name, enrolled_at) VALUES (?1, ?2, datetime('now'))
+             ON CONFLICT(slot_index) DO UPDATE SET name = excluded.name, enrolled_at = datetime('now')",
+            params![slot_index, name],
         )?;
         let id = conn.last_insert_rowid();
 
         Ok(FingerprintRow {
             id,
-            slot_index: next_slot,
+            slot_index,
             name: name.to_string(),
             enrolled_at: "Vừa xong".to_string(),
         })

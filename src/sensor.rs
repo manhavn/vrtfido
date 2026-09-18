@@ -17,6 +17,7 @@ const CMD_GEN_CHAR: u8 = 0x02;
 const CMD_REG_MODEL: u8 = 0x05;
 const CMD_STORE_CHAR: u8 = 0x06;
 const CMD_EMPTY: u8 = 0x0D;
+const CMD_DELETE_CHAR: u8 = 0x0C;
 const CMD_READ_INDEX: u8 = 0x1F;
 const CMD_SEARCH: u8 = 0x66;
 
@@ -255,6 +256,18 @@ impl UsbSensor {
         println!("[SENSOR] Bộ nhớ chip USB đã đầy, đang dọn sạch bằng CMD 0x0D (Empty)...");
         let _ = self.send_command(&[CMD_EMPTY], Duration::from_millis(1500));
         Ok(0)
+    }
+
+    pub fn delete_slot(&self, slot: u32) -> Result<(), String> {
+        let fid = (slot & 0x1F) as u16;
+        let del_cmd = [CMD_DELETE_CHAR, (fid >> 8) as u8, (fid & 0xFF) as u8, 0x00, 0x01];
+        let res = self.send_command(&del_cmd, Duration::from_millis(1500))?;
+        if !res.is_empty() && res[0] == 0x00 {
+            println!("[SENSOR] [+] Đã xóa thành công template slot {} trên chip USB!", fid);
+            Ok(())
+        } else {
+            Err(format!("Lỗi xóa template slot {} trên chip: {:?}", fid, res))
+        }
     }
 
     pub fn clear_chip_templates(&self) -> Result<(), String> {

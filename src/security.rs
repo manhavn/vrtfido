@@ -141,19 +141,27 @@ impl SecurityEngine {
             target_slot as u16
         };
 
-        let row = self.db.add_fingerprint(name).map_err(|e| e.to_string())?;
+        let row = self.db.add_fingerprint(actual_fid as u32, name).map_err(|e| e.to_string())?;
         self.db.log_auth(
             None,
             "SYSTEM",
             "FingerprintEnrolled",
             "SUCCESS",
             "FINGERPRINT",
-            Some(&format!("Đã quét đủ 6 mẫu và lưu vân tay '{}' vào USB slot {}", row.name, actual_fid)),
+            Some(&format!("Đã quét đủ 6 mẫu và lưu vân tay '{}' vào USB & DB slot {}", row.name, actual_fid)),
         );
         Ok(row)
     }
 
     pub fn delete_fingerprint(&self, id: i64) -> Result<bool, String> {
+        if let Ok(Some(fp)) = self.db.get_fingerprint_by_id(id) {
+            let slot = fp.slot_index;
+            if UsbSensor::is_hardware_plugged() {
+                println!("[SECURITY] Đang xóa template slot {} trên chip USB...", slot);
+                let _ = self.sensor.delete_slot(slot);
+            }
+        }
+
         let ok = self.db.delete_fingerprint(id).map_err(|e| e.to_string())?;
         if ok {
             self.db.log_auth(
@@ -162,10 +170,9 @@ impl SecurityEngine {
                 "FingerprintDeleted",
                 "SUCCESS",
                 "FINGERPRINT",
-                Some(&format!("Đã xóa vân tay id {}", id)),
+                Some(&format!("Đã xóa vân tay id {} và xóa template trên chip USB", id)),
             );
 
-            // Nếu xóa hết vân tay trong DB, dọn sạch flash chip USB
             let remaining = self.db.get_fingerprints().map_err(|e| e.to_string())?;
             if remaining.is_empty() && UsbSensor::is_hardware_plugged() {
                 let _ = self.sensor.clear_chip_templates();
