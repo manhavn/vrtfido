@@ -21,6 +21,7 @@ const CMD_READ_INDEX: u8 = 0x1F;
 const CMD_SEARCH: u8 = 0x66;
 
 pub const ENROLL_TOTAL_STAGES: u32 = 6;
+pub const MAX_STAGE_RETRIES: u32 = 10;
 
 static HANDSHAKE_PKT: &[u8] = &[
     0xEF, 0x01, 0xFF, 0xFF, 0xFF, 0xFF,
@@ -310,6 +311,7 @@ impl UsbSensor {
         run_result
     }
 
+    /// Chu trình lấy mẫu 6 bước: NẾU BƯỚC NÀO LỖI THÌ GIỮ NGUYÊN BƯỚC ĐÓ VÀ CHO PHÉP THỬ LẠI!
     fn execute_enroll_stages(&self, preferred_slot: u32) -> Result<u16, String> {
         let _ = self.send_command(&[0x23], Duration::from_millis(500));
         sleep(Duration::from_millis(100));
@@ -320,46 +322,118 @@ impl UsbSensor {
         };
         println!("[SENSOR] Slot đăng ký trên chip USB: {}", fid);
 
-        for stage in 1..=ENROLL_TOTAL_STAGES {
+        let mut current_stage = 1u32;
+        let mut retry_count = 0u32;
+
+        while current_stage <= ENROLL_TOTAL_STAGES {
             if self.cancel_requested.load(Ordering::SeqCst) {
                 return Err("Đã hủy bỏ quá trình quét vân tay".into());
             }
 
+            // Cập nhật trạng thái chờ chạm ngón tay
             {
                 let mut p = self.enroll_progress.lock();
-                p.stage = stage;
+                p.stage = current_stage;
                 p.status = "waiting_touch".into();
-                p.message = format!("Lần {}/{}: Chạm ngón tay vào cảm biến USB...", stage, ENROLL_TOTAL_STAGES);
+                if retry_count > 0 {
+                    p.message = format!(
+                        "Lần {}/{}: Mẫu chưa rõ, vui lòng chạm lại phẳng ngón tay lên cảm biến...",
+                        current_stage, ENROLL_TOTAL_STAGES
+                    );
+                } else {
+                    p.message = format!(
+                        "Lần {}/{}: Chạm ngón tay vào cảm biến USB...",
+                        current_stage, ENROLL_TOTAL_STAGES
+                    );
+                }
             }
-            println!("[ENROLL] Lần {}/{}: Đang chờ chạm ngón tay...", stage, ENROLL_TOTAL_STAGES);
+            println!(
+                "[ENROLL] Lần {}/{}: Đang chờ chạm ngón tay (Lần thử {}/{})...",
+                current_stage, ENROLL_TOTAL_STAGES, retry_count + 1, MAX_STAGE_RETRIES
+            );
 
-            self.wait_for_finger_press(25)?;
-
-            let gen_res = self.send_command(&[CMD_GEN_CHAR, stage as u8], Duration::from_millis(1000))?;
-            if gen_res.is_empty() || gen_res[0] != 0x00 {
-                return Err(format!("Lỗi nhận diện mẫu lần {} (Vui lòng thử lại)", stage));
+            // Chờ ngón tay chạm (timeout 30s mỗi lần thử)
+            match self.wait_for_finger_press(30) {
+                Ok(true) => {}
+                _ => {
+                    if self.cancel_requested.load(Ordering::SeqCst) {
+                        return Err("Đã hủy bỏ".into());
+                    }
+                    println!("[ENROLL] Chưa phát hiện chạm ngón tay, tiếp tục chờ...");
+                    continue;
+                }
             }
 
-            {
-                let mut p = self.enroll_progress.lock();
-                p.status = "finger_lift".into();
-                p.message = format!("Đã ghi nhận mẫu {}/{}! Hãy nhấc ngón tay ra...", stage, ENROLL_TOTAL_STAGES);
-            }
-            println!("[ENROLL] Lần {}/{}: Đã ghi nhận! Đang chờ nhấc ngón tay...", stage, ENROLL_TOTAL_STAGES);
+            // Rút trích đặc trưng GenChar vào slot tương ứng
+            let gen_res = self.send_command(&[CMD_GEN_CHAR, current_stage as u8], Duration::from_millis(1000));
+            let is_success = match &gen_res {
+                Ok(res) => !res.is_empty() && res[0] == 0x00,
+                Err(_) => false,
+            };
 
-            self.wait_for_finger_lift(15)?;
-            sleep(Duration::from_millis(200));
+            if is_success {
+                // Thành công ở bước này -> tiến lên bước tiếp theo!
+                {
+                    let mut p = self.enroll_progress.lock();
+                    p.status = "finger_lift".into();
+                    p.message = format!(
+                        "Đã ghi nhận mẫu {}/{}! Hãy nhấc ngón tay ra...",
+                        current_stage, ENROLL_TOTAL_STAGES
+                    );
+                }
+                println!(
+                    "[ENROLL] [+] Lần {}/{}: Ghi nhận mẫu thành công! Đang chờ nhấc ngón tay...",
+                    current_stage, ENROLL_TOTAL_STAGES
+                );
+
+                self.wait_for_finger_lift(15)?;
+                sleep(Duration::from_millis(250));
+
+                current_stage += 1;
+                retry_count = 0;
+            } else {
+                // Mẫu bị lỗi (do ngón tay lệch, nhấc quá nhanh hoặc cảm biến chưa bắt nét)
+                // -> KHÔNG THOÁT! GIỮ NGUYÊN BƯỚC ĐÓ VÀ CHO THỬ LẠI!
+                retry_count += 1;
+                println!(
+                    "[ENROLL] [RETRY] Lần {}/{}: Mẫu chưa đạt chất lượng (Code: {:?}). Đang chờ nhấc ngón để thử lại...",
+                    current_stage, ENROLL_TOTAL_STAGES, gen_res
+                );
+
+                {
+                    let mut p = self.enroll_progress.lock();
+                    p.status = "finger_lift".into();
+                    p.message = format!(
+                        "Mẫu chưa rõ hoặc ngón tay di chuyển! Hãy nhấc ngón tay ra để thử lại lần {}/{}...",
+                        current_stage, ENROLL_TOTAL_STAGES
+                    );
+                }
+
+                self.wait_for_finger_lift(10)?;
+                sleep(Duration::from_millis(300));
+
+                if retry_count >= MAX_STAGE_RETRIES {
+                    return Err(format!(
+                        "Không thể nhận diện mẫu lần {} sau {} lần thử. Vui lòng bấm thử lại.",
+                        current_stage, MAX_STAGE_RETRIES
+                    ));
+                }
+            }
         }
 
+        // Đã thu thập đủ 6 mẫu hợp lệ -> Tổng hợp mô hình RegModel (CMD 0x05)
         {
             let mut p = self.enroll_progress.lock();
-            p.message = "Đang tổng hợp dữ liệu vân tay trên chip...".into();
+            p.status = "waiting_touch".into();
+            p.message = "Đã thu thập đủ 6 mẫu! Đang tổng hợp dữ liệu vân tay trên chip...".into();
         }
+        println!("[ENROLL] Đã thu thập đủ 6 mẫu! Đang gửi lệnh RegModel (CMD 0x05)...");
         let reg_res = self.send_command(&[CMD_REG_MODEL], Duration::from_millis(1500))?;
         if reg_res.is_empty() || reg_res[0] != 0x00 {
-            return Err("Lỗi tổng hợp dữ liệu vân tay từ 6 mẫu".into());
+            return Err("Lỗi tổng hợp dữ liệu vân tay từ 6 mẫu trên chip".into());
         }
 
+        // Lưu vào bộ nhớ flash trên chip (StoreChar)
         let store_cmd = [CMD_STORE_CHAR, 0x01, (fid >> 8) as u8, (fid & 0xFF) as u8];
         let store_res = self.send_command(&store_cmd, Duration::from_millis(1500))?;
 
@@ -380,8 +454,6 @@ impl UsbSensor {
     }
 
     /// Xác thực vân tay THẬT đối chiếu với danh sách slot đã đăng ký
-    /// Trả về Ok(true) NẾU VÀ CHỈ NẾU ngón tay trùng khớp với một trong các slot.
-    /// Trả về Ok(false) NẾU ngón tay KHÔNG khớp (ngón khác).
     pub fn verify_fingerprint(&self, enrolled_slots: &[u32], timeout_secs: u64) -> Result<bool, String> {
         if enrolled_slots.is_empty() {
             return Err("Chưa có vân tay nào được đăng ký trong hệ thống".into());
