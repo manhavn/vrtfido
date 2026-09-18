@@ -117,7 +117,35 @@ impl Db {
              );
 
              INSERT OR IGNORE INTO security_settings (id, pin_hash, pin_salt, pin_enabled, fp_enabled, require_uv, updated_at)
-             VALUES (1, NULL, NULL, 0, 1, 1, datetime('now'));"
+             VALUES (1, NULL, NULL, 0, 1, 1, datetime('now'));
+
+             -- Dọn dẹp bản ghi trùng lặp trước đó (nếu có), chỉ giữ lại bản ghi mới nhất theo lần dùng/ngày tạo
+             DELETE FROM credentials
+             WHERE id NOT IN (
+                 SELECT id FROM (
+                     SELECT id, ROW_NUMBER() OVER (
+                         PARTITION BY LOWER(rp_id), LOWER(user_name)
+                         ORDER BY datetime(last_used_at) DESC, datetime(created_at) DESC
+                     ) as rn
+                     FROM credentials
+                 ) WHERE rn = 1
+             );
+
+             DELETE FROM credentials
+             WHERE user_id != X'00000000000000000000000000000000'
+               AND length(user_id) > 0
+               AND id NOT IN (
+                 SELECT id FROM (
+                     SELECT id, ROW_NUMBER() OVER (
+                         PARTITION BY LOWER(rp_id), user_id
+                         ORDER BY datetime(last_used_at) DESC, datetime(created_at) DESC
+                     ) as rn
+                     FROM credentials
+                     WHERE user_id != X'00000000000000000000000000000000' AND length(user_id) > 0
+                 ) WHERE rn = 1
+             );
+
+             CREATE INDEX IF NOT EXISTS idx_credentials_rp_user ON credentials(rp_id, user_name);"
         )?;
 
         Ok(Self {
@@ -220,27 +248,112 @@ impl Db {
         private_key_sec1: &[u8],
         public_key_cose: &[u8],
         sign_count: u32,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let conn = self.conn.lock();
-        conn.execute(
-            "INSERT INTO credentials (id, rp_id, user_id, user_name, user_display_name,
-                                      private_key_sec1, public_key_cose, sign_count, created_at, last_used_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'), datetime('now'))
-             ON CONFLICT(id) DO UPDATE SET
-                sign_count = excluded.sign_count,
-                last_used_at = datetime('now')",
-            params![
-                id_hex,
-                rp_id,
-                user_id,
-                user_name,
-                user_display_name,
-                private_key_sec1,
-                public_key_cose,
-                sign_count
-            ],
+
+        // 1. Quét các credential hiện có của RP để kiểm tra trùng tài khoản
+        let mut stmt = conn.prepare(
+            "SELECT id, user_id, user_name, created_at FROM credentials WHERE rp_id = ?1 COLLATE NOCASE"
         )?;
-        Ok(())
+
+        let rows = stmt.query_map([rp_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Vec<u8>>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?;
+
+        let dummy_id = [0u8; 16];
+        let new_uid_valid = !user_id.is_empty() && user_id != dummy_id;
+        let new_name_clean = user_name.trim();
+
+        let mut matching_ids = Vec::new();
+        let mut earliest_created_at: Option<String> = None;
+
+        for r in rows {
+            let (exist_id, exist_uid, exist_name, created_at) = r?;
+            let exist_uid_valid = !exist_uid.is_empty() && exist_uid.as_slice() != dummy_id;
+            let exist_name_clean = exist_name.trim();
+
+            let mut is_match = false;
+
+            // Kiểm tra trùng user_id (nếu cả 2 đều hợp lệ và khác dummy 16 byte 0)
+            if new_uid_valid && exist_uid_valid && exist_uid.as_slice() == user_id {
+                is_match = true;
+            }
+
+            // Hoặc kiểm tra trùng user_name (không phân biệt hoa thường)
+            if !is_match && !new_name_clean.is_empty() && !exist_name_clean.is_empty() {
+                if exist_name_clean.eq_ignore_ascii_case(new_name_clean) {
+                    // Nếu cả 2 đều là placeholder "User" nhưng user_id thực sự khác nhau thì là 2 tài khoản khác
+                    if !(new_name_clean.eq_ignore_ascii_case("User")
+                        && new_uid_valid
+                        && exist_uid_valid
+                        && exist_uid.as_slice() != user_id)
+                    {
+                        is_match = true;
+                    }
+                }
+            }
+
+            if is_match {
+                matching_ids.push(exist_id);
+                if earliest_created_at.is_none() {
+                    earliest_created_at = Some(created_at);
+                }
+            }
+        }
+
+        let is_update = !matching_ids.is_empty();
+
+        // 2. Nếu đã tồn tại bản ghi cùng tài khoản, xóa data cũ và cập nhật audit log sang ID mới
+        for old_id in &matching_ids {
+            let _ = conn.execute("DELETE FROM credentials WHERE id = ?1", [old_id]);
+            let _ = conn.execute(
+                "UPDATE auth_logs SET credential_id = ?1 WHERE credential_id = ?2",
+                params![id_hex, old_id],
+            );
+        }
+
+        // 3. Ghi đè / thêm mới bản ghi với dữ liệu mới nhất (giữ created_at ban đầu nếu là ghi đè)
+        if let Some(created_at_val) = earliest_created_at {
+            conn.execute(
+                "INSERT INTO credentials (id, rp_id, user_id, user_name, user_display_name,
+                                          private_key_sec1, public_key_cose, sign_count, created_at, last_used_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, datetime('now'))",
+                params![
+                    id_hex,
+                    rp_id,
+                    user_id,
+                    user_name,
+                    user_display_name,
+                    private_key_sec1,
+                    public_key_cose,
+                    sign_count,
+                    created_at_val,
+                ],
+            )?;
+        } else {
+            conn.execute(
+                "INSERT INTO credentials (id, rp_id, user_id, user_name, user_display_name,
+                                          private_key_sec1, public_key_cose, sign_count, created_at, last_used_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'), datetime('now'))",
+                params![
+                    id_hex,
+                    rp_id,
+                    user_id,
+                    user_name,
+                    user_display_name,
+                    private_key_sec1,
+                    public_key_cose,
+                    sign_count,
+                ],
+            )?;
+        }
+
+        Ok(is_update)
     }
 
     pub fn update_credential_name(&self, id: &str, name: &str, display_name: &str) -> Result<bool> {
@@ -450,5 +563,273 @@ impl Db {
         let conn = self.conn.lock();
         let rows = conn.execute("DELETE FROM fingerprints WHERE id = ?1", [id])?;
         Ok(rows > 0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_test_db() -> Db {
+        Db::open(":memory:").expect("Failed to open in-memory db")
+    }
+
+    #[test]
+    fn test_duplicate_same_username_same_rp_overwrites() {
+        let db = create_test_db();
+
+        // Đăng ký lần 1
+        let res1 = db.save_credential(
+            "id_1",
+            "webauthn.io",
+            b"uid_1",
+            "testuser",
+            "User Display 1",
+            b"sec1_key_1",
+            b"cose_key_1",
+            1,
+        ).unwrap();
+        assert!(!res1, "Lần đầu tiên đăng ký không phải là update");
+
+        let creds1 = db.get_credentials().unwrap();
+        assert_eq!(creds1.len(), 1);
+        assert_eq!(creds1[0].id, "id_1");
+        assert_eq!(creds1[0].user_name, "testuser");
+        assert_eq!(creds1[0].user_display_name, "User Display 1");
+
+        // Đăng ký lần 2 cùng rp_id và user_name
+        let res2 = db.save_credential(
+            "id_2",
+            "webauthn.io",
+            b"uid_1",
+            "testuser",
+            "User Display 2",
+            b"sec1_key_2",
+            b"cose_key_2",
+            1,
+        ).unwrap();
+        assert!(res2, "Lần thứ hai đăng ký cùng tài khoản phải là update");
+
+        // Kiểm tra không sinh thêm bản ghi mới, chỉ có đúng 1 bản ghi
+        let creds2 = db.get_credentials().unwrap();
+        assert_eq!(creds2.len(), 1, "Chỉ được phép có 1 bản ghi duy nhất cho cùng một tài khoản của 1 trang web");
+        assert_eq!(creds2[0].id, "id_2", "ID phải được cập nhật sang ID mới");
+        assert_eq!(creds2[0].user_display_name, "User Display 2", "Data phải được cập nhật mới");
+        assert_eq!(hex::decode(&creds2[0].private_key_sec1_hex).unwrap(), b"sec1_key_2", "Private key mới");
+    }
+
+    #[test]
+    fn test_duplicate_case_insensitive_username() {
+        let db = create_test_db();
+
+        db.save_credential(
+            "id_1",
+            "webauthn.io",
+            b"uid_1",
+            "alice",
+            "Alice",
+            b"key1",
+            b"cose1",
+            1,
+        ).unwrap();
+
+        // Đăng ký lại với chữ hoa "Alice"
+        let is_update = db.save_credential(
+            "id_2",
+            "webauthn.io",
+            b"uid_different",
+            "Alice",
+            "Alice New",
+            b"key2",
+            b"cose2",
+            1,
+        ).unwrap();
+        assert!(is_update, "Tên tài khoản không phân biệt hoa thường phải nhận diện trùng");
+
+        let creds = db.get_credentials().unwrap();
+        assert_eq!(creds.len(), 1);
+        assert_eq!(creds[0].id, "id_2");
+    }
+
+    #[test]
+    fn test_duplicate_same_user_id_different_username() {
+        let db = create_test_db();
+
+        db.save_credential(
+            "id_1",
+            "webauthn.io",
+            b"unique_user_id_123",
+            "old_name",
+            "Old Display",
+            b"key1",
+            b"cose1",
+            1,
+        ).unwrap();
+
+        // Đổi username nhưng cùng user_id
+        let is_update = db.save_credential(
+            "id_2",
+            "webauthn.io",
+            b"unique_user_id_123",
+            "new_name",
+            "New Display",
+            b"key2",
+            b"cose2",
+            1,
+        ).unwrap();
+        assert!(is_update, "Cùng user_id phải nhận diện là cùng một tài khoản và ghi đè");
+
+        let creds = db.get_credentials().unwrap();
+        assert_eq!(creds.len(), 1);
+        assert_eq!(creds[0].id, "id_2");
+        assert_eq!(creds[0].user_name, "new_name");
+    }
+
+    #[test]
+    fn test_different_accounts_same_rp_creates_multiple() {
+        let db = create_test_db();
+
+        let res1 = db.save_credential(
+            "id_1",
+            "webauthn.io",
+            b"uid_alice",
+            "alice",
+            "Alice",
+            b"key1",
+            b"cose1",
+            1,
+        ).unwrap();
+        assert!(!res1);
+
+        let res2 = db.save_credential(
+            "id_2",
+            "webauthn.io",
+            b"uid_bob",
+            "bob",
+            "Bob",
+            b"key2",
+            b"cose2",
+            1,
+        ).unwrap();
+        assert!(!res2);
+
+        let creds = db.get_credentials().unwrap();
+        assert_eq!(creds.len(), 2, "Hai tài khoản khác nhau trên cùng RP phải được lưu độc lập");
+    }
+
+    #[test]
+    fn test_same_username_different_rp_creates_multiple() {
+        let db = create_test_db();
+
+        db.save_credential(
+            "id_1",
+            "webauthn.io",
+            b"uid_1",
+            "alice",
+            "Alice",
+            b"key1",
+            b"cose1",
+            1,
+        ).unwrap();
+
+        db.save_credential(
+            "id_2",
+            "github.com",
+            b"uid_1",
+            "alice",
+            "Alice",
+            b"key2",
+            b"cose2",
+            1,
+        ).unwrap();
+
+        let creds = db.get_credentials().unwrap();
+        assert_eq!(creds.len(), 2, "Cùng username nhưng khác trang web phải được lưu độc lập");
+    }
+
+    #[test]
+    fn test_auth_logs_updated_to_new_credential_id() {
+        let db = create_test_db();
+
+        db.save_credential(
+            "id_old",
+            "webauthn.io",
+            b"uid_1",
+            "testuser",
+            "User",
+            b"key1",
+            b"cose1",
+            1,
+        ).unwrap();
+
+        // Tạo auth log liên kết với id_old
+        db.log_auth(
+            Some("id_old"),
+            "webauthn.io",
+            "GetAssertion",
+            "SUCCESS",
+            "PIN",
+            Some("Old log"),
+        );
+
+        let logs_before = db.get_auth_logs(Some("id_old"), 10).unwrap();
+        assert_eq!(logs_before.len(), 1);
+
+        // Đăng ký lại ghi đè sang id_new
+        db.save_credential(
+            "id_new",
+            "webauthn.io",
+            b"uid_1",
+            "testuser",
+            "User New",
+            b"key2",
+            b"cose2",
+            1,
+        ).unwrap();
+
+        // Logs của id_old phải được chuyển sang id_new
+        let logs_old = db.get_auth_logs(Some("id_old"), 10).unwrap();
+        assert_eq!(logs_old.len(), 0);
+
+        let logs_new = db.get_auth_logs(Some("id_new"), 10).unwrap();
+        assert_eq!(logs_new.len(), 1);
+        assert_eq!(logs_new[0].credential_id.as_deref(), Some("id_new"));
+    }
+
+    #[test]
+    fn test_db_startup_deduplication() {
+        let temp_dir = std::env::temp_dir();
+        let db_path = temp_dir.join(format!("vrtfido_test_dedup_{}.db", rand::random::<u32>()));
+        let path_str = db_path.to_str().unwrap();
+
+        // Tạo database và chèn thủ công 3 bản ghi trùng lặp (mô phỏng dữ liệu cũ)
+        {
+            let conn = Connection::open(path_str).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE credentials (
+                     id TEXT PRIMARY KEY,
+                     rp_id TEXT NOT NULL,
+                     user_id BLOB NOT NULL,
+                     user_name TEXT NOT NULL,
+                     user_display_name TEXT NOT NULL,
+                     private_key_sec1 BLOB NOT NULL,
+                     public_key_cose BLOB NOT NULL,
+                     sign_count INTEGER NOT NULL DEFAULT 1,
+                     created_at TEXT NOT NULL,
+                     last_used_at TEXT NOT NULL
+                 );
+                 INSERT INTO credentials VALUES ('id1', 'webauthn.io', X'01', 'testuser', 'User', X'00', X'00', 1, '2026-09-18 10:00:00', '2026-09-18 10:10:00');
+                 INSERT INTO credentials VALUES ('id2', 'webauthn.io', X'01', 'testuser', 'User', X'00', X'00', 1, '2026-09-18 10:00:00', '2026-09-18 10:20:00');
+                 INSERT INTO credentials VALUES ('id3', 'webauthn.io', X'01', 'testuser', 'User', X'00', X'00', 1, '2026-09-18 10:00:00', '2026-09-18 10:30:00');"
+            ).unwrap();
+        }
+
+        // Mở qua Db::open -> Phải tự động dọn dẹp các bản ghi trùng cũ, chỉ giữ lại bản ghi mới nhất ('id3')
+        let db = Db::open(path_str).unwrap();
+        let creds = db.get_credentials().unwrap();
+        assert_eq!(creds.len(), 1, "Chỉ giữ lại 1 bản ghi mới nhất sau khi mở DB");
+        assert_eq!(creds[0].id, "id3");
+
+        let _ = std::fs::remove_file(db_path);
     }
 }

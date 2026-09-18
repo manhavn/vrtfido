@@ -441,9 +441,9 @@ fn handle_cbor(
             let cred_id: Vec<u8> = (0..32).map(|_| rand::random::<u8>()).collect();
             let cred_id_hex = hex::encode(&cred_id);
 
-            // Lưu Credential vào SQLite Database
+            // Lưu Credential vào SQLite Database (tự động kiểm tra trùng theo RP và tài khoản để ghi đè)
             let sec1_key_bytes = signing_key.to_bytes();
-            if let Err(e) = db.save_credential(
+            let is_update = match db.save_credential(
                 &cred_id_hex,
                 &rp_id,
                 &user_id,
@@ -453,20 +453,27 @@ fn handle_cbor(
                 &cose_bytes,
                 1,
             ) {
-                eprintln!("[DB] Lỗi lưu credential: {}", e);
-                return vec![0x01];
-            }
+                Ok(updated) => updated,
+                Err(e) => {
+                    eprintln!("[DB] Lỗi lưu credential: {}", e);
+                    return vec![0x01];
+                }
+            };
 
             // Ghi log audit vào SQLite
+            let log_msg = if is_update {
+                format!("Cập nhật và ghi đè thành công tài khoản '{}' trên domain '{}'", user_name, rp_id)
+            } else {
+                format!("Đăng ký thành công tài khoản '{}' trên domain '{}'", user_name, rp_id)
+            };
             db.log_auth(
                 Some(&cred_id_hex),
                 &rp_id,
                 "MakeCredential",
                 "SUCCESS",
                 &auth_method,
-                Some(&format!("Đăng ký thành công tài khoản '{}'", user_name)),
+                Some(&log_msg),
             );
-
             // Dựng authenticatorData
             let rp_id_hash = Sha256::digest(rp_id.as_bytes());
             let flags = 0x01 | 0x04 | 0x40; // UP | UV | AT
@@ -489,7 +496,11 @@ fn handle_cbor(
 
             let mut out = vec![0x00]; // CTAP2_OK
             ciborium::into_writer(&Value::Map(resp_map), &mut out).unwrap();
-            println!("[+] Đăng ký WebAuthn thành công! Đã lưu vào SQLite Database.");
+            if is_update {
+                println!("[+] Phát hiện tài khoản '{}' đã tồn tại trên domain '{}' -> Đã cập nhật và ghi đè dữ liệu mới thành công!", user_name, rp_id);
+            } else {
+                println!("[+] Đăng ký WebAuthn thành công! Đã lưu vào SQLite Database.");
+            }
             out
         }
 
