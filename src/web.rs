@@ -679,11 +679,13 @@ async fn index_html() -> Html<&'static str> {
         let currentPromptId = null;
         let enrollInterval = null;
 
-        function switchTab(tabId) {
+        function switchTab(tabId, btn) {
             document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
             document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-            event.target.classList.add('active');
-            document.getElementById(tabId).classList.add('active');
+            const targetBtn = btn || (typeof event !== 'undefined' && event && event.target) || document.querySelector(`[onclick*="${tabId}"]`);
+            if (targetBtn && targetBtn.classList) targetBtn.classList.add('active');
+            const targetContent = document.getElementById(tabId);
+            if (targetContent) targetContent.classList.add('active');
             if (tabId === 'tab-creds') loadCredentials();
             if (tabId === 'tab-security') loadSecurity();
             if (tabId === 'tab-logs') loadAuditLogs();
@@ -716,10 +718,19 @@ async fn index_html() -> Html<&'static str> {
                         usbTxt.innerText = 'USB 3274:8012 Chưa cắm';
                     }
 
-                    document.getElementById('debugStatus').style.display = s.debug_mode ? 'inline-flex' : 'none';
-                    document.getElementById('unlimitedFpStatus').style.display = s.unlimited_fingerprints ? 'inline-flex' : 'none';
-                    document.getElementById('fpLimitText').innerText = s.unlimited_fingerprints ? ' - Không giới hạn' : '/10';
-                    document.getElementById('credCount').innerText = s.credentials_count;
+                    if (document.getElementById('debugStatus')) {
+                        document.getElementById('debugStatus').style.display = s.debug_mode ? 'inline-flex' : 'none';
+                    }
+                    if (document.getElementById('unlimitedFpStatus')) {
+                        document.getElementById('unlimitedFpStatus').style.display = s.unlimited_fingerprints ? 'inline-flex' : 'none';
+                    }
+                    if (document.getElementById('fpLimitText')) {
+                        document.getElementById('fpLimitText').innerText = s.unlimited_fingerprints ? ' - Không giới hạn' : '/10';
+                    }
+                    if (document.getElementById('credCount')) {
+                        document.getElementById('credCount').innerText = s.credentials_count;
+                    }
+                }
             } catch (e) {
                 console.error(e);
             }
