@@ -134,10 +134,12 @@ impl SecurityEngine {
         }
 
         // Quét mẫu 6 lần trên phần cứng thật
-        if UsbSensor::is_hardware_plugged() {
-            println!("[SECURITY] Bắt đầu chu trình quét vân tay 6 mẫu trên USB slot {}...", target_slot);
-            self.sensor.enroll_fingerprint_pipeline(target_slot)?;
-        }
+        let actual_fid = if UsbSensor::is_hardware_plugged() {
+            println!("[SECURITY] Bắt đầu chu trình quét vân tay 6 mẫu trên USB...");
+            self.sensor.enroll_fingerprint_pipeline(target_slot)?
+        } else {
+            target_slot as u16
+        };
 
         let row = self.db.add_fingerprint(name).map_err(|e| e.to_string())?;
         self.db.log_auth(
@@ -146,7 +148,7 @@ impl SecurityEngine {
             "FingerprintEnrolled",
             "SUCCESS",
             "FINGERPRINT",
-            Some(&format!("Đã quét đủ 6 mẫu và lưu vân tay '{}' vào USB slot {}", row.name, row.slot_index)),
+            Some(&format!("Đã quét đủ 6 mẫu và lưu vân tay '{}' vào USB slot {}", row.name, actual_fid)),
         );
         Ok(row)
     }
@@ -162,6 +164,12 @@ impl SecurityEngine {
                 "FINGERPRINT",
                 Some(&format!("Đã xóa vân tay id {}", id)),
             );
+
+            // Nếu xóa hết vân tay trong DB, dọn sạch flash chip USB
+            let remaining = self.db.get_fingerprints().map_err(|e| e.to_string())?;
+            if remaining.is_empty() && UsbSensor::is_hardware_plugged() {
+                let _ = self.sensor.clear_chip_templates();
+            }
         }
         Ok(ok)
     }
@@ -226,7 +234,11 @@ impl SecurityEngine {
             req_id, rp_id, operation
         );
 
-        // Lắng nghe chạm ngón tay trên USB nếu USB rảnh
+        // Lấy danh sách các slot vân tay đã đăng ký
+        let fps = self.db.get_fingerprints().unwrap_or_default();
+        let enrolled_slots: Vec<u32> = fps.iter().map(|f| f.slot_index).collect();
+
+        // Lắng nghe chạm ngón tay trên USB nếu có vân tay đăng ký
         let sensor_clone = self.sensor.clone();
         let pending_ref = self.pending.clone();
         let db_clone = self.db.clone();
@@ -234,32 +246,51 @@ impl SecurityEngine {
         let op_owned = operation.to_string();
 
         let fp_listener = tokio::task::spawn_blocking(move || {
-            if !UsbSensor::is_hardware_plugged() {
+            if !UsbSensor::is_hardware_plugged() || enrolled_slots.is_empty() {
                 return;
             }
-            // Chờ nếu sensor đang bận đăng ký
             let start = Instant::now();
             while start.elapsed() < Duration::from_secs(55) {
                 if sensor_clone.busy_mode() == SensorBusyMode::Idle {
-                    if let Ok(true) = sensor_clone.wait_for_finger_press(2) {
-                        let mut guard = pending_ref.lock();
-                        if let Some(mut active) = guard.take() {
-                            if active.prompt.request_id == req_id {
-                                if let Some(responder) = active.responder.take() {
-                                    let _ = responder.send(Ok("USB_FINGERPRINT_HARDWARE".to_string()));
+                    // Chờ và so khớp vân tay THẬT!
+                    match sensor_clone.verify_fingerprint(&enrolled_slots, 2) {
+                        Ok(true) => {
+                            // ĐÚNG VÂN TAY ĐÃ ĐĂNG KÝ!
+                            let mut guard = pending_ref.lock();
+                            if let Some(mut active) = guard.take() {
+                                if active.prompt.request_id == req_id {
+                                    if let Some(responder) = active.responder.take() {
+                                        let _ = responder.send(Ok("USB_FINGERPRINT_HARDWARE".to_string()));
+                                    }
+                                    db_clone.log_auth(
+                                        None,
+                                        &rp_id_owned,
+                                        &op_owned,
+                                        "SUCCESS",
+                                        "FINGERPRINT_USB",
+                                        Some("Xác thực thành công bằng cảm biến vân tay USB (Trùng khớp template)"),
+                                    );
+                                    return;
+                                } else {
+                                    *guard = Some(active);
                                 }
-                                db_clone.log_auth(
-                                    None,
-                                    &rp_id_owned,
-                                    &op_owned,
-                                    "SUCCESS",
-                                    "FINGERPRINT_USB",
-                                    Some("Xác thực thành công bằng chạm cảm biến USB phần cứng"),
-                                );
-                                return;
-                            } else {
-                                *guard = Some(active);
                             }
+                        }
+                        Ok(false) => {
+                            // SAI VÂN TAY! NGÓN TAY KHÁC!
+                            println!("[SECURITY] [REJECT] Ngón tay không trùng khớp với các mẫu đã cài đặt! TỪ CHỐI!");
+                            db_clone.log_auth(
+                                None,
+                                &rp_id_owned,
+                                &op_owned,
+                                "REJECTED",
+                                "FINGERPRINT_USB",
+                                Some("Thử xác thực bằng ngón tay không trùng khớp (Bị từ chối)"),
+                            );
+                            std::thread::sleep(Duration::from_millis(500));
+                        }
+                        Err(_) => {
+                            std::thread::sleep(Duration::from_millis(100));
                         }
                     }
                 } else {
@@ -316,12 +347,27 @@ impl SecurityEngine {
                     Ok(())
                 }
                 "FINGERPRINT" => {
-                    // Xác thực vân tay
+                    let fps = self.db.get_fingerprints().map_err(|e| e.to_string())?;
+                    let enrolled_slots: Vec<u32> = fps.iter().map(|f| f.slot_index).collect();
+                    if enrolled_slots.is_empty() {
+                        *guard = Some(active);
+                        return Err("Chưa có vân tay nào được đăng ký trong hệ thống".into());
+                    }
+
                     if UsbSensor::is_hardware_plugged() {
-                        println!("[SECURITY] Đang chờ bạn chạm ngón tay vào cảm biến USB...");
-                        if let Err(e) = self.sensor.verify_fingerprint(15) {
-                            *guard = Some(active);
-                            return Err(format!("Xác thực vân tay thất bại: {}", e));
+                        println!("[SECURITY] Đang chờ bạn chạm đúng ngón tay vào cảm biến USB...");
+                        match self.sensor.verify_fingerprint(&enrolled_slots, 15) {
+                            Ok(true) => {
+                                println!("[SECURITY] Xác thực vân tay thành công!");
+                            }
+                            Ok(false) => {
+                                *guard = Some(active);
+                                return Err("Vân tay KHÔNG TRÙNG KHỚP với bất kỳ mẫu nào đã cài đặt! Yêu cầu bị từ chối.".into());
+                            }
+                            Err(e) => {
+                                *guard = Some(active);
+                                return Err(format!("Lỗi cảm biến vân tay: {}", e));
+                            }
                         }
                     }
 
@@ -334,7 +380,7 @@ impl SecurityEngine {
                         &active.prompt.operation,
                         "SUCCESS",
                         "FINGERPRINT",
-                        Some("Xác thực cảm biến vân tay thành công"),
+                        Some("Xác thực cảm biến vân tay thành công (Khớp template)"),
                     );
                     Ok(())
                 }
