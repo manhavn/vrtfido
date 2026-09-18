@@ -16,8 +16,8 @@ const CMD_GET_IMAGE: u8 = 0x01;
 const CMD_GEN_CHAR: u8 = 0x02;
 const CMD_REG_MODEL: u8 = 0x05;
 const CMD_STORE_CHAR: u8 = 0x06;
-#[allow(dead_code)]
 const CMD_EMPTY: u8 = 0x0D;
+const CMD_READ_INDEX: u8 = 0x1F;
 const CMD_SEARCH: u8 = 0x66;
 
 // Phần cứng Microarray MAFP 3274:8012 bắt buộc đủ 6 mẫu để RegModel
@@ -40,7 +40,7 @@ pub struct EnrollProgress {
     pub active: bool,
     pub stage: u32,
     pub total_stages: u32,
-    pub status: String, // "waiting_touch", "finger_lift", "completed", "error"
+    pub status: String,
     pub message: String,
     pub error: Option<String>,
 }
@@ -238,9 +238,40 @@ impl UsbSensor {
         Ok(())
     }
 
+    /// Đọc bitmap các slot vân tay trên chip để tìm slot trống đầu tiên (0..29)
+    pub fn find_free_fid_slot(&self) -> Result<u16, String> {
+        let resp = self.send_command(&[CMD_READ_INDEX, 0x00], Duration::from_millis(1000))?;
+        if !resp.is_empty() && resp[0] == 0x00 && resp.len() >= 5 {
+            let bitmap = &resp[1..5]; // 4 bytes = 32 bits (0..29 là 30 slots)
+            for byte_idx in 0..4 {
+                let b = bitmap[byte_idx];
+                for bit in 0..8 {
+                    let slot = (byte_idx * 8 + bit) as u16;
+                    if slot < 30 && (b & (1 << bit)) == 0 {
+                        return Ok(slot);
+                    }
+                }
+            }
+        }
+        // Nếu tất cả các slot đều đầy, xóa toàn bộ bộ nhớ flash trên chip và dùng slot 0
+        println!("[SENSOR] Bộ nhớ chip USB đã đầy hoặc cần làm sạch, đang gọi CMD 0x0D (Empty)...");
+        let _ = self.send_command(&[CMD_EMPTY], Duration::from_millis(1500));
+        Ok(0)
+    }
+
+    /// Xóa toàn bộ templates trong chip flash
+    pub fn clear_chip_templates(&self) -> Result<(), String> {
+        let res = self.send_command(&[CMD_EMPTY], Duration::from_millis(1500))?;
+        if !res.is_empty() && res[0] == 0x00 {
+            println!("[SENSOR] [+] Đã dọn sạch bộ nhớ flash trên chip USB!");
+            Ok(())
+        } else {
+            Err(format!("Lỗi xóa bộ nhớ chip: {:?}", res))
+        }
+    }
+
     /// Quy trình quét và đăng ký vân tay hoàn chỉnh (6 chu kỳ chạm và nhấc)
-    pub fn enroll_fingerprint_pipeline(&self, slot_id: u32) -> Result<(), String> {
-        // Đặt trạng thái bận
+    pub fn enroll_fingerprint_pipeline(&self, preferred_slot: u32) -> Result<u16, String> {
         {
             let mut busy = self.busy_mode.lock();
             if *busy != SensorBusyMode::Idle {
@@ -250,7 +281,6 @@ impl UsbSensor {
         }
         self.cancel_requested.store(false, Ordering::SeqCst);
 
-        // Khởi tạo tiến trình
         {
             let mut p = self.enroll_progress.lock();
             p.active = true;
@@ -261,16 +291,15 @@ impl UsbSensor {
             p.error = None;
         }
 
-        let run_result = self.execute_enroll_stages(slot_id);
+        let run_result = self.execute_enroll_stages(preferred_slot);
 
-        // Cập nhật kết quả cuối cùng
         {
             let mut p = self.enroll_progress.lock();
             match &run_result {
-                Ok(_) => {
+                Ok(fid) => {
                     p.active = false;
                     p.status = "completed".into();
-                    p.message = "Đã quét và lưu vân tay thành công!".into();
+                    p.message = format!("Đã quét đủ 6 mẫu và lưu vào chip USB slot {}!", fid);
                     p.error = None;
                 }
                 Err(err) => {
@@ -286,12 +315,19 @@ impl UsbSensor {
         run_result
     }
 
-    fn execute_enroll_stages(&self, slot_id: u32) -> Result<(), String> {
-        // 1. Handshake
+    fn execute_enroll_stages(&self, preferred_slot: u32) -> Result<u16, String> {
+        // 1. Handshake reset session
         let _ = self.send_command(&[0x23], Duration::from_millis(500));
-        sleep(Duration::from_millis(150));
+        sleep(Duration::from_millis(100));
 
-        // 2. Chạy đủ 6 chu kỳ lấy mẫu
+        // 2. Tìm slot trống thực tế trên chip (hoặc dọn sạch nếu đầy)
+        let fid = match self.find_free_fid_slot() {
+            Ok(s) => s,
+            Err(_) => (preferred_slot & 0x1F) as u16,
+        };
+        println!("[SENSOR] Slot đăng ký trên chip USB: {}", fid);
+
+        // 3. Chạy đủ 6 chu kỳ lấy mẫu
         for stage in 1..=ENROLL_TOTAL_STAGES {
             if self.cancel_requested.load(Ordering::SeqCst) {
                 return Err("Đã hủy bỏ quá trình quét vân tay".into());
@@ -307,7 +343,7 @@ impl UsbSensor {
 
             self.wait_for_finger_press(25)?;
 
-            // Rút trích đặc trưng GenChar vào slot
+            // Rút trích đặc trưng GenChar vào slot stage (1..6)
             let gen_res = self.send_command(&[CMD_GEN_CHAR, stage as u8], Duration::from_millis(1000))?;
             if gen_res.is_empty() || gen_res[0] != 0x00 {
                 return Err(format!("Lỗi nhận diện mẫu lần {} (Vui lòng thử lại)", stage));
@@ -324,7 +360,7 @@ impl UsbSensor {
             sleep(Duration::from_millis(200));
         }
 
-        // 3. Tổng hợp mô hình RegModel
+        // 4. Tổng hợp mô hình RegModel (CMD 0x05)
         {
             let mut p = self.enroll_progress.lock();
             p.message = "Đang tổng hợp dữ liệu vân tay trên chip...".into();
@@ -334,16 +370,25 @@ impl UsbSensor {
             return Err("Lỗi tổng hợp dữ liệu vân tay từ 6 mẫu".into());
         }
 
-        // 4. Lưu vào bộ nhớ flash trên chip
-        let fid = (slot_id & 0x1F) as u16;
+        // 5. Lưu vào bộ nhớ flash trên chip (StoreChar)
         let store_cmd = [CMD_STORE_CHAR, 0x01, (fid >> 8) as u8, (fid & 0xFF) as u8];
         let store_res = self.send_command(&store_cmd, Duration::from_millis(1500))?;
+
         if store_res.is_empty() || store_res[0] != 0x00 {
-            return Err(format!("Lỗi ghi mẫu vào chip USB (code: {:?})", store_res));
+            // Nếu lỗi slot (ví dụ code 0x29 hoặc 0x18), dọn dẹp flash và thử lại vào slot 0
+            println!("[SENSOR] [RETRY] StoreChar trả về mã {:?}, đang dọn dẹp chip và lưu vào slot 0...", store_res);
+            let _ = self.send_command(&[CMD_EMPTY], Duration::from_millis(1500));
+            let retry_store = [CMD_STORE_CHAR, 0x01, 0x00, 0x00];
+            let retry_res = self.send_command(&retry_store, Duration::from_millis(1500))?;
+            if retry_res.is_empty() || retry_res[0] != 0x00 {
+                return Err(format!("Lỗi ghi mẫu vào chip USB (code: {:?})", retry_res));
+            }
+            println!("[SENSOR] [+] Đã hoàn tất đăng ký vân tay vào chip USB slot 0!");
+            return Ok(0);
         }
 
         println!("[SENSOR] [+] Đã hoàn tất đăng ký vân tay vào chip USB slot {}!", fid);
-        Ok(())
+        Ok(fid)
     }
 
     /// Xác thực vân tay thật (cho WebAuthn)
