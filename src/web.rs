@@ -447,7 +447,9 @@ async fn index_html() -> Html<&'static str> {
             <div id="unlimitedFpStatus" class="badge-status" style="background: rgba(168, 85, 247, 0.15); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.3); margin-left: 0.5rem; display: none;">
                 ♾️ Vân tay: Không giới hạn
             </div>
-            <div id="debugStatus" class="badge-status badge-debug" style="display: none;">
+            <div id="debugStatus" class="badge-status badge-debug" style="display: none; margin-left: 0.5rem;">
+                DEBUG CLI BẬT
+            </div>
         </div>
     </header>
 
@@ -520,6 +522,7 @@ async fn index_html() -> Html<&'static str> {
                 <div class="card">
                     <div class="card-header">
                         <div class="card-title">🖐️ Quản lý Vân tay (<span id="fpCount">0</span><span id="fpLimitText">/10</span>)</div>
+                    </div>
                     <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem;">
                         Đăng ký tối đa 10 dấu vân tay. Khi bấm thêm, hệ thống sẽ chờ bạn chạm ngón tay 6 lần vào đầu đọc USB.
                     </p>
