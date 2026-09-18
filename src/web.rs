@@ -16,8 +16,8 @@ pub struct AppState {
     pub security: SecurityEngine,
     pub debug_mode: Arc<AtomicBool>,
     pub uhid_connected: Arc<AtomicBool>,
+    pub unlimited_fps: bool,
 }
-
 #[derive(Serialize)]
 pub struct SystemStatus {
     pub app_name: &'static str,
@@ -29,6 +29,7 @@ pub struct SystemStatus {
     pub credentials_count: usize,
     pub pin_configured: bool,
     pub fp_count: usize,
+    pub unlimited_fingerprints: bool,
 }
 
 #[derive(Deserialize)]
@@ -119,12 +120,12 @@ pub fn create_router(state: AppState) -> Router {
 
 async fn get_status(State(state): State<AppState>) -> Json<ApiResponse<SystemStatus>> {
     let creds = state.db.get_credentials().unwrap_or_default();
-    let sec = state.db.get_security_settings().unwrap_or(crate::db::SecuritySettings {
+    let sec = state.db.get_security_settings(state.unlimited_fps).unwrap_or(crate::db::SecuritySettings {
         pin_enabled: false,
         fp_enabled: true,
         require_uv: true,
         fp_count: 0,
-        max_fp_slots: 10,
+        max_fp_slots: if state.unlimited_fps { None } else { Some(10) },
         updated_at: "".into(),
     });
 
@@ -138,6 +139,7 @@ async fn get_status(State(state): State<AppState>) -> Json<ApiResponse<SystemSta
         credentials_count: creds.len(),
         pin_configured: sec.pin_enabled,
         fp_count: sec.fp_count,
+        unlimited_fingerprints: state.unlimited_fps,
     }))
 }
 
@@ -220,7 +222,7 @@ pub struct SecurityView {
 }
 
 async fn get_security(State(state): State<AppState>) -> Json<ApiResponse<SecurityView>> {
-    let settings = match state.db.get_security_settings() {
+    let settings = match state.db.get_security_settings(state.unlimited_fps) {
         Ok(s) => s,
         Err(e) => return Json(ApiResponse::err(e.to_string())),
     };
@@ -442,9 +444,10 @@ async fn index_html() -> Html<&'static str> {
                 <span class="dot"></span>
                 <span id="usbSensorText">USB Sensor 3274:8012</span>
             </div>
-            <div id="debugStatus" class="badge-status badge-debug" style="display: none;">
-                DEBUG CLI BẬT
+            <div id="unlimitedFpStatus" class="badge-status" style="background: rgba(168, 85, 247, 0.15); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.3); margin-left: 0.5rem; display: none;">
+                ♾️ Vân tay: Không giới hạn
             </div>
+            <div id="debugStatus" class="badge-status badge-debug" style="display: none;">
         </div>
     </header>
 
@@ -516,8 +519,7 @@ async fn index_html() -> Html<&'static str> {
                 <!-- Sinh trắc học Vân tay (Max 10) -->
                 <div class="card">
                     <div class="card-header">
-                        <div class="card-title">🖐️ Quản lý Vân tay (<span id="fpCount">0</span>/10)</div>
-                    </div>
+                        <div class="card-title">🖐️ Quản lý Vân tay (<span id="fpCount">0</span><span id="fpLimitText">/10</span>)</div>
                     <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem;">
                         Đăng ký tối đa 10 dấu vân tay. Khi bấm thêm, hệ thống sẽ chờ bạn chạm ngón tay 6 lần vào đầu đọc USB.
                     </p>
@@ -712,8 +714,9 @@ async fn index_html() -> Html<&'static str> {
                     }
 
                     document.getElementById('debugStatus').style.display = s.debug_mode ? 'inline-flex' : 'none';
+                    document.getElementById('unlimitedFpStatus').style.display = s.unlimited_fingerprints ? 'inline-flex' : 'none';
+                    document.getElementById('fpLimitText').innerText = s.unlimited_fingerprints ? ' - Không giới hạn' : '/10';
                     document.getElementById('credCount').innerText = s.credentials_count;
-                }
             } catch (e) {
                 console.error(e);
             }

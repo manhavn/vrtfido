@@ -43,15 +43,17 @@ pub struct SecurityEngine {
     sensor: UsbSensor,
     pending: Arc<Mutex<Option<ActiveVerification>>>,
     req_counter: Arc<AtomicU64>,
+    unlimited_fps: bool,
 }
 
 impl SecurityEngine {
-    pub fn new(db: Db, sensor: UsbSensor) -> Self {
+    pub fn new(db: Db, sensor: UsbSensor, unlimited_fps: bool) -> Self {
         Self {
             db,
             sensor,
             pending: Arc::new(Mutex::new(None)),
             req_counter: Arc::new(AtomicU64::new(1)),
+            unlimited_fps,
         }
     }
 
@@ -120,13 +122,14 @@ impl SecurityEngine {
     /// Thêm vân tay: Quét 6 lần thực tế từ thiết bị USB Microarray MAFP
     pub fn enroll_fingerprint(&self, name: &str) -> Result<crate::db::FingerprintRow, String> {
         let fps = self.db.get_fingerprints().map_err(|e| e.to_string())?;
-        if fps.len() >= 10 {
-            return Err("Đã đạt giới hạn tối đa 10 vân tay".into());
+        if !self.unlimited_fps && fps.len() >= 10 {
+            return Err("Đã đạt giới hạn tối đa 10 vân tay (Dùng tham số --unlimited-fps để mở khóa không giới hạn)".into());
         }
 
         let existing_slots: Vec<u32> = fps.iter().map(|f| f.slot_index).collect();
+        let max_slots = if self.unlimited_fps { 30 } else { 10 };
         let mut target_slot = 0u32;
-        for s in 0..10 {
+        for s in 0..max_slots {
             if !existing_slots.contains(&s) {
                 target_slot = s;
                 break;
@@ -201,7 +204,7 @@ impl SecurityEngine {
         operation: &str,
         user_name: &str,
     ) -> Result<String, String> {
-        let settings = self.db.get_security_settings().map_err(|e| e.to_string())?;
+        let settings = self.db.get_security_settings(self.unlimited_fps).map_err(|e| e.to_string())?;
         let is_security_setup = settings.pin_enabled || settings.fp_count > 0;
         let sensor_ok = UsbSensor::is_hardware_plugged();
 

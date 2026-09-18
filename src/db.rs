@@ -39,7 +39,7 @@ pub struct SecuritySettings {
     pub fp_enabled: bool,
     pub require_uv: bool,
     pub fp_count: usize,
-    pub max_fp_slots: usize,
+    pub max_fp_slots: Option<usize>,
     pub updated_at: String,
 }
 
@@ -331,7 +331,7 @@ impl Db {
         Ok(list)
     }
 
-    pub fn get_security_settings(&self) -> Result<SecuritySettings> {
+    pub fn get_security_settings(&self, unlimited_fps: bool) -> Result<SecuritySettings> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT pin_enabled, fp_enabled, require_uv, updated_at FROM security_settings WHERE id = 1"
@@ -347,7 +347,7 @@ impl Db {
             fp_enabled,
             require_uv,
             fp_count,
-            max_fp_slots: 10,
+            max_fp_slots: if unlimited_fps { None } else { Some(10) },
             updated_at,
         })
     }

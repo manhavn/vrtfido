@@ -56,13 +56,15 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 # Biên dịch phiên bản Release
 cargo build --release
 
-# Chạy ứng dụng thông thường
+# Chạy ứng dụng thông thường (giới hạn 10 vân tay)
 ./target/release/vrtfido
 
-# Hoặc chạy với chế độ debug chi tiết
-./target/release/vrtfido --debug
-```
+# Chạy với chế độ KHÔNG GIỚI HẠN VÂN TAY (--unlimited-fps hoặc -u)
+./target/release/vrtfido --unlimited-fps
 
+# Kết hợp chế độ không giới hạn vân tay và debug chi tiết
+./target/release/vrtfido --unlimited-fps --debug
+```
 ### 3. Trải nghiệm
 
 1. Mở trình duyệt truy cập Web CMS: **http://localhost:10209**

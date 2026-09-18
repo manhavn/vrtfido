@@ -707,6 +707,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 1. Phân tích tham số CLI
     let args: Vec<String> = std::env::args().collect();
     let debug_mode = args.iter().any(|a| a == "--debug" || a == "-d");
+    let unlimited_fps = args.iter().any(|a| a == "--unlimited-fps" || a == "--unlimited-fingerprints" || a == "-u");
 
     println!("============================================================");
     println!("             vrtfido - Virtual FIDO2 / WebAuthn CMS         ");
@@ -715,6 +716,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("[CLI] Chế độ DEBUG: ĐÃ BẬT (--debug)");
     } else {
         println!("[CLI] Chế độ DEBUG: TẮT (Dùng '--debug' nếu muốn xem packet thô)");
+    }
+    if unlimited_fps {
+        println!("[CLI] Chế độ VÂN TAY: KHÔNG GIỚI HẠN (--unlimited-fps)");
+    } else {
+        println!("[CLI] Chế độ VÂN TAY: GIỚI HẠN 10 (Dùng '--unlimited-fps' để bỏ giới hạn)");
     }
 
     // 2. Khởi tạo SQLite Database
@@ -725,7 +731,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 3. Khởi tạo SecurityEngine & AppState
     let sensor = sensor::UsbSensor::new();
-    let security = SecurityEngine::new(db.clone(), sensor.clone());
+    let security = SecurityEngine::new(db.clone(), sensor.clone(), unlimited_fps);
     let debug_mode_arc = Arc::new(AtomicBool::new(debug_mode));
     let uhid_connected = Arc::new(AtomicBool::new(false));
 
@@ -734,6 +740,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         security: security.clone(),
         debug_mode: debug_mode_arc.clone(),
         uhid_connected: uhid_connected.clone(),
+        unlimited_fps,
     };
 
     // 4. Khởi động Web CMS Server trên cổng 10209
