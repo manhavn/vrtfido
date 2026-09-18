@@ -56,7 +56,7 @@ pub struct AddFingerprintRequest {
 #[derive(Deserialize)]
 pub struct ApproveVerifyRequest {
     pub request_id: u64,
-    pub method: String, // "PIN" or "FINGERPRINT" or "SETUP"
+    pub method: String,
     pub pin: Option<String>,
 }
 
@@ -107,6 +107,9 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/security/pin", post(set_pin))
         .route("/api/security/pin", delete(remove_pin))
         .route("/api/security/fingerprints", post(add_fingerprint))
+        .route("/api/security/fingerprints/enroll/start", post(start_enroll_fingerprint))
+        .route("/api/security/fingerprints/enroll/status", get(get_enroll_status))
+        .route("/api/security/fingerprints/enroll/cancel", post(cancel_enroll))
         .route("/api/security/fingerprints/{id}", delete(delete_fingerprint))
         .route("/api/verify/pending", get(get_pending_verify))
         .route("/api/verify/approve", post(approve_verify))
@@ -254,22 +257,45 @@ async fn remove_pin(
     }
 }
 
+async fn start_enroll_fingerprint(
+    State(state): State<AppState>,
+    Json(payload): Json<AddFingerprintRequest>,
+) -> Json<ApiResponse<bool>> {
+    let name = payload.name.trim().to_string();
+    if name.is_empty() {
+        return Json(ApiResponse::err("Tên gợi nhớ vân tay không được để trống"));
+    }
+    let sec = state.security.clone();
+    tokio::task::spawn_blocking(move || {
+        let _ = sec.enroll_fingerprint(&name);
+    });
+    Json(ApiResponse::ok(true))
+}
+
+async fn get_enroll_status(
+    State(state): State<AppState>,
+) -> Json<ApiResponse<crate::sensor::EnrollProgress>> {
+    let p = state.security.sensor().get_enroll_progress();
+    Json(ApiResponse::ok(p))
+}
+
+async fn cancel_enroll(
+    State(state): State<AppState>,
+) -> Json<ApiResponse<bool>> {
+    state.security.sensor().cancel_current_op();
+    Json(ApiResponse::ok(true))
+}
+
 async fn add_fingerprint(
     State(state): State<AppState>,
     Json(payload): Json<AddFingerprintRequest>,
 ) -> Json<ApiResponse<crate::db::FingerprintRow>> {
-    if payload.name.trim().is_empty() {
+    let name = payload.name.trim().to_string();
+    if name.is_empty() {
         return Json(ApiResponse::err("Tên gợi nhớ vân tay không được để trống"));
     }
     let sec = state.security.clone();
-    let name = payload.name.trim().to_string();
-
-    let res = tokio::task::spawn_blocking(move || {
-        sec.enroll_fingerprint(&name, |stage, total, msg| {
-            println!("[ENROLL] Tiến trình: {}/{} - {}", stage, total, msg);
-        })
-    }).await;
-
+    let res = tokio::task::spawn_blocking(move || sec.enroll_fingerprint(&name)).await;
     match res {
         Ok(Ok(row)) => Json(ApiResponse::ok(row)),
         Ok(Err(e)) => Json(ApiResponse::err(e)),
@@ -353,7 +379,6 @@ async fn index_html() -> Html<&'static str> {
 
         .container { max-width: 1200px; width: 100%; margin: 0 auto; padding: 2rem; flex: 1; }
 
-        /* Navigation Tabs */
         .tabs { display: flex; gap: 0.5rem; border-bottom: 1px solid var(--border); margin-bottom: 2rem; }
         .tab-btn { background: none; border: none; color: var(--text-muted); padding: 0.75rem 1.25rem; font-size: 0.95rem; font-weight: 600; cursor: pointer; border-bottom: 2px solid transparent; transition: all 0.2s; display: flex; align-items: center; gap: 0.5rem; }
         .tab-btn:hover { color: var(--text-main); }
@@ -362,18 +387,15 @@ async fn index_html() -> Html<&'static str> {
         .tab-content { display: none; }
         .tab-content.active { display: block; }
 
-        /* Cards */
         .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.5rem; margin-bottom: 1.5rem; }
         .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
         .card-title { font-size: 1.15rem; font-weight: 600; display: flex; align-items: center; gap: 0.5rem; }
 
-        /* Tables */
         table { width: 100%; border-collapse: collapse; text-align: left; font-size: 0.9rem; }
         th { padding: 0.75rem 1rem; color: var(--text-muted); font-weight: 600; border-bottom: 1px solid var(--border); background: var(--bg-secondary); }
         td { padding: 0.85rem 1rem; border-bottom: 1px solid rgba(51, 65, 85, 0.5); }
         tr:hover td { background: rgba(51, 65, 85, 0.2); }
 
-        /* Buttons */
         .btn { padding: 0.5rem 1rem; border-radius: 6px; font-weight: 600; font-size: 0.85rem; cursor: pointer; border: 1px solid transparent; transition: all 0.15s; display: inline-flex; align-items: center; gap: 0.4rem; }
         .btn-primary { background: var(--accent); color: #020617; }
         .btn-primary:hover { background: var(--accent-hover); }
@@ -383,22 +405,17 @@ async fn index_html() -> Html<&'static str> {
         .btn-secondary:hover { background: #475569; }
         .btn-sm { padding: 0.3rem 0.6rem; font-size: 0.8rem; }
 
-        /* Form elements */
         .form-group { margin-bottom: 1rem; }
         .form-label { display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 0.35rem; color: var(--text-muted); }
         .form-control { width: 100%; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 6px; padding: 0.6rem 0.85rem; color: var(--text-main); font-size: 0.9rem; outline: none; }
         .form-control:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-glow); }
         .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
 
-        /* Verification Modal Banner */
-        #verifyModal { position: fixed; inset: 0; background: rgba(2, 6, 23, 0.85); backdrop-filter: blur(8px); display: none; justify-content: center; align-items: center; z-index: 100; animation: fadeIn 0.2s; }
+        .modal-overlay { position: fixed; inset: 0; background: rgba(2, 6, 23, 0.85); backdrop-filter: blur(8px); display: none; justify-content: center; align-items: center; z-index: 100; animation: fadeIn 0.2s; }
         .modal-box { background: var(--bg-card); border: 2px solid var(--accent); border-radius: 12px; width: 90%; max-width: 500px; padding: 2rem; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 0 50px var(--accent-glow); text-align: center; }
         .modal-icon { font-size: 3rem; margin-bottom: 1rem; }
         .modal-title { font-size: 1.35rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--accent); }
         .modal-rp { font-size: 1.1rem; font-weight: 600; color: var(--text-main); background: var(--bg-secondary); padding: 0.5rem 1rem; border-radius: 6px; display: inline-block; margin: 0.75rem 0; }
-        .pin-inputs { display: flex; justify-content: center; gap: 0.5rem; margin: 1.5rem 0; }
-        .pin-digit { width: 48px; height: 56px; font-size: 1.75rem; text-align: center; border-radius: 8px; border: 2px solid var(--border); background: var(--bg-secondary); color: var(--text-main); font-weight: 700; }
-        .pin-digit:focus { border-color: var(--accent); outline: none; }
 
         .tag-op { display: inline-block; padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.75rem; font-weight: 700; text-transform: uppercase; }
         .tag-make { background: rgba(56, 189, 248, 0.15); color: var(--accent); }
@@ -502,11 +519,11 @@ async fn index_html() -> Html<&'static str> {
                         <div class="card-title">🖐️ Quản lý Vân tay (<span id="fpCount">0</span>/10)</div>
                     </div>
                     <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem;">
-                        Cho phép đăng ký tối đa 10 dấu vân tay. Khi trang web yêu cầu xác thực, bạn có thể chạm cảm biến vân tay đã đăng ký.
+                        Đăng ký tối đa 10 dấu vân tay. Khi bấm thêm, hệ thống sẽ chờ bạn chạm ngón tay 6 lần vào đầu đọc USB.
                     </p>
                     <div class="form-group" style="display: flex; gap: 0.5rem;">
                         <input type="text" id="fpNameInput" class="form-control" placeholder="Tên gợi nhớ (vd: Ngón trỏ phải, Ngón cái trái...)">
-                        <button class="btn btn-primary" onclick="addFingerprint()">➕ Thêm</button>
+                        <button class="btn btn-primary" id="addFpBtn" onclick="addFingerprint()">➕ Thêm vân tay</button>
                     </div>
                     <div style="max-height: 250px; overflow-y: auto;">
                         <table>
@@ -524,14 +541,10 @@ async fn index_html() -> Html<&'static str> {
                 </div>
             </div>
 
-            <!-- Mở rộng sinh trắc học tương lai -->
             <div class="card">
                 <div class="card-header">
                     <div class="card-title">🚀 Chế độ Sinh trắc học mở rộng (Future Technologies)</div>
                 </div>
-                <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem;">
-                    Kiến trúc hệ thống đã được chuẩn hóa sẵn sàng tích hợp các công nghệ sinh trắc học đa phương thức khác:
-                </p>
                 <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem;">
                     <div style="background: var(--bg-secondary); padding: 1rem; border-radius: 8px; border: 1px dashed var(--border);">
                         <div style="font-size: 1.5rem; margin-bottom: 0.5rem;">👤</div>
@@ -584,9 +597,6 @@ async fn index_html() -> Html<&'static str> {
                     <div class="card-title">🐞 Logs Lỗi & Debug Hệ thống</div>
                     <button class="btn btn-secondary btn-sm" onclick="loadDebugLogs()">🔄 Làm mới</button>
                 </div>
-                <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem;">
-                    Bật flag <code>--debug</code> khi khởi chạy CLI để ghi nhận toàn bộ packet CTAPHID và CBOR chi tiết vào bảng này.
-                </p>
                 <div style="overflow-x: auto; max-height: 400px;">
                     <table>
                         <thead>
@@ -604,8 +614,24 @@ async fn index_html() -> Html<&'static str> {
         </div>
     </div>
 
-    <!-- VERIFICATION PROMPT MODAL (TỰ ĐỘNG BẬT KHI CÓ REQUEST) -->
-    <div id="verifyModal">
+    <!-- MODAL TIẾN TRÌNH QUÉT VÂN TAY 6 LẦN TRÊN USB -->
+    <div id="enrollModal" class="modal-overlay">
+        <div class="modal-box" style="max-width: 440px;">
+            <div class="modal-icon" id="enrollIcon" style="font-size: 3.5rem;">🖐️</div>
+            <div class="modal-title" id="enrollModalTitle">Đang quét vân tay USB</div>
+            <p id="enrollStepDesc" style="font-size: 1.25rem; font-weight: 700; color: var(--accent); margin: 0.5rem 0;">Lần 1 / 6</p>
+            <p id="enrollActionPrompt" style="font-size: 0.95rem; color: var(--text-main); margin-bottom: 1.5rem;">Vui lòng chạm ngón tay vào cảm biến USB...</p>
+            
+            <div style="background: var(--bg-secondary); border-radius: 9999px; height: 12px; width: 100%; overflow: hidden; margin-bottom: 1.5rem; border: 1px solid var(--border);">
+                <div id="enrollProgressBar" style="background: var(--accent); height: 100%; width: 16%; transition: width 0.3s;"></div>
+            </div>
+
+            <button class="btn btn-danger" onclick="cancelEnrollment()">❌ Hủy bỏ</button>
+        </div>
+    </div>
+
+    <!-- MODAL XÁC THỰC WEBAUTHN TỰ ĐỘNG BẬT KHI CÓ REQUEST -->
+    <div id="verifyModal" class="modal-overlay">
         <div class="modal-box">
             <div class="modal-icon" id="modalIcon">🛡️</div>
             <div class="modal-title" id="modalTitle">Yêu cầu xác thực WebAuthn</div>
@@ -615,7 +641,6 @@ async fn index_html() -> Html<&'static str> {
             </div>
             <p id="modalUserDesc" style="font-size: 0.85rem; margin-bottom: 1rem; color: var(--text-muted);"></p>
 
-            <!-- Giao diện khi chưa cài đặt bảo mật -->
             <div id="modalSetupView" style="display: none; margin-top: 1rem; border-top: 1px solid var(--border); padding-top: 1rem;">
                 <p style="font-size: 0.9rem; color: var(--warning); margin-bottom: 0.75rem; font-weight: 600;">
                     ⚠️ Bạn chưa cài đặt bảo mật. Vui lòng tạo mã PIN 6 số để kích hoạt:
@@ -627,15 +652,16 @@ async fn index_html() -> Html<&'static str> {
                 </div>
             </div>
 
-            <!-- Giao diện khi đã có bảo mật -->
             <div id="modalVerifyView" style="display: none; margin-top: 1rem;">
-                <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.5rem;">Nhập mã PIN 6 số hoặc Chạm vân tay để phê duyệt:</p>
+                <p style="font-size: 0.85rem; color: var(--accent); margin-bottom: 0.5rem; font-weight: 600;">
+                    💡 Bạn có thể chạm ngón tay vào cảm biến USB ngay bây giờ hoặc nhập mã PIN:
+                </p>
                 <input type="password" maxlength="6" id="verifyPinInput" class="form-control" placeholder="Nhập mã PIN 6 số" style="text-align: center; font-size: 1.25rem; letter-spacing: 0.5rem; margin-bottom: 1rem;" autofocus>
                 
                 <div style="display: flex; flex-direction: column; gap: 0.75rem;">
                     <div style="display: flex; gap: 0.5rem; justify-content: center;">
                         <button class="btn btn-primary" onclick="submitModalApproval('PIN')">🔑 Xác thực bằng PIN</button>
-                        <button class="btn btn-secondary" onclick="submitModalApproval('FINGERPRINT')">🖐️ Quét Vân tay</button>
+                        <button class="btn btn-secondary" onclick="submitModalApproval('FINGERPRINT')">🖐️ Chạm Vân tay USB</button>
                     </div>
                     <button class="btn btn-danger" style="margin-top: 0.5rem;" onclick="submitModalReject()">❌ Từ chối yêu cầu</button>
                 </div>
@@ -646,6 +672,7 @@ async fn index_html() -> Html<&'static str> {
     <!-- SCRIPT CHÍNH -->
     <script>
         let currentPromptId = null;
+        let enrollInterval = null;
 
         function switchTab(tabId) {
             document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
@@ -686,6 +713,7 @@ async fn index_html() -> Html<&'static str> {
 
                     document.getElementById('debugStatus').style.display = s.debug_mode ? 'inline-flex' : 'none';
                     document.getElementById('credCount').innerText = s.credentials_count;
+                }
             } catch (e) {
                 console.error(e);
             }
@@ -844,6 +872,7 @@ async fn index_html() -> Html<&'static str> {
             }
         }
 
+        // BẮT ĐẦU QUY TRÌNH QUÉT VÂN TAY 6 LẦN TRÊN USB (NON-BLOCKING)
         async function addFingerprint() {
             const nameInput = document.getElementById('fpNameInput');
             const name = nameInput.value.trim();
@@ -852,35 +881,75 @@ async fn index_html() -> Html<&'static str> {
                 return;
             }
 
-            const btn = event ? event.target : null;
-            const originalText = btn ? btn.innerText : "";
-            if (btn) {
-                btn.disabled = true;
-                btn.innerText = "🖐️ Đang chờ chạm USB (3 lần)...";
+            document.getElementById('enrollModal').style.display = 'flex';
+            document.getElementById('enrollStepDesc').innerText = 'Khởi tạo...';
+            document.getElementById('enrollActionPrompt').innerText = 'Đang kết nối cảm biến USB...';
+            document.getElementById('enrollProgressBar').style.width = '10%';
+            document.getElementById('enrollIcon').innerText = '🖐️';
+
+            const res = await fetch('/api/security/fingerprints/enroll/start', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name })
+            });
+            const json = await res.json();
+            if (!json.success) {
+                alert("Lỗi: " + json.error);
+                document.getElementById('enrollModal').style.display = 'none';
+                return;
             }
 
+            if (enrollInterval) clearInterval(enrollInterval);
+            enrollInterval = setInterval(pollEnrollProgress, 250);
+        }
+
+        async function pollEnrollProgress() {
             try {
-                const res = await fetch('/api/security/fingerprints', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ name })
-                });
+                const res = await fetch('/api/security/fingerprints/enroll/status');
                 const json = await res.json();
-                if (json.success) {
-                    nameInput.value = '';
-                    alert("Quét và thêm vân tay từ USB thành công!");
-                    loadSecurity();
-                } else {
-                    alert("Lỗi quét vân tay: " + json.error);
+                if (json.success && json.data) {
+                    const p = json.data;
+                    if (p.active) {
+                        const pct = Math.round((p.stage / p.total_stages) * 100);
+                        document.getElementById('enrollProgressBar').style.width = pct + '%';
+                        document.getElementById('enrollStepDesc').innerText = `Lần ${p.stage} / ${p.total_stages}`;
+                        document.getElementById('enrollActionPrompt').innerText = p.message;
+                        document.getElementById('enrollIcon').innerText = p.status === 'finger_lift' ? '👆' : '🖐️';
+                    } else if (p.status === 'completed') {
+                        clearInterval(enrollInterval);
+                        enrollInterval = null;
+                        document.getElementById('enrollProgressBar').style.width = '100%';
+                        document.getElementById('enrollIcon').innerText = '✅';
+                        document.getElementById('enrollStepDesc').innerText = 'Thành công!';
+                        document.getElementById('enrollActionPrompt').innerText = 'Đã quét đủ 6 mẫu và lưu vào chip USB!';
+                        setTimeout(() => {
+                            document.getElementById('enrollModal').style.display = 'none';
+                            document.getElementById('fpNameInput').value = '';
+                            loadSecurity();
+                        }, 1200);
+                    } else if (p.status === 'error') {
+                        clearInterval(enrollInterval);
+                        enrollInterval = null;
+                        document.getElementById('enrollIcon').innerText = '❌';
+                        document.getElementById('enrollStepDesc').innerText = 'Thất bại';
+                        document.getElementById('enrollActionPrompt').innerText = p.error || 'Có lỗi xảy ra';
+                        setTimeout(() => {
+                            document.getElementById('enrollModal').style.display = 'none';
+                        }, 2500);
+                    }
                 }
             } catch (e) {
-                alert("Lỗi kết nối: " + e);
-            } finally {
-                if (btn) {
-                    btn.disabled = false;
-                    btn.innerText = originalText;
-                }
+                console.error(e);
             }
+        }
+
+        async function cancelEnrollment() {
+            if (enrollInterval) {
+                clearInterval(enrollInterval);
+                enrollInterval = null;
+            }
+            await fetch('/api/security/fingerprints/enroll/cancel', { method: 'POST' });
+            document.getElementById('enrollModal').style.display = 'none';
         }
 
         async function deleteFp(id) {

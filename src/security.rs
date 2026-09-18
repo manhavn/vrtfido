@@ -1,5 +1,5 @@
 use crate::db::Db;
-use crate::sensor::UsbSensor;
+use crate::sensor::{SensorBusyMode, UsbSensor};
 use parking_lot::Mutex;
 use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -117,18 +117,13 @@ impl SecurityEngine {
         }
     }
 
-    /// Thêm vân tay: Quét thực tế từ thiết bị USB Microarray MAFP
-    pub fn enroll_fingerprint<F>(&self, name: &str, progress_cb: F) -> Result<crate::db::FingerprintRow, String>
-    where
-        F: FnMut(u32, u32, &str),
-    {
-        // 1. Kiểm tra giới hạn 10 vân tay trước
+    /// Thêm vân tay: Quét 6 lần thực tế từ thiết bị USB Microarray MAFP
+    pub fn enroll_fingerprint(&self, name: &str) -> Result<crate::db::FingerprintRow, String> {
         let fps = self.db.get_fingerprints().map_err(|e| e.to_string())?;
         if fps.len() >= 10 {
             return Err("Đã đạt giới hạn tối đa 10 vân tay".into());
         }
 
-        // Tìm slot tiếp theo
         let existing_slots: Vec<u32> = fps.iter().map(|f| f.slot_index).collect();
         let mut target_slot = 0u32;
         for s in 0..10 {
@@ -138,15 +133,12 @@ impl SecurityEngine {
             }
         }
 
-        // 2. Thử kết nối và quét trực tiếp từ USB
+        // Quét mẫu 6 lần trên phần cứng thật
         if UsbSensor::is_hardware_plugged() {
-            println!("[SECURITY] Bắt đầu chu trình quét vân tay thật trên USB cho slot {}...", target_slot);
-            self.sensor.enroll_fingerprint(target_slot, progress_cb)?;
-        } else {
-            println!("[SECURITY] Không phát hiện USB vân tay, lưu slot ảo.");
+            println!("[SECURITY] Bắt đầu chu trình quét vân tay 6 mẫu trên USB slot {}...", target_slot);
+            self.sensor.enroll_fingerprint_pipeline(target_slot)?;
         }
 
-        // 3. Lưu thông tin vào SQLite
         let row = self.db.add_fingerprint(name).map_err(|e| e.to_string())?;
         self.db.log_auth(
             None,
@@ -154,7 +146,7 @@ impl SecurityEngine {
             "FingerprintEnrolled",
             "SUCCESS",
             "FINGERPRINT",
-            Some(&format!("Đã quét và lưu vân tay '{}' vào USB & DB slot {}", row.name, row.slot_index)),
+            Some(&format!("Đã quét đủ 6 mẫu và lưu vân tay '{}' vào USB slot {}", row.name, row.slot_index)),
         );
         Ok(row)
     }
@@ -233,13 +225,8 @@ impl SecurityEngine {
             "\n[SECURITY] >>> YÊU CẦU XÁC THỰC MỚI (Request #{} - RP: '{}', Thao tác: '{}') <<<",
             req_id, rp_id, operation
         );
-        if sensor_ok {
-            println!("[SECURITY] >>> Bạn có thể chạm ngón tay vào cảm biến USB hoặc dùng Web CMS <<<");
-        } else {
-            println!("[SECURITY] >>> Mở Web CMS http://localhost:10209 để duyệt hoặc từ chối <<<");
-        }
 
-        // Tự động lắng nghe chạm cảm biến vân tay song song nếu USB đang cắm!
+        // Lắng nghe chạm ngón tay trên USB nếu USB rảnh
         let sensor_clone = self.sensor.clone();
         let pending_ref = self.pending.clone();
         let db_clone = self.db.clone();
@@ -250,25 +237,33 @@ impl SecurityEngine {
             if !UsbSensor::is_hardware_plugged() {
                 return;
             }
-            // Lắng nghe chạm ngón tay trong tối đa 55s
-            if let Ok(true) = sensor_clone.wait_for_finger_press(55) {
-                let mut guard = pending_ref.lock();
-                if let Some(mut active) = guard.take() {
-                    if active.prompt.request_id == req_id {
-                        if let Some(responder) = active.responder.take() {
-                            let _ = responder.send(Ok("USB_FINGERPRINT_HARDWARE".to_string()));
+            // Chờ nếu sensor đang bận đăng ký
+            let start = Instant::now();
+            while start.elapsed() < Duration::from_secs(55) {
+                if sensor_clone.busy_mode() == SensorBusyMode::Idle {
+                    if let Ok(true) = sensor_clone.wait_for_finger_press(2) {
+                        let mut guard = pending_ref.lock();
+                        if let Some(mut active) = guard.take() {
+                            if active.prompt.request_id == req_id {
+                                if let Some(responder) = active.responder.take() {
+                                    let _ = responder.send(Ok("USB_FINGERPRINT_HARDWARE".to_string()));
+                                }
+                                db_clone.log_auth(
+                                    None,
+                                    &rp_id_owned,
+                                    &op_owned,
+                                    "SUCCESS",
+                                    "FINGERPRINT_USB",
+                                    Some("Xác thực thành công bằng chạm cảm biến USB phần cứng"),
+                                );
+                                return;
+                            } else {
+                                *guard = Some(active);
+                            }
                         }
-                        db_clone.log_auth(
-                            None,
-                            &rp_id_owned,
-                            &op_owned,
-                            "SUCCESS",
-                            "FINGERPRINT_USB",
-                            Some("Xác thực thành công bằng chạm cảm biến USB phần cứng"),
-                        );
-                    } else {
-                        *guard = Some(active);
                     }
+                } else {
+                    std::thread::sleep(Duration::from_millis(300));
                 }
             }
         });
@@ -321,12 +316,12 @@ impl SecurityEngine {
                     Ok(())
                 }
                 "FINGERPRINT" => {
-                    // Nếu USB cắm, chờ người dùng chạm ngón tay thật trong 15s
+                    // Xác thực vân tay
                     if UsbSensor::is_hardware_plugged() {
                         println!("[SECURITY] Đang chờ bạn chạm ngón tay vào cảm biến USB...");
-                        if let Err(e) = self.sensor.wait_for_finger_press(15) {
+                        if let Err(e) = self.sensor.verify_fingerprint(15) {
                             *guard = Some(active);
-                            return Err(format!("Chưa phát hiện chạm vân tay trên USB: {}", e));
+                            return Err(format!("Xác thực vân tay thất bại: {}", e));
                         }
                     }
 
