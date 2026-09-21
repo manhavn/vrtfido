@@ -25,6 +25,8 @@ fn pg_err(e: postgres::Error) -> DbError {
             msg.push_str(&format!(" [constraint: {}]", constraint));
         }
         DbError::Postgres(msg)
+    } else if let Some(source) = std::error::Error::source(&e) {
+        DbError::Postgres(format!("{}: {}", e, source))
     } else {
         DbError::Postgres(e.to_string())
     }

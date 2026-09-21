@@ -865,6 +865,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .filter(|a| *a != "--daemon" && *a != "-b")
             .cloned()
             .collect();
+        println!("[UHID] Kiểm tra quyền truy cập /dev/uhid...");
+        ensure_uhid_permission();
 
         let current_exe = std::env::current_exe()?;
         let log_file_path = std::env::temp_dir().join("vrtfido.log");
@@ -887,6 +889,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         std::thread::sleep(std::time::Duration::from_millis(300));
         if unsafe { libc::kill(child_pid, 0) != 0 } {
+            let _ = std::fs::remove_file(&pid_file);
             eprintln!("[DAEMON] [!] Tiến trình chạy ngầm khởi động thất bại. Hãy kiểm tra log tại: {}", log_file_path.display());
             std::process::exit(1);
         }

@@ -134,7 +134,7 @@ async fn get_status(State(state): State<AppState>) -> Json<ApiResponse<SystemSta
 
     Json(ApiResponse::ok(SystemStatus {
         app_name: "vrtfido",
-        version: "1.0.0",
+        version: env!("CARGO_PKG_VERSION"),
         port: 10209,
         uhid_connected: state.uhid_connected.load(Ordering::SeqCst),
         usb_sensor_connected: crate::sensor::UsbSensor::is_hardware_plugged(),
