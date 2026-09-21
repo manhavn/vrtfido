@@ -6,6 +6,30 @@ use postgres::{Client, NoTls};
 use std::sync::mpsc;
 use std::sync::Arc;
 
+fn pg_err(e: postgres::Error) -> DbError {
+    if let Some(d) = e.as_db_error() {
+        let mut msg = format!("db error: {}", d.message());
+        if let Some(detail) = d.detail() {
+            msg.push_str(&format!(" [detail: {}]", detail));
+        }
+        if let Some(hint) = d.hint() {
+            msg.push_str(&format!(" [hint: {}]", hint));
+        }
+        if let Some(table) = d.table() {
+            msg.push_str(&format!(" [table: {}]", table));
+        }
+        if let Some(column) = d.column() {
+            msg.push_str(&format!(" [column: {}]", column));
+        }
+        if let Some(constraint) = d.constraint() {
+            msg.push_str(&format!(" [constraint: {}]", constraint));
+        }
+        DbError::Postgres(msg)
+    } else {
+        DbError::Postgres(e.to_string())
+    }
+}
+
 struct PgWorker {
     sender: mpsc::Sender<Box<dyn FnOnce(&mut Client) + Send>>,
 }
@@ -20,7 +44,7 @@ impl PgWorker {
             let mut client = match Client::connect(&url_owned, NoTls) {
                 Ok(c) => c,
                 Err(e) => {
-                    let _ = init_tx.send(Err(DbError::Postgres(e.to_string())));
+                    let _ = init_tx.send(Err(pg_err(e)));
                     return;
                 }
             };
@@ -81,9 +105,8 @@ impl PgWorker {
 
                  CREATE INDEX IF NOT EXISTS idx_credentials_rp_user ON credentials(rp_id, user_name);"
             );
-
             if let Err(e) = init_res {
-                let _ = init_tx.send(Err(DbError::Postgres(e.to_string())));
+                let _ = init_tx.send(Err(pg_err(e)));
                 return;
             }
 
@@ -317,7 +340,17 @@ impl DbBackend for PostgresBackend {
             client.execute(
                 "INSERT INTO credentials (id, rp_id, user_id, user_name, user_display_name,
                                           private_key_sec1, public_key_cose, sign_count, created_at, last_used_at)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                 ON CONFLICT (id) DO UPDATE SET
+                     rp_id = EXCLUDED.rp_id,
+                     user_id = EXCLUDED.user_id,
+                     user_name = EXCLUDED.user_name,
+                     user_display_name = EXCLUDED.user_display_name,
+                     private_key_sec1 = EXCLUDED.private_key_sec1,
+                     public_key_cose = EXCLUDED.public_key_cose,
+                     sign_count = EXCLUDED.sign_count,
+                     created_at = EXCLUDED.created_at,
+                     last_used_at = EXCLUDED.last_used_at",
                 &[
                     &id_hex,
                     &rp_id,
@@ -330,7 +363,7 @@ impl DbBackend for PostgresBackend {
                     &created_at,
                     &last_used_at,
                 ],
-            ).map_err(|e| DbError::Postgres(e.to_string()))?;
+            ).map_err(pg_err)?;
             Ok(())
         })
     }
@@ -522,7 +555,7 @@ impl DbBackend for PostgresBackend {
                     &settings.require_uv,
                     &settings.updated_at,
                 ],
-            ).map_err(|e| DbError::Postgres(e.to_string()))?;
+            ).map_err(pg_err)?;
             Ok(())
         })
     }
@@ -614,11 +647,15 @@ impl DbBackend for PostgresBackend {
         let name = name.to_string();
         let enrolled_at = enrolled_at.to_string();
         self.worker.run(move |client| {
+            let _ = client.execute("DELETE FROM fingerprints WHERE slot_index = $1 OR id = $2", &[&slot, &id]);
             client.execute(
-                "INSERT INTO fingerprints (id, slot_index, name, enrolled_at) VALUES ($1, $2, $3, $4)
-                 ON CONFLICT(id) DO UPDATE SET slot_index = EXCLUDED.slot_index, name = EXCLUDED.name, enrolled_at = EXCLUDED.enrolled_at",
+                "INSERT INTO fingerprints (id, slot_index, name, enrolled_at) VALUES ($1, $2, $3, $4)",
                 &[&id, &slot, &name, &enrolled_at],
-            ).map_err(|e| DbError::Postgres(e.to_string()))?;
+            ).map_err(pg_err)?;
+            let _ = client.execute(
+                "SELECT setval(pg_get_serial_sequence('fingerprints', 'id'), coalesce((SELECT max(id) FROM fingerprints), 1))",
+                &[],
+            );
             Ok(())
         })
     }
@@ -655,7 +692,11 @@ impl DbBackend for PostgresBackend {
                      details = EXCLUDED.details,
                      created_at = EXCLUDED.created_at",
                 &[&id, &cid, &rp_id, &operation, &status, &auth_method, &details, &created_at],
-            ).map_err(|e| DbError::Postgres(e.to_string()))?;
+            ).map_err(pg_err)?;
+            let _ = client.execute(
+                "SELECT setval(pg_get_serial_sequence('auth_logs', 'id'), coalesce((SELECT max(id) FROM auth_logs), 1))",
+                &[],
+            );
             Ok(())
         })
     }
@@ -683,7 +724,11 @@ impl DbBackend for PostgresBackend {
                      message = EXCLUDED.message,
                      created_at = EXCLUDED.created_at",
                 &[&id, &level, &component, &message, &created_at],
-            ).map_err(|e| DbError::Postgres(e.to_string()))?;
+            ).map_err(pg_err)?;
+            let _ = client.execute(
+                "SELECT setval(pg_get_serial_sequence('debug_logs', 'id'), coalesce((SELECT max(id) FROM debug_logs), 1))",
+                &[],
+            );
             Ok(())
         })
     }

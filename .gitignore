@@ -4,3 +4,4 @@
 *.db-wal
 .DS_Store
 postgres/
+backup*.json
