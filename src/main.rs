@@ -780,9 +780,127 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 1. Phân tích tham số CLI & Biến môi trường
     let args: Vec<String> = std::env::args().collect();
     let show_help = args.iter().any(|a| a == "--help" || a == "-h");
+    let check_quit = args.iter().any(|a| a == "--quit" || a == "-q" || a == "--stop");
+    let check_daemon = args.iter().any(|a| a == "--daemon" || a == "-b");
     let debug_mode = args.iter().any(|a| a == "--debug" || a == "-d");
     let unlimited_fps = args.iter().any(|a| a == "--unlimited-fps" || a == "--unlimited-fingerprints" || a == "-u");
     let exit_after_import = args.iter().any(|a| a == "--exit-after-import");
+    let pid_file = std::env::temp_dir().join("vrtfido.pid");
+
+    // Xử lý --quit: Dừng tiến trình vrtfido đang chạy
+    if check_quit {
+        let running_pid: Option<i32> = if pid_file.exists() {
+            std::fs::read_to_string(&pid_file)
+                .ok()
+                .and_then(|s| s.trim().parse::<i32>().ok())
+                .filter(|&pid| unsafe { libc::kill(pid, 0) == 0 })
+        } else {
+            None
+        };
+
+        let target_pid = running_pid.or_else(|| {
+            let my_pid = std::process::id() as i32;
+            if let Ok(entries) = std::fs::read_dir("/proc") {
+                for entry in entries.flatten() {
+                    if let Ok(name) = entry.file_name().into_string() {
+                        if let Ok(pid) = name.parse::<i32>() {
+                            if pid != my_pid {
+                                let comm_path = format!("/proc/{}/comm", pid);
+                                if let Ok(comm) = std::fs::read_to_string(comm_path) {
+                                    if comm.trim() == "vrtfido" {
+                                        return Some(pid);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            None
+        });
+
+        if let Some(pid) = target_pid {
+            println!("[DAEMON] Đang gửi tín hiệu dừng tới tiến trình vrtfido (PID: {})...", pid);
+            unsafe { libc::kill(pid, libc::SIGTERM) };
+
+            let mut stopped = false;
+            for _ in 0..50 {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                if unsafe { libc::kill(pid, 0) != 0 } {
+                    stopped = true;
+                    break;
+                }
+            }
+
+            if !stopped {
+                println!("[DAEMON] Tiến trình chưa phản hồi, buộc dừng (SIGKILL)...");
+                unsafe { libc::kill(pid, libc::SIGKILL) };
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+
+            let _ = std::fs::remove_file(&pid_file);
+            println!("[DAEMON] [+] Đã dừng tiến trình vrtfido (PID: {}) thành công.", pid);
+            return Ok(());
+        } else {
+            let _ = std::fs::remove_file(&pid_file);
+            println!("[DAEMON] [-] Không tìm thấy tiến trình vrtfido nào đang chạy.");
+            return Ok(());
+        }
+    }
+
+    // Xử lý --daemon: Chạy ngầm trong background
+    if check_daemon {
+        if let Ok(content) = std::fs::read_to_string(&pid_file) {
+            if let Ok(existing_pid) = content.trim().parse::<i32>() {
+                if unsafe { libc::kill(existing_pid, 0) == 0 } {
+                    eprintln!("[DAEMON] [!] vrtfido đã đang chạy với PID: {}. Dùng 'vrtfido --quit' để dừng trước.", existing_pid);
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        let child_args: Vec<String> = args
+            .iter()
+            .skip(1)
+            .filter(|a| *a != "--daemon" && *a != "-b")
+            .cloned()
+            .collect();
+
+        let current_exe = std::env::current_exe()?;
+        let log_file_path = std::env::temp_dir().join("vrtfido.log");
+        let log_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_file_path)?;
+
+        let err_file = log_file.try_clone()?;
+
+        let child = std::process::Command::new(current_exe)
+            .args(&child_args)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::from(log_file))
+            .stderr(std::process::Stdio::from(err_file))
+            .spawn()?;
+
+        let child_pid = child.id() as i32;
+        let _ = std::fs::write(&pid_file, child_pid.to_string());
+
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        if unsafe { libc::kill(child_pid, 0) != 0 } {
+            eprintln!("[DAEMON] [!] Tiến trình chạy ngầm khởi động thất bại. Hãy kiểm tra log tại: {}", log_file_path.display());
+            std::process::exit(1);
+        }
+
+        println!("============================================================");
+        println!("             vrtfido - Virtual FIDO2 / WebAuthn CMS         ");
+        println!("============================================================");
+        println!("[DAEMON] [+] Đã khởi động vrtfido chạy ngầm thành công!");
+        println!("[DAEMON]     - Tiến trình (PID): {}", child_pid);
+        println!("[DAEMON]     - Log file: {}", log_file_path.display());
+        println!("[DAEMON]     - Web CMS: http://localhost:10209");
+        println!("[DAEMON] Dùng 'vrtfido --quit' để dừng tiến trình khi cần.\n");
+        return Ok(());
+    }
 
     if show_help {
         println!("============================================================");
@@ -790,6 +908,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("============================================================");
         println!("Cách dùng: vrtfido [TÙY CHỌN]\n");
         println!("Tùy chọn:");
+        println!("      --daemon, -b              Chạy ứng dụng ở chế độ nền (daemon ngầm)");
+        println!("  -q, --quit, --stop            Dừng tiến trình vrtfido đang chạy (cả foreground lẫn daemon)");
         println!("  -d, --debug                   Bật chế độ debug packet");
         println!("  -u, --unlimited-fps           Không giới hạn số lượng vân tay (mặc định: 10)");
         println!("  -D, --database, --db <SPEC>   Đường dẫn DB hoặc Connection URL (mặc định: authenticator.db)");
@@ -1087,8 +1207,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // Giữ tiến trình chính chạy vô hạn
-    tokio::signal::ctrl_c().await?;
-    println!("\n[!] Nhận tín hiệu dừng (Ctrl+C). Đang tắt ứng dụng...");
+    // Ghi PID file để phục vụ lệnh --quit
+    let _ = std::fs::write(&pid_file, std::process::id().to_string());
+
+    // Giữ tiến trình chính chạy và lắng nghe tín hiệu dừng SIGINT (Ctrl+C) hoặc SIGTERM (--quit)
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {
+            println!("\n[!] Nhận tín hiệu dừng (Ctrl+C). Đang tắt ứng dụng...");
+        }
+        _ = sigterm.recv() => {
+            println!("\n[!] Nhận tín hiệu dừng (SIGTERM). Đang tắt ứng dụng...");
+        }
+    }
+
+    let _ = std::fs::remove_file(&pid_file);
     Ok(())
 }

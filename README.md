@@ -65,12 +65,23 @@ cargo build --release
 # Chạy ứng dụng thông thường (giới hạn 10 vân tay)
 ./target/release/vrtfido
 
+# Chạy ngầm trong nền (DAEMON MODE):
+./target/release/vrtfido --daemon
+
+# Chạy ngầm kết hợp PostgreSQL và chế độ vân tay không giới hạn:
+./target/release/vrtfido --database "postgresql://postgres:vrtfido@127.0.0.1:5435/postgres" --unlimited-fps --daemon
+
+# Dừng tiến trình vrtfido đang chạy (cả daemon lẫn foreground):
+./target/release/vrtfido --quit
+
+# Xem log khi chạy ngầm:
+tail -f /tmp/vrtfido.log
+
 # Chạy với chế độ KHÔNG GIỚI HẠN VÂN TAY (--unlimited-fps hoặc -u)
 ./target/release/vrtfido --unlimited-fps
 
 # Kết hợp chế độ không giới hạn vân tay và debug chi tiết
 ./target/release/vrtfido --unlimited-fps --debug
-```
 ### 3. Trải nghiệm
 
 1. Mở trình duyệt truy cập Web CMS: **http://localhost:10209**

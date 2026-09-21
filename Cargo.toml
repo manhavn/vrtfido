@@ -21,3 +21,4 @@ mysql = "28.0.2"
 url = "2.5.8"
 libsql = { version = "0.9.30", default-features = false, features = ["remote", "tls"] }
 chrono = "0.4.45"
+libc = "0.2.189"

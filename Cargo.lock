@@ -2687,6 +2687,7 @@ dependencies = [
  "chrono",
  "ciborium",
  "hex",
+ "libc",
  "libsql",
  "mysql",
  "p256",
