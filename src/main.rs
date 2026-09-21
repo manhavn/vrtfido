@@ -11,6 +11,7 @@ use security::SecurityEngine;
 use sha2::{Digest, Sha256};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
+use std::process::Command;
 use std::mem::{size_of, zeroed};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
@@ -132,10 +133,17 @@ pub struct UhidDevice {
 
 impl UhidDevice {
     pub fn open() -> std::io::Result<Self> {
-        let mut file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open("/dev/uhid")?;
+        let mut file = match OpenOptions::new().read(true).write(true).open("/dev/uhid") {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied || e.kind() == std::io::ErrorKind::NotFound => {
+                if ensure_uhid_permission() {
+                    OpenOptions::new().read(true).write(true).open("/dev/uhid")?
+                } else {
+                    return Err(e);
+                }
+            }
+            Err(e) => return Err(e),
+        };
 
         let mut ev: UhidEvent = unsafe { zeroed() };
         ev.event_type = UHID_CREATE2;
@@ -188,6 +196,60 @@ impl UhidDevice {
         }
         self.write_event(&ev)
     }
+}
+
+/// Kiểm tra xem /dev/uhid có thể truy cập (read + write) không.
+/// Nếu chưa có quyền, tự động gọi sudo/pkexec để nạp module và cấp quyền chmod 666.
+pub fn ensure_uhid_permission() -> bool {
+    // 1. Kiểm tra nếu đã mở được /dev/uhid với quyền read + write
+    if OpenOptions::new().read(true).write(true).open("/dev/uhid").is_ok() {
+        return true;
+    }
+
+    println!("[UHID] [!] Chưa có quyền truy cập /dev/uhid.");
+    println!("[UHID] [*] Đang tự động yêu cầu cấp quyền qua sudo...");
+
+    // Nạp kernel module uhid nếu chưa nạp và cấp quyền đọc/ghi
+    let cmd_str = "modprobe uhid 2>/dev/null || true; chmod 666 /dev/uhid";
+
+    // 2. Ưu tiên chạy sudo (hoạt động tốt trong terminal)
+    let sudo_status = Command::new("sudo")
+        .args(["sh", "-c", cmd_str])
+        .status();
+
+    let success = match sudo_status {
+        Ok(s) if s.success() => true,
+        _ => {
+            // Nếu sudo thất bại hoặc không có TTY, thử qua pkexec (GUI dialog trên Linux Desktop)
+            if std::env::var("DISPLAY").is_ok() || std::env::var("WAYLAND_DISPLAY").is_ok() {
+                if let Ok(pk_status) = Command::new("pkexec")
+                    .args(["sh", "-c", cmd_str])
+                    .status()
+                {
+                    pk_status.success()
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        }
+    };
+
+    if success {
+        if OpenOptions::new().read(true).write(true).open("/dev/uhid").is_ok() {
+            println!("[UHID] [+] Đã cấp quyền truy cập /dev/uhid thành công!");
+            return true;
+        }
+    }
+
+    eprintln!("[UHID] [-] Không thể tự động cấp quyền cho /dev/uhid qua sudo.");
+    eprintln!("[UHID] [!] Bạn có thể cấp quyền thủ công bằng lệnh:");
+    eprintln!("          sudo chmod 666 /dev/uhid");
+    eprintln!("       hoặc cấu hình udev rule vĩnh viễn (khuyên dùng):");
+    eprintln!("          echo 'KERNEL==\"uhid\", MODE=\"0666\"' | sudo tee /etc/udev/rules.d/99-uhid.rules");
+    eprintln!("          sudo udevadm control --reload-rules && sudo udevadm trigger");
+    false
 }
 
 // --- 2. CTAPHID Framing & Reassembly ---
@@ -734,13 +796,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("[CLI] Chế độ VÂN TAY: GIỚI HẠN 10 (Dùng '--unlimited-fps' để bỏ giới hạn)");
     }
 
-    // 2. Khởi tạo SQLite Database
+    // 2. Kiểm tra và tự động cấp quyền truy cập /dev/uhid qua sudo nếu chưa có
+    println!("[UHID] Kiểm tra quyền truy cập /dev/uhid...");
+    ensure_uhid_permission();
+
+    // 3. Khởi tạo SQLite Database
     let db_path = "authenticator.db";
     let db = Db::open(db_path)?;
     println!("[DB] Khởi tạo SQLite thành công: {}", db_path);
     db.log_debug("INFO", "SYSTEM", "Virtual FIDO2 Manager started");
 
-    // 3. Khởi tạo SecurityEngine & AppState
+    // 4. Khởi tạo SecurityEngine & AppState
     let sensor = sensor::UsbSensor::new();
     let security = SecurityEngine::new(db.clone(), sensor.clone(), unlimited_fps);
     let debug_mode_arc = Arc::new(AtomicBool::new(debug_mode));
@@ -754,7 +820,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         unlimited_fps,
     };
 
-    // 4. Khởi động Web CMS Server trên cổng 10209
+    // 5. Khởi động Web CMS Server trên cổng 10209
     let app = web::create_router(app_state);
     let port = 10209;
     let addr = format!("0.0.0.0:{}", port);
@@ -769,7 +835,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // 5. Khởi động UHID Daemon trong dedicated thread
+    // 6. Khởi động UHID Daemon trong dedicated thread
     let tokio_handle = tokio::runtime::Handle::current();
     let uhid_flag = uhid_connected.clone();
     let db_uhid = db.clone();

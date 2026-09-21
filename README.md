@@ -39,13 +39,14 @@
 ## 🚀 Cài đặt & Sử dụng
 
 ### 1. Cấp quyền truy cập `/dev/uhid`
-Do Linux kernel bảo vệ file ký tự `/dev/uhid`, bạn cần cấp quyền:
+Ứng dụng **đã được tích hợp sẵn tính năng tự động kiểm tra và yêu cầu cấp quyền qua `sudo`/`pkexec`** mỗi khi khởi động nếu chưa có quyền truy cập `/dev/uhid`.
+
+Tuy nhiên, nếu bạn muốn cấp quyền thủ công hoặc cố định vĩnh viễn (để không bao giờ bị hỏi mật khẩu sudo):
 
 ```bash
-# Cách 1: Cấp quyền tạm thời
-sudo chmod 666 /dev/uhid
+# Cách 1: Tự động - Ứng dụng sẽ tự phát hiện và gọi sudo khi khởi động
 
-# Cách 2: Cấu hình udev rule vĩnh viễn
+# Cách 2: Cấu hình udev rule vĩnh viễn (Khuyên dùng - không cần hỏi sudo mỗi khi reboot)
 echo 'KERNEL=="uhid", MODE="0666"' | sudo tee /etc/udev/rules.d/99-uhid.rules
 sudo udevadm control --reload-rules && sudo udevadm trigger
 ```
