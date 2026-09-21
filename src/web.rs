@@ -30,6 +30,7 @@ pub struct SystemStatus {
     pub pin_configured: bool,
     pub fp_count: usize,
     pub unlimited_fingerprints: bool,
+    pub database_backend: &'static str,
 }
 
 #[derive(Deserialize)]
@@ -115,6 +116,8 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/verify/pending", get(get_pending_verify))
         .route("/api/verify/approve", post(approve_verify))
         .route("/api/verify/reject", post(reject_verify))
+        .route("/api/database/export", get(export_database))
+        .route("/api/database/import", post(import_database))
         .with_state(state)
 }
 
@@ -140,6 +143,7 @@ async fn get_status(State(state): State<AppState>) -> Json<ApiResponse<SystemSta
         pin_configured: sec.pin_enabled,
         fp_count: sec.fp_count,
         unlimited_fingerprints: state.unlimited_fps,
+        database_backend: state.db.backend_name(),
     }))
 }
 
@@ -340,6 +344,38 @@ async fn reject_verify(
     match state.security.reject_pending(payload.request_id, &reason) {
         Ok(_) => Json(ApiResponse::ok(true)),
         Err(e) => Json(ApiResponse::err(e)),
+    }
+}
+
+async fn export_database(
+    State(state): State<AppState>,
+) -> Json<ApiResponse<crate::db::DatabaseExport>> {
+    match state.db.export_data() {
+        Ok(data) => Json(ApiResponse::ok(data)),
+        Err(e) => Json(ApiResponse::err(e.to_string())),
+    }
+}
+
+async fn import_database(
+    State(state): State<AppState>,
+    Json(payload): Json<crate::db::DatabaseExport>,
+) -> Json<ApiResponse<crate::db::ImportStats>> {
+    match state.db.import_data(&payload) {
+        Ok(stats) => {
+            state.db.log_auth(
+                None,
+                "CMS",
+                "DatabaseImport",
+                "SUCCESS",
+                "NONE",
+                Some(&format!(
+                    "Imported {} credentials, {} fingerprints",
+                    stats.credentials_imported, stats.fingerprints_imported
+                )),
+            );
+            Json(ApiResponse::ok(stats))
+        }
+        Err(e) => Json(ApiResponse::err(e.to_string())),
     }
 }
 

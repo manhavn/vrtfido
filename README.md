@@ -2,7 +2,7 @@
 
 **vrtfido** là ứng dụng giả lập khóa bảo mật phần cứng **Virtual FIDO2 / WebAuthn Authenticator** chạy trên Linux thông qua kernel character device `/dev/uhid`. 
 
-Ứng dụng tích hợp sẵn **Web CMS Dashboard** trên cổng **10209**, lưu trữ cơ sở dữ liệu **SQLite**, hỗ trợ chính sách xác thực đa lớp (Mã PIN passkey 6 số, quản lý tối đa 10 dấu vân tay, và mở rộng sinh trắc học khuôn mặt/mống mắt).
+Ứng dụng tích hợp sẵn **Web CMS Dashboard** trên cổng **10209**, hỗ trợ lưu trữ linh hoạt đa cơ sở dữ liệu (**SQLite**, **PostgreSQL**, **LibSQL/Turso**, **MySQL**, **MariaDB**) cùng tính năng **Export / Import 100% dữ liệu sang JSON** để chuyển đổi server dễ dàng, hỗ trợ chính sách xác thực đa lớp (Mã PIN passkey 6 số, quản lý tối đa 10 dấu vân tay, và mở rộng sinh trắc học khuôn mặt/mống mắt).
 
 ---
 
@@ -34,6 +34,11 @@
    - Mặc định tắt debug để giữ log sạch.
    - Kích hoạt qua cờ `--debug` hoặc `-d` để in chi tiết các gói tin CTAPHID và lưu vào bảng `debug_logs`.
 
+
+6. **Hỗ trợ Đa Cơ sở Dữ liệu & Chuyển dịch Dữ liệu (100% Data Migration):**
+   - Kết nối linh hoạt với **SQLite**, **PostgreSQL**, **LibSQL (Turso Cloud)**, **MySQL** và **MariaDB**.
+   - Xuất (Export) và Nhập (Import) 100% dữ liệu (Credentials, PIN, Vân tay, Logs) sang 1 file JSON duy nhất để dễ dàng sao lưu, di chuyển server hoặc chuyển đổi giữa các loại database.
+   - Tích hợp REST API `/api/database/export` và `/api/database/import` trên Web CMS.
 ---
 
 ## 🚀 Cài đặt & Sử dụng
@@ -75,16 +80,59 @@ cargo build --release
 
 ---
 
-## 📂 Cơ sở dữ liệu SQLite
+## 📂 Cơ sở dữ liệu & Chuyển đổi dữ liệu (Data Migration)
 
-File cơ sở dữ liệu mặc định là `authenticator.db` gồm các bảng:
-* `credentials`: Lưu private key (P-256 SEC1), public key (COSE), sign counter và thông tin RP.
+Ứng dụng hỗ trợ đa dạng các hệ cơ sở dữ liệu: **SQLite**, **PostgreSQL**, **LibSQL (Turso)**, **MySQL** và **MariaDB**.
+
+### 1. Cấu hình cơ sở dữ liệu qua CLI hoặc Biến môi trường
+
+Mặc định, ứng dụng sử dụng file SQLite nội bộ `authenticator.db`. Bạn có thể thay đổi sang PostgreSQL, LibSQL, MySQL hoặc MariaDB bằng tham số `--database` / `--db` / `-D` hoặc biến môi trường `DATABASE_URL`:
+
+```bash
+# Sử dụng SQLite với file chỉ định:
+./vrtfido --database my_data.db
+
+# Sử dụng PostgreSQL:
+./vrtfido --database "postgresql://postgres:vrtfido@127.0.0.1:5435/postgres"
+
+# Sử dụng LibSQL / Turso Cloud (với token xác thực):
+./vrtfido --database "libsql://my-db.turso.io" --auth-token "my-turso-token"
+
+# Sử dụng MySQL / MariaDB:
+./vrtfido --database "mysql://root:secret@127.0.0.1:3306/vrtfido"
+./vrtfido --database "mariadb://root:secret@127.0.0.1:3306/vrtfido"
+
+# Hoặc thiết lập qua biến môi trường:
+export DATABASE_URL="postgresql://postgres:vrtfido@127.0.0.1:5435/postgres"
+./vrtfido
+```
+
+### 2. Xuất (Export) & Nhập (Import) 100% dữ liệu để chuyển server / chuyển DB
+
+Hệ thống hỗ trợ xuất trọn vẹn 100% dữ liệu (bao gồm Credentials, Mã PIN, Dấu vân tay, Nhật ký xác thực Audit Logs, Debug Logs) ra 1 file JSON chuẩn để dễ dàng chuyển sang server khác hoặc chuyển đổi giữa các loại database (ví dụ: chuyển từ SQLite sang PostgreSQL hoặc ngược lại):
+
+```bash
+# 1. Xuất 100% dữ liệu từ SQLite ra file JSON rồi thoát:
+./vrtfido --database authenticator.db --export backup.json
+
+# 2. Nhập file JSON vào PostgreSQL:
+./vrtfido --database "postgresql://postgres:vrtfido@127.0.0.1:5435/postgres" --import backup.json --exit-after-import
+
+# 3. Hoặc vừa import vừa chạy tiếp ứng dụng:
+./vrtfido --database "postgresql://postgres:vrtfido@127.0.0.1:5435/postgres" --import backup.json
+```
+
+Ngoài ra, Web CMS API cũng cung cấp 2 endpoint:
+- `GET /api/database/export`: Tải về toàn bộ dữ liệu định dạng JSON.
+- `POST /api/database/import`: Nhận payload JSON để nhập dữ liệu trực tiếp vào database đang hoạt động.
+
+### 3. Cấu trúc bảng cơ sở dữ liệu
+
+* `credentials`: Lưu private key (P-256 SEC1), public key (COSE), sign counter và thông tin Relying Party.
 * `auth_logs`: Lưu vết toàn bộ thao tác xác thực và đăng ký.
-* `security_settings`: Lưu trạng thái PIN và chính sách xác thực.
-* `fingerprints`: Quản lý 10 slot vân tay.
+* `security_settings`: Lưu trạng thái PIN (hash + salt) và chính sách xác thực.
+* `fingerprints`: Quản lý các slot vân tay và tên gợi nhớ.
 * `debug_logs`: Lưu vết lỗi và gói tin CTAPHID/CTAP2 khi bật debug.
-
----
 
 ## 📜 License
 MIT

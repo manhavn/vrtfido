@@ -16,3 +16,8 @@ serde_json = "1.0.151"
 parking_lot = "0.12.5"
 hex = "0.4.3"
 rusb = "0.9.4"
+postgres = "0.19.14"
+mysql = "28.0.2"
+url = "2.5.8"
+libsql = { version = "0.9.30", default-features = false, features = ["remote", "tls"] }
+chrono = "0.4.45"

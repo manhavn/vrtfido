@@ -777,10 +777,83 @@ fn handle_frame(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 1. Phân tích tham số CLI
+    // 1. Phân tích tham số CLI & Biến môi trường
     let args: Vec<String> = std::env::args().collect();
+    let show_help = args.iter().any(|a| a == "--help" || a == "-h");
     let debug_mode = args.iter().any(|a| a == "--debug" || a == "-d");
     let unlimited_fps = args.iter().any(|a| a == "--unlimited-fps" || a == "--unlimited-fingerprints" || a == "-u");
+    let exit_after_import = args.iter().any(|a| a == "--exit-after-import");
+
+    if show_help {
+        println!("============================================================");
+        println!("             vrtfido - Virtual FIDO2 / WebAuthn CMS         ");
+        println!("============================================================");
+        println!("Cách dùng: vrtfido [TÙY CHỌN]\n");
+        println!("Tùy chọn:");
+        println!("  -d, --debug                   Bật chế độ debug packet");
+        println!("  -u, --unlimited-fps           Không giới hạn số lượng vân tay (mặc định: 10)");
+        println!("  -D, --database, --db <SPEC>   Đường dẫn DB hoặc Connection URL (mặc định: authenticator.db)");
+        println!("                                Hỗ trợ:");
+        println!("                                  - SQLite:     authenticator.db hoặc sqlite:my.db");
+        println!("                                  - PostgreSQL: postgresql://user:pass@host:port/dbname");
+        println!("                                  - LibSQL:     libsql://... hoặc https://... (Turso) hoặc file");
+        println!("                                  - MySQL:      mysql://user:pass@host:port/dbname");
+        println!("                                  - MariaDB:    mariadb://user:pass@host:port/dbname");
+        println!("      --db-type <TYPE>          Chỉ định loại DB (sqlite, postgres, libsql, mysql, mariadb)");
+        println!("      --auth-token <TOKEN>      Token xác thực cho LibSQL / Turso Cloud");
+        println!("      --export <FILE.json>      Xuất toàn bộ 100% dữ liệu database ra file JSON rồi thoát");
+        println!("      --import <FILE.json>      Nhập dữ liệu từ file JSON vào database hiện tại");
+        println!("      --exit-after-import       Thoát ngay sau khi hoàn thành import (không chạy server)");
+        println!("  -h, --help                    Hiển thị thông tin trợ giúp này\n");
+        println!("Biến môi trường:");
+        println!("  DATABASE_URL / DB_URL         Connection string hoặc đường dẫn file DB");
+        println!("  DB_TYPE                       Loại database");
+        println!("  LIBSQL_AUTH_TOKEN             Token xác thực LibSQL");
+        return Ok(());
+    }
+
+    let get_opt = |name: &str, short: Option<&str>| -> Option<String> {
+        let prefix = format!("{}=", name);
+        for (i, a) in args.iter().enumerate() {
+            if a == name || short.map_or(false, |s| a == s) {
+                if i + 1 < args.len() {
+                    return Some(args[i + 1].clone());
+                }
+            } else if a.starts_with(&prefix) {
+                return Some(a[prefix.len()..].to_string());
+            }
+        }
+        None
+    };
+
+    let db_spec = get_opt("--database", Some("-D"))
+        .or_else(|| get_opt("--db", None))
+        .or_else(|| std::env::var("DATABASE_URL").ok())
+        .or_else(|| std::env::var("DB_URL").ok())
+        .unwrap_or_else(|| "authenticator.db".to_string());
+
+    let db_type = get_opt("--db-type", None)
+        .or_else(|| std::env::var("DB_TYPE").ok())
+        .or_else(|| std::env::var("DATABASE_TYPE").ok());
+
+    let auth_token = get_opt("--auth-token", None)
+        .or_else(|| get_opt("--db-token", None))
+        .or_else(|| std::env::var("LIBSQL_AUTH_TOKEN").ok())
+        .or_else(|| std::env::var("DATABASE_AUTH_TOKEN").ok());
+
+    let export_file = get_opt("--export", None);
+    let import_file = get_opt("--import", None);
+
+    let mask_db_url = |url: &str| -> String {
+        if let Ok(mut parsed) = url::Url::parse(url) {
+            if parsed.password().is_some() {
+                let _ = parsed.set_password(Some("***"));
+            }
+            parsed.to_string()
+        } else {
+            url.to_string()
+        }
+    };
 
     println!("============================================================");
     println!("             vrtfido - Virtual FIDO2 / WebAuthn CMS         ");
@@ -796,16 +869,55 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("[CLI] Chế độ VÂN TAY: GIỚI HẠN 10 (Dùng '--unlimited-fps' để bỏ giới hạn)");
     }
 
-    // 2. Kiểm tra và tự động cấp quyền truy cập /dev/uhid qua sudo nếu chưa có
+    // 2. Khởi tạo Database theo cấu hình (SQLite / PostgreSQL / LibSQL / MySQL / MariaDB)
+    println!("[DB] Đang kết nối database: {}", mask_db_url(&db_spec));
+    let db = Db::open_with_options(&db_spec, db_type.as_deref(), auth_token.as_deref())?;
+    println!("[DB] [+] Kết nối thành công hệ cơ sở dữ liệu: {}", db.backend_name());
+    db.log_debug("INFO", "SYSTEM", &format!("Virtual FIDO2 Manager started with {} backend", db.backend_name()));
+
+    // Xử lý Import dữ liệu nếu được yêu cầu
+    if let Some(import_path) = import_file {
+        println!("[MIGRATION] Đang nhập dữ liệu từ file: {}", import_path);
+        match db.import_from_file(&import_path) {
+            Ok(stats) => {
+                println!("[MIGRATION] [+] Nhập dữ liệu thành công!");
+                println!("            - Credentials: {}", stats.credentials_imported);
+                println!("            - Vân tay: {}", stats.fingerprints_imported);
+                println!("            - Nhật ký xác thực: {}", stats.auth_logs_imported);
+                println!("            - Debug logs: {}", stats.debug_logs_imported);
+                println!("            - Cấu hình bảo mật: {}", if stats.security_settings_updated { "Đã cập nhật (PIN, UV)" } else { "Không đổi" });
+            }
+            Err(e) => {
+                eprintln!("[MIGRATION] [!] Lỗi nhập dữ liệu: {}", e);
+                return Err(e.into());
+            }
+        }
+        if exit_after_import {
+            println!("[MIGRATION] Hoàn thành nhập dữ liệu và thoát (--exit-after-import).");
+            return Ok(());
+        }
+    }
+
+    // Xử lý Export dữ liệu nếu được yêu cầu
+    if let Some(export_path) = export_file {
+        println!("[MIGRATION] Đang xuất 100% dữ liệu database sang file: {}", export_path);
+        match db.export_to_file(&export_path) {
+            Ok(_) => {
+                let creds = db.get_credentials().map(|c| c.len()).unwrap_or(0);
+                println!("[MIGRATION] [+] Xuất dữ liệu thành công sang: {}", export_path);
+                println!("            - Tổng số credentials đã lưu: {}", creds);
+                return Ok(());
+            }
+            Err(e) => {
+                eprintln!("[MIGRATION] [!] Lỗi xuất dữ liệu: {}", e);
+                return Err(e.into());
+            }
+        }
+    }
+
+    // 3. Kiểm tra và tự động cấp quyền truy cập /dev/uhid qua sudo nếu chưa có
     println!("[UHID] Kiểm tra quyền truy cập /dev/uhid...");
     ensure_uhid_permission();
-
-    // 3. Khởi tạo SQLite Database
-    let db_path = "authenticator.db";
-    let db = Db::open(db_path)?;
-    println!("[DB] Khởi tạo SQLite thành công: {}", db_path);
-    db.log_debug("INFO", "SYSTEM", "Virtual FIDO2 Manager started");
-
     // 4. Khởi tạo SecurityEngine & AppState
     let sensor = sensor::UsbSensor::new();
     let security = SecurityEngine::new(db.clone(), sensor.clone(), unlimited_fps);
