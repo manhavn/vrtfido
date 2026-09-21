@@ -43,20 +43,39 @@
 
 ## 🚀 Cài đặt & Sử dụng
 
-### 1. Cấp quyền truy cập `/dev/uhid`
-Ứng dụng **đã được tích hợp sẵn tính năng tự động kiểm tra và yêu cầu cấp quyền qua `sudo`/`pkexec`** mỗi khi khởi động nếu chưa có quyền truy cập `/dev/uhid`.
+### 1. Cài đặt qua [mise](https://mise.jdx.dev/) (Khuyên dùng)
 
-Tuy nhiên, nếu bạn muốn cấp quyền thủ công hoặc cố định vĩnh viễn (để không bao giờ bị hỏi mật khẩu sudo):
+Bạn có thể cài đặt và cập nhật binary `vrtfido` trực tiếp từ GitHub Releases trên bất kỳ máy tính Linux nào bằng `mise`:
 
 ```bash
-# Cách 1: Tự động - Ứng dụng sẽ tự phát hiện và gọi sudo khi khởi động
+# Cài đặt toàn cục (Global)
+mise use -g github:manhavn/vrtfido
 
-# Cách 2: Cấu hình udev rule vĩnh viễn (Khuyên dùng - không cần hỏi sudo mỗi khi reboot)
+# Hoặc cài đặt riêng cho thư mục/dự án hiện tại
+mise use github:manhavn/vrtfido
+
+# Hoặc chạy trực tiếp không cần cài đặt
+mise x github:manhavn/vrtfido -- vrtfido --daemon
+```
+
+Hoặc thêm vào file `mise.toml`:
+
+```toml
+[tools]
+"github:manhavn/vrtfido" = "latest"
+```
+
+### 2. Cấp quyền truy cập `/dev/uhid`
+Ứng dụng **đã được tích hợp sẵn tính năng tự động kiểm tra và yêu cầu cấp quyền qua `sudo`/`pkexec`** mỗi khi khởi động nếu chưa có quyền truy cập `/dev/uhid`.
+
+Nếu muốn cấu hình udev rule vĩnh viễn (không bao giờ bị hỏi mật khẩu sudo):
+
+```bash
 echo 'KERNEL=="uhid", MODE="0666"' | sudo tee /etc/udev/rules.d/99-uhid.rules
 sudo udevadm control --reload-rules && sudo udevadm trigger
 ```
 
-### 2. Biên dịch & Chạy
+### 3. Biên dịch & Chạy từ mã nguồn
 
 ```bash
 # Biên dịch phiên bản Release
@@ -82,13 +101,41 @@ tail -f /tmp/vrtfido.log
 
 # Kết hợp chế độ không giới hạn vân tay và debug chi tiết
 ./target/release/vrtfido --unlimited-fps --debug
-### 3. Trải nghiệm
+```
+
+### 4. Tự build đa nền tảng cho GitHub Releases (Local Cross-build)
+
+Dự án tích hợp sẵn script `build-cross.sh` (sử dụng `cargo-zigbuild`) tương tự dự án `manhavn/beauty` để bạn có thể biên dịch đa kiến trúc (x86_64 GNU/musl, aarch64 GNU/musl) ngay tại máy local mà không cần đến GitHub Actions CI:
+
+```bash
+# Cài đặt công cụ cross-build nếu chưa có:
+cargo install cargo-zigbuild --locked
+mise use -g zig
+
+# Chạy build toàn bộ các target:
+./build-cross.sh
+
+# Hoặc chỉ định target mong muốn:
+TARGETS=x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu ./build-cross.sh
+```
+
+Toàn bộ file nén upload-ready (`.tar.gz`) và mã băm kiểm tra (`.sha256`) sẽ được tạo tự động trong thư mục `dist/packages/`:
+- `vrtfido-x86_64-unknown-linux-gnu.tar.gz`
+- `vrtfido-x86_64-unknown-linux-musl.tar.gz`
+- `vrtfido-aarch64-unknown-linux-gnu.tar.gz`
+- `vrtfido-aarch64-unknown-linux-musl.tar.gz`
+
+Bạn chỉ cần tạo Release trên GitHub và kéo thả các file trong `dist/packages/` lên. Người dùng ở bất kỳ máy tính nào đều có thể cài đặt ngay qua lệnh:
+```bash
+mise use -g github:manhavn/vrtfido
+```
+
+### 5. Trải nghiệm
 
 1. Mở trình duyệt truy cập Web CMS: **http://localhost:10209**
 2. Mở tab mới truy cập trang kiểm thử: **https://webauthn.io/**
 3. Nhập tên tài khoản bất kỳ $\rightarrow$ Bấm **Register** hoặc **Authenticate**.
 4. Cửa sổ popup trên Web CMS sẽ xuất hiện để bạn nhập PIN 6 số hoặc bấm xác thực vân tay.
-
 ---
 
 ## 📂 Cơ sở dữ liệu & Chuyển đổi dữ liệu (Data Migration)
