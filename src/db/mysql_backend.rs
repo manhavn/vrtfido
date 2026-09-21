@@ -340,6 +340,20 @@ impl DbBackend for MySqlBackend {
         Ok(list)
     }
 
+    fn clear_auth_logs(&self) -> Result<usize, DbError> {
+        let mut conn = self.pool.get_conn().map_err(|e| DbError::MySql(e.to_string()))?;
+        conn.exec_drop("DELETE FROM auth_logs", ())
+            .map_err(|e| DbError::MySql(e.to_string()))?;
+        Ok(conn.affected_rows() as usize)
+    }
+
+    fn clear_debug_logs(&self) -> Result<usize, DbError> {
+        let mut conn = self.pool.get_conn().map_err(|e| DbError::MySql(e.to_string()))?;
+        conn.exec_drop("DELETE FROM debug_logs", ())
+            .map_err(|e| DbError::MySql(e.to_string()))?;
+        Ok(conn.affected_rows() as usize)
+    }
+
     fn get_security_settings_raw(&self) -> Result<SecuritySettingsData, DbError> {
         let mut conn = self.pool.get_conn().map_err(|e| DbError::MySql(e.to_string()))?;
         let row: Option<(Option<String>, Option<String>, i8, i8, i8, String)> = conn.query_first(

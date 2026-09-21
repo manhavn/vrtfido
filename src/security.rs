@@ -63,10 +63,10 @@ impl SecurityEngine {
 
     pub fn validate_pin_format(pin: &str) -> Result<(), &'static str> {
         if pin.len() != 6 {
-            return Err("Mã passkey PIN phải có đúng 6 chữ số");
+            return Err("Passkey PIN must be exactly 6 digits");
         }
         if !pin.chars().all(|c| c.is_ascii_digit()) {
-            return Err("Mã passkey PIN chỉ được chứa các ký tự số (0-9)");
+            return Err("Passkey PIN may only contain numeric digits (0-9)");
         }
         Ok(())
     }
@@ -82,8 +82,8 @@ impl SecurityEngine {
         Self::validate_pin_format(pin)?;
         let salt: String = (0..16).map(|_| format!("{:02x}", rand::random::<u8>())).collect();
         let hash = Self::hash_pin(pin, &salt);
-        self.db.set_pin(&hash, &salt).map_err(|_| "Lỗi lưu PIN vào database")?;
-        self.db.log_auth(None, "SYSTEM", "PinSet", "SUCCESS", "PIN", Some("Đã thiết lập mã PIN 6 số"));
+        self.db.set_pin(&hash, &salt).map_err(|_| "Failed to save PIN to database")?;
+        self.db.log_auth(None, "SYSTEM", "PinSet", "SUCCESS", "PIN", Some("Configured 6-digit PIN"));
         Ok(())
     }
 
@@ -92,38 +92,38 @@ impl SecurityEngine {
         self.verify_pin(old_pin)?;
         let salt: String = (0..16).map(|_| format!("{:02x}", rand::random::<u8>())).collect();
         let hash = Self::hash_pin(new_pin, &salt);
-        self.db.set_pin(&hash, &salt).map_err(|_| "Lỗi cập nhật PIN vào database")?;
-        self.db.log_auth(None, "SYSTEM", "PinChanged", "SUCCESS", "PIN", Some("Đã đổi mã PIN 6 số thành công"));
+        self.db.set_pin(&hash, &salt).map_err(|_| "Failed to update PIN in database")?;
+        self.db.log_auth(None, "SYSTEM", "PinChanged", "SUCCESS", "PIN", Some("Changed 6-digit PIN successfully"));
         Ok(())
     }
 
     pub fn remove_pin(&self, current_pin: &str) -> Result<(), &'static str> {
         self.verify_pin(current_pin)?;
-        self.db.remove_pin().map_err(|_| "Lỗi xóa PIN khỏi database")?;
-        self.db.log_auth(None, "SYSTEM", "PinRemoved", "SUCCESS", "PIN", Some("Đã xóa mã PIN 6 số"));
+        self.db.remove_pin().map_err(|_| "Failed to delete PIN from database")?;
+        self.db.log_auth(None, "SYSTEM", "PinRemoved", "SUCCESS", "PIN", Some("Removed 6-digit PIN"));
         Ok(())
     }
 
     pub fn verify_pin(&self, pin: &str) -> Result<bool, &'static str> {
-        let (stored_hash, stored_salt) = self.db.get_pin_hash_and_salt().map_err(|_| "Lỗi đọc cấu hình bảo mật")?;
+        let (stored_hash, stored_salt) = self.db.get_pin_hash_and_salt().map_err(|_| "Failed to read security settings")?;
         match (stored_hash, stored_salt) {
             (Some(hash), Some(salt)) => {
                 let computed = Self::hash_pin(pin, &salt);
                 if computed == hash {
                     Ok(true)
                 } else {
-                    Err("Mã PIN không chính xác")
+                    Err("Incorrect PIN")
                 }
             }
-            _ => Err("Chưa thiết lập mã PIN bảo mật"),
+            _ => Err("Security PIN not configured"),
         }
     }
 
-    /// Thêm vân tay: Quét 6 lần thực tế từ thiết bị USB Microarray MAFP
+    /// Enroll fingerprint: Scan 6 times via USB Microarray MAFP sensor
     pub fn enroll_fingerprint(&self, name: &str) -> Result<crate::db::FingerprintRow, String> {
         let fps = self.db.get_fingerprints().map_err(|e| e.to_string())?;
         if !self.unlimited_fps && fps.len() >= 10 {
-            return Err("Đã đạt giới hạn tối đa 10 vân tay (Dùng tham số --unlimited-fps để mở khóa không giới hạn)".into());
+            return Err("Maximum 10 fingerprints reached (Use --unlimited-fps to remove limit)".into());
         }
 
         let existing_slots: Vec<u32> = fps.iter().map(|f| f.slot_index).collect();
@@ -136,9 +136,9 @@ impl SecurityEngine {
             }
         }
 
-        // Quét mẫu 6 lần trên phần cứng thật
+        // Scan 6 stages on physical hardware
         let actual_fid = if UsbSensor::is_hardware_plugged() {
-            println!("[SECURITY] Bắt đầu chu trình quét vân tay 6 mẫu trên USB...");
+            println!("[SECURITY] Starting 6-stage USB fingerprint enrollment...");
             self.sensor.enroll_fingerprint_pipeline(target_slot)?
         } else {
             target_slot as u16
@@ -151,7 +151,7 @@ impl SecurityEngine {
             "FingerprintEnrolled",
             "SUCCESS",
             "FINGERPRINT",
-            Some(&format!("Đã quét đủ 6 mẫu và lưu vân tay '{}' vào USB & DB slot {}", row.name, actual_fid)),
+            Some(&format!("Enrolled 6 stages for fingerprint '{}' saved to USB & DB slot {}", row.name, actual_fid)),
         );
         Ok(row)
     }
@@ -160,7 +160,7 @@ impl SecurityEngine {
         if let Ok(Some(fp)) = self.db.get_fingerprint_by_id(id) {
             let slot = fp.slot_index;
             if UsbSensor::is_hardware_plugged() {
-                println!("[SECURITY] Đang xóa template slot {} trên chip USB...", slot);
+                println!("[SECURITY] Deleting template slot {} from USB chip...", slot);
                 let _ = self.sensor.delete_slot(slot);
             }
         }
@@ -173,7 +173,7 @@ impl SecurityEngine {
                 "FingerprintDeleted",
                 "SUCCESS",
                 "FINGERPRINT",
-                Some(&format!("Đã xóa vân tay id {} và xóa template trên chip USB", id)),
+                Some(&format!("Deleted fingerprint id {} and template from USB chip", id)),
             );
 
             let remaining = self.db.get_fingerprints().map_err(|e| e.to_string())?;
@@ -240,15 +240,15 @@ impl SecurityEngine {
         }
 
         println!(
-            "\n[SECURITY] >>> YÊU CẦU XÁC THỰC MỚI (Request #{} - RP: '{}', Thao tác: '{}') <<<",
+            "\n[SECURITY] >>> NEW VERIFICATION REQUEST (Request #{} - RP: '{}', Operation: '{}') <<<",
             req_id, rp_id, operation
         );
 
-        // Lấy danh sách các slot vân tay đã đăng ký
+        // Retrieve list of enrolled fingerprint slots
         let fps = self.db.get_fingerprints().unwrap_or_default();
         let enrolled_slots: Vec<u32> = fps.iter().map(|f| f.slot_index).collect();
 
-        // Lắng nghe chạm ngón tay trên USB nếu có vân tay đăng ký
+        // Listen for finger touch on USB if fingerprints are enrolled
         let sensor_clone = self.sensor.clone();
         let pending_ref = self.pending.clone();
         let db_clone = self.db.clone();
@@ -262,10 +262,10 @@ impl SecurityEngine {
             let start = Instant::now();
             while start.elapsed() < Duration::from_secs(55) {
                 if sensor_clone.busy_mode() == SensorBusyMode::Idle {
-                    // Chờ và so khớp vân tay THẬT!
+                    // Wait and verify real fingerprint
                     match sensor_clone.verify_fingerprint(&enrolled_slots, 2) {
                         Ok(true) => {
-                            // ĐÚNG VÂN TAY ĐÃ ĐĂNG KÝ!
+                            // MATCH FOUND
                             let mut guard = pending_ref.lock();
                             if let Some(mut active) = guard.take() {
                                 if active.prompt.request_id == req_id {
@@ -278,7 +278,7 @@ impl SecurityEngine {
                                         &op_owned,
                                         "SUCCESS",
                                         "FINGERPRINT_USB",
-                                        Some("Xác thực thành công bằng cảm biến vân tay USB (Trùng khớp template)"),
+                                        Some("Authenticated successfully via USB fingerprint sensor (Template match)"),
                                     );
                                     return;
                                 } else {
@@ -287,15 +287,15 @@ impl SecurityEngine {
                             }
                         }
                         Ok(false) => {
-                            // SAI VÂN TAY! NGÓN TAY KHÁC!
-                            println!("[SECURITY] [REJECT] Ngón tay không trùng khớp với các mẫu đã cài đặt! TỪ CHỐI!");
+                            // MISMATCH
+                            println!("[SECURITY] [REJECT] Fingerprint does not match any enrolled template! REJECTED!");
                             db_clone.log_auth(
                                 None,
                                 &rp_id_owned,
                                 &op_owned,
                                 "REJECTED",
                                 "FINGERPRINT_USB",
-                                Some("Thử xác thực bằng ngón tay không trùng khớp (Bị từ chối)"),
+                                Some("Fingerprint verification mismatch (Rejected)"),
                             );
                             std::thread::sleep(Duration::from_millis(500));
                         }
@@ -318,12 +318,12 @@ impl SecurityEngine {
             Ok(Err(_)) => {
                 let mut guard = self.pending.lock();
                 *guard = None;
-                Err("Phiên xác thực bị hủy bỏ".to_string())
+                Err("Verification session cancelled".to_string())
             }
             Err(_) => {
                 let mut guard = self.pending.lock();
                 *guard = None;
-                Err("Hết thời gian chờ xác thực (Timeout 60s)".to_string())
+                Err("Verification timed out (Timeout 60s)".to_string())
             }
         };
 
@@ -336,12 +336,12 @@ impl SecurityEngine {
         if let Some(mut active) = guard.take() {
             if active.prompt.request_id != req_id {
                 *guard = Some(active);
-                return Err("Mã yêu cầu không khớp".to_string());
+                return Err("Request ID mismatch".to_string());
             }
 
             match method {
                 "PIN" => {
-                    let pin = input_pin.ok_or_else(|| "Chưa nhập mã PIN".to_string())?;
+                    let pin = input_pin.ok_or_else(|| "PIN not provided".to_string())?;
                     self.verify_pin(pin)?;
                     if let Some(responder) = active.responder.take() {
                         let _ = responder.send(Ok("PIN".to_string()));
@@ -352,7 +352,7 @@ impl SecurityEngine {
                         &active.prompt.operation,
                         "SUCCESS",
                         "PIN",
-                        Some("Xác thực PIN 6 số thành công qua Web CMS"),
+                        Some("Verified 6-digit PIN successfully via Web CMS"),
                     );
                     Ok(())
                 }
@@ -361,22 +361,22 @@ impl SecurityEngine {
                     let enrolled_slots: Vec<u32> = fps.iter().map(|f| f.slot_index).collect();
                     if enrolled_slots.is_empty() {
                         *guard = Some(active);
-                        return Err("Chưa có vân tay nào được đăng ký trong hệ thống".into());
+                        return Err("No fingerprints enrolled in the system".into());
                     }
 
                     if UsbSensor::is_hardware_plugged() {
-                        println!("[SECURITY] Đang chờ bạn chạm đúng ngón tay vào cảm biến USB...");
+                        println!("[SECURITY] Waiting for finger press on USB sensor...");
                         match self.sensor.verify_fingerprint(&enrolled_slots, 15) {
                             Ok(true) => {
-                                println!("[SECURITY] Xác thực vân tay thành công!");
+                                println!("[SECURITY] Fingerprint verified successfully!");
                             }
                             Ok(false) => {
                                 *guard = Some(active);
-                                return Err("Vân tay KHÔNG TRÙNG KHỚP với bất kỳ mẫu nào đã cài đặt! Yêu cầu bị từ chối.".into());
+                                return Err("Fingerprint DOES NOT MATCH any enrolled template! Request rejected.".into());
                             }
                             Err(e) => {
                                 *guard = Some(active);
-                                return Err(format!("Lỗi cảm biến vân tay: {}", e));
+                                return Err(format!("Fingerprint sensor error: {}", e));
                             }
                         }
                     }
@@ -390,7 +390,7 @@ impl SecurityEngine {
                         &active.prompt.operation,
                         "SUCCESS",
                         "FINGERPRINT",
-                        Some("Xác thực cảm biến vân tay thành công (Khớp template)"),
+                        Some("Fingerprint sensor verified successfully (Template match)"),
                     );
                     Ok(())
                 }
@@ -407,17 +407,17 @@ impl SecurityEngine {
                         &active.prompt.operation,
                         "SUCCESS",
                         "SETUP",
-                        Some("Khởi tạo phương thức bảo mật mới thành công"),
+                        Some("Initialized new security settings successfully"),
                     );
                     Ok(())
                 }
                 _ => {
                     *guard = Some(active);
-                    Err("Phương thức xác thực không hợp lệ".to_string())
+                    Err("Invalid verification method".to_string())
                 }
             }
         } else {
-            Err("Không có yêu cầu xác thực nào đang chờ".to_string())
+            Err("No pending verification request".to_string())
         }
     }
 
@@ -426,11 +426,11 @@ impl SecurityEngine {
         if let Some(mut active) = guard.take() {
             if active.prompt.request_id != req_id {
                 *guard = Some(active);
-                return Err("Mã yêu cầu không khớp".to_string());
+                return Err("Request ID mismatch".to_string());
             }
 
             if let Some(responder) = active.responder.take() {
-                let _ = responder.send(Err(format!("Từ chối bởi người dùng: {}", reason)));
+                let _ = responder.send(Err(format!("Rejected by user: {}", reason)));
             }
             self.db.log_auth(
                 None,
@@ -442,7 +442,7 @@ impl SecurityEngine {
             );
             Ok(())
         } else {
-            Err("Không có yêu cầu xác thực nào đang chờ".to_string())
+            Err("No pending verification request".to_string())
         }
     }
 }

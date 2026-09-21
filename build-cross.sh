@@ -28,67 +28,67 @@ echo "============================================================"
 echo "      vrtfido - Local Cross-Platform Release Builder        "
 echo "============================================================"
 
-# 1. Tự động kiểm tra và cài đặt zig nếu thiếu
+# 1. Automatically check and install zig if missing
 if ! have zig; then
-  echo "[SETUP] Không tìm thấy 'zig'. Đang tự động cài đặt..."
+  echo "[SETUP] 'zig' not found. Installing automatically..."
   if have mise; then
-    echo "[SETUP] Cài đặt zig@0.13.0 thông qua mise..."
+    echo "[SETUP] Installing zig@0.13.0 via mise..."
     mise use -g zig@0.13.0
     export PATH="${HOME}/.local/share/mise/shims:${PATH}"
   elif have brew; then
-    echo "[SETUP] Cài đặt zig thông qua Homebrew..."
+    echo "[SETUP] Installing zig via Homebrew..."
     brew install zig
   elif have snap; then
-    echo "[SETUP] Cài đặt zig thông qua snap..."
+    echo "[SETUP] Installing zig via snap..."
     sudo snap install zig --classic --beta || true
   fi
 
-  # Fallback tải trực tiếp binary chính thức nếu vẫn chưa có
+  # Fallback to direct official binary download if still missing
   if ! have zig; then
     ARCH="$(uname -m)"
-    echo "[SETUP] Tải trực tiếp binary chính thức zig 0.13.0 cho $ARCH..."
+    echo "[SETUP] Downloading official zig 0.13.0 binary for $ARCH..."
     mkdir -p "$HOME/.local/bin" "$HOME/.local/opt"
     curl -sSL "https://ziglang.org/download/0.13.0/zig-linux-${ARCH}-0.13.0.tar.xz" | tar -xJ -C "$HOME/.local/opt/"
     ln -sf "$HOME/.local/opt/zig-linux-${ARCH}-0.13.0/zig" "$HOME/.local/bin/zig"
     export PATH="${HOME}/.local/bin:${PATH}"
   fi
 
-  have zig || { echo "error: Không thể cài đặt zig tự động. Vui lòng cài đặt thủ công." >&2; exit 1; }
-  echo "[SETUP] [+] Đã cài đặt zig thành công: $(zig version)"
+  have zig || { echo "error: Failed to install zig automatically. Please install manually." >&2; exit 1; }
+  echo "[SETUP] [+] Successfully installed zig: $(zig version)"
 else
-  echo "[SETUP] [+] Đã tìm thấy zig: $(zig version)"
+  echo "[SETUP] [+] Found zig: $(zig version)"
 fi
 
-# 2. Tự động kiểm tra và cài đặt cargo-zigbuild nếu thiếu
+# 2. Automatically check and install cargo-zigbuild if missing
 if ! have cargo-zigbuild; then
-  echo "[SETUP] Không tìm thấy 'cargo-zigbuild'. Đang tự động cài đặt..."
+  echo "[SETUP] 'cargo-zigbuild' not found. Installing automatically..."
   if curl --proto '=https' --tlsv1.2 -LsSf https://github.com/rust-cross/cargo-zigbuild/releases/latest/download/cargo-zigbuild-installer.sh | sh; then
     export PATH="${HOME}/.cargo/bin:${PATH}"
   else
-    echo "[SETUP] Fallback biên dịch cargo-zigbuild qua cargo..."
+    echo "[SETUP] Fallback compiling cargo-zigbuild via cargo..."
     cargo install cargo-zigbuild --locked
   fi
 
-  have cargo-zigbuild || { echo "error: Không thể cài đặt cargo-zigbuild tự động." >&2; exit 1; }
-  echo "[SETUP] [+] Đã cài đặt cargo-zigbuild thành công: $(cargo-zigbuild --version)"
+  have cargo-zigbuild || { echo "error: Failed to install cargo-zigbuild automatically." >&2; exit 1; }
+  echo "[SETUP] [+] Successfully installed cargo-zigbuild: $(cargo-zigbuild --version)"
 else
-  echo "[SETUP] [+] Đã tìm thấy cargo-zigbuild: $(cargo-zigbuild --version)"
+  echo "[SETUP] [+] Found cargo-zigbuild: $(cargo-zigbuild --version)"
 fi
 
 IFS=',' read -r -a BUILD_TARGETS <<< "$TARGETS_CSV"
 mkdir -p "$ROOT/dist/packages"
 
 echo ""
-echo "Các mục tiêu cần biên dịch: ${BUILD_TARGETS[*]}"
+echo "Targets to build: ${BUILD_TARGETS[*]}"
 echo "------------------------------------------------------------"
 
 built=()
 for target in "${BUILD_TARGETS[@]}"; do
   target="$(echo "$target" | xargs)"
   [[ -n "$target" ]] || continue
-  echo "==> Đang biên dịch $PROJECT_NAME cho target: $target"
+  echo "==> Building $PROJECT_NAME for target: $target"
 
-  # Tự động thêm target vào rustup nếu thiếu
+  # Automatically add target to rustup if missing
   rustup target add "$target" >/dev/null 2>&1 || true
 
   cargo zigbuild --release --target "$target"
@@ -96,7 +96,7 @@ for target in "${BUILD_TARGETS[@]}"; do
   ext=""
   [[ "$target" == *windows* ]] && ext=".exe"
   src="$ROOT/target/$target/release/${BIN_NAME}${ext}"
-  [[ -f "$src" ]] || { echo "error: Không tìm thấy binary đầu ra tại: $src" >&2; exit 1; }
+  [[ -f "$src" ]] || { echo "error: Output binary not found at: $src" >&2; exit 1; }
 
   target_dist="$ROOT/dist/$target"
   mkdir -p "$target_dist"
@@ -105,13 +105,13 @@ for target in "${BUILD_TARGETS[@]}"; do
   tar -C "$target_dist" -czf "$archive" .
   (cd "$ROOT/dist/packages" && sha256sum "$(basename "$archive")" > "$(basename "$archive").sha256")
   built+=("$target")
-  echo "    [+] Hoàn thành gói: $archive"
+  echo "    [+] Package completed: $archive"
 done
 
 echo ""
 echo "============================================================"
-echo "  TẤT CẢ CÁC GÓI ĐÃ ĐƯỢC BIÊN DỊCH VÀ ĐÓNG GÓI THÀNH CÔNG   "
+echo "     ALL PACKAGES BUILT AND ARCHIVED SUCCESSFULLY           "
 echo "============================================================"
-echo "Các kiến trúc đã build: ${built[*]}"
-echo "Thư mục chứa các file tải lên GitHub Releases: $ROOT/dist/packages/"
+echo "Built architectures: ${built[*]}"
+echo "GitHub Releases upload directory: $ROOT/dist/packages/"
 ls -lh "$ROOT/dist/packages/"

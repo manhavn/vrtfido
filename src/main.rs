@@ -107,7 +107,7 @@ pub struct UhidEvent {
     pub u: UhidEventUnion,
 }
 
-// Chuẩn FIDO Alliance HID Report Descriptor (34 bytes, 64-byte IN/OUT reports)
+// FIDO Alliance HID Report Descriptor (34 bytes, 64-byte IN/OUT reports)
 pub const FIDO_REPORT_DESC: &[u8] = &[
     0x06, 0xd0, 0xf1, // USAGE_PAGE (FIDO Alliance)
     0x09, 0x01,       // USAGE (U2F / FIDO Authenticator)
@@ -198,21 +198,21 @@ impl UhidDevice {
     }
 }
 
-/// Kiểm tra xem /dev/uhid có thể truy cập (read + write) không.
-/// Nếu chưa có quyền, tự động gọi sudo/pkexec để nạp module và cấp quyền chmod 666.
+/// Check if /dev/uhid is accessible (read + write).
+/// If permission is missing, automatically invoke sudo/pkexec to load module and set chmod 666.
 pub fn ensure_uhid_permission() -> bool {
-    // 1. Kiểm tra nếu đã mở được /dev/uhid với quyền read + write
+    // 1. Check if /dev/uhid can already be opened with read + write
     if OpenOptions::new().read(true).write(true).open("/dev/uhid").is_ok() {
         return true;
     }
 
-    println!("[UHID] [!] Chưa có quyền truy cập /dev/uhid.");
-    println!("[UHID] [*] Đang tự động yêu cầu cấp quyền qua sudo...");
+    println!("[UHID] [!] No access permission for /dev/uhid.");
+    println!("[UHID] [*] Automatically requesting permission via sudo...");
 
-    // Nạp kernel module uhid nếu chưa nạp và cấp quyền đọc/ghi
+    // Load uhid kernel module if not loaded and grant read/write access
     let cmd_str = "modprobe uhid 2>/dev/null || true; chmod 666 /dev/uhid";
 
-    // 2. Ưu tiên chạy sudo (hoạt động tốt trong terminal)
+    // 2. Prefer sudo (works well in terminal)
     let sudo_status = Command::new("sudo")
         .args(["sh", "-c", cmd_str])
         .status();
@@ -220,7 +220,7 @@ pub fn ensure_uhid_permission() -> bool {
     let success = match sudo_status {
         Ok(s) if s.success() => true,
         _ => {
-            // Nếu sudo thất bại hoặc không có TTY, thử qua pkexec (GUI dialog trên Linux Desktop)
+            // If sudo fails or no TTY, try pkexec (GUI dialog on Linux Desktop)
             if std::env::var("DISPLAY").is_ok() || std::env::var("WAYLAND_DISPLAY").is_ok() {
                 if let Ok(pk_status) = Command::new("pkexec")
                     .args(["sh", "-c", cmd_str])
@@ -238,15 +238,15 @@ pub fn ensure_uhid_permission() -> bool {
 
     if success {
         if OpenOptions::new().read(true).write(true).open("/dev/uhid").is_ok() {
-            println!("[UHID] [+] Đã cấp quyền truy cập /dev/uhid thành công!");
+            println!("[UHID] [+] Granted /dev/uhid access permission successfully!");
             return true;
         }
     }
 
-    eprintln!("[UHID] [-] Không thể tự động cấp quyền cho /dev/uhid qua sudo.");
-    eprintln!("[UHID] [!] Bạn có thể cấp quyền thủ công bằng lệnh:");
+    eprintln!("[UHID] [-] Could not automatically grant permission for /dev/uhid via sudo.");
+    eprintln!("[UHID] [!] You can grant permission manually with:");
     eprintln!("          sudo chmod 666 /dev/uhid");
-    eprintln!("       hoặc cấu hình udev rule vĩnh viễn (khuyên dùng):");
+    eprintln!("       or configure permanent udev rule (recommended):");
     eprintln!("          echo 'KERNEL==\"uhid\", MODE=\"0666\"' | sudo tee /etc/udev/rules.d/99-uhid.rules");
     eprintln!("          sudo udevadm control --reload-rules && sudo udevadm trigger");
     false
@@ -372,7 +372,7 @@ fn handle_cbor(
         // 0x04: authenticatorGetInfo
         0x04 => {
             if debug_mode {
-                println!("[CTAP2] Nhận lệnh: authenticatorGetInfo");
+                println!("[CTAP2] Received command: authenticatorGetInfo");
                 db.log_debug("DEBUG", "CTAP2", "authenticatorGetInfo request received");
             }
 
@@ -399,9 +399,9 @@ fn handle_cbor(
             out
         }
 
-        // 0x01: authenticatorMakeCredential (Đăng ký WebAuthn)
+        // 0x01: authenticatorMakeCredential (WebAuthn Registration)
         0x01 => {
-            println!("\n[CTAP2] =================== YÊU CẦU ĐĂNG KÝ WEBAUTHN MỚI ===================");
+            println!("\n[CTAP2] =================== NEW WEBAUTHN REGISTRATION REQUEST ===================");
 
             let mut rp_id = "webauthn.io".to_string();
             let mut user_name = "User".to_string();
@@ -445,7 +445,7 @@ fn handle_cbor(
             }
 
             println!("[CTAP2] Relying Party (Domain): {}", rp_id);
-            println!("[CTAP2] Tài khoản: {} ({})", user_name, user_display_name);
+            println!("[CTAP2] Account: {} ({})", user_name, user_display_name);
 
             if debug_mode {
                 db.log_debug(
@@ -455,8 +455,8 @@ fn handle_cbor(
                 );
             }
 
-            // GỌI XÁC THỰC NGƯỜI DÙNG QUA SECURITY ENGINE (Web CMS sẽ hiển thị modal xác nhận)
-            println!("[SECURITY] Đang chờ xác nhận từ Web CMS (http://localhost:10209)...");
+            // Request user verification via SecurityEngine (Web CMS will show confirmation modal)
+            println!("[SECURITY] Waiting for confirmation from Web CMS (http://localhost:10209)...");
             let verify_result = tokio_handle.block_on(security.request_user_verification(
                 &rp_id,
                 "MakeCredential",
@@ -465,11 +465,11 @@ fn handle_cbor(
 
             let auth_method = match verify_result {
                 Ok(method) => {
-                    println!("[SECURITY] Xác thực thành công bằng phương thức: {}", method);
+                    println!("[SECURITY] Verification succeeded using method: {}", method);
                     method
                 }
                 Err(err) => {
-                    println!("[SECURITY] Xác thực thất bại / bị từ chối: {}", err);
+                    println!("[SECURITY] Verification failed / rejected: {}", err);
                     db.log_auth(
                         None,
                         &rp_id,
@@ -482,7 +482,7 @@ fn handle_cbor(
                 }
             };
 
-            // Sinh khóa P-256 mới
+            // Generate new P-256 key
             let signing_key = SigningKey::generate();
             let verifying_key = signing_key.verifying_key();
             let point = verifying_key.to_sec1_point(false);
@@ -499,11 +499,11 @@ fn handle_cbor(
             let mut cose_bytes = Vec::new();
             ciborium::into_writer(&cose_key, &mut cose_bytes).unwrap();
 
-            // Sinh Credential ID ngẫu nhiên (32 bytes)
+            // Generate random Credential ID (32 bytes)
             let cred_id: Vec<u8> = (0..32).map(|_| rand::random::<u8>()).collect();
             let cred_id_hex = hex::encode(&cred_id);
 
-            // Lưu Credential vào SQLite Database (tự động kiểm tra trùng theo RP và tài khoản để ghi đè)
+            // Save Credential to database (automatically checks and overwrites duplicates by RP and account)
             let sec1_key_bytes = signing_key.to_bytes();
             let is_update = match db.save_credential(
                 &cred_id_hex,
@@ -517,16 +517,16 @@ fn handle_cbor(
             ) {
                 Ok(updated) => updated,
                 Err(e) => {
-                    eprintln!("[DB] Lỗi lưu credential: {}", e);
+                    eprintln!("[DB] Error saving credential: {}", e);
                     return vec![0x01];
                 }
             };
 
-            // Ghi log audit vào SQLite
+            // Write audit log to database
             let log_msg = if is_update {
-                format!("Cập nhật và ghi đè thành công tài khoản '{}' trên domain '{}'", user_name, rp_id)
+                format!("Updated and overwrote credential for account '{}' on domain '{}'", user_name, rp_id)
             } else {
-                format!("Đăng ký thành công tài khoản '{}' trên domain '{}'", user_name, rp_id)
+                format!("Registered credential for account '{}' on domain '{}'", user_name, rp_id)
             };
             db.log_auth(
                 Some(&cred_id_hex),
@@ -536,7 +536,7 @@ fn handle_cbor(
                 &auth_method,
                 Some(&log_msg),
             );
-            // Dựng authenticatorData
+            // Build authenticatorData
             let rp_id_hash = Sha256::digest(rp_id.as_bytes());
             let flags = 0x01 | 0x04 | 0x40; // UP | UV | AT
             let sign_count = 1u32;
@@ -559,16 +559,16 @@ fn handle_cbor(
             let mut out = vec![0x00]; // CTAP2_OK
             ciborium::into_writer(&Value::Map(resp_map), &mut out).unwrap();
             if is_update {
-                println!("[+] Phát hiện tài khoản '{}' đã tồn tại trên domain '{}' -> Đã cập nhật và ghi đè dữ liệu mới thành công!", user_name, rp_id);
+                println!("[+] Account '{}' already exists on domain '{}' -> Updated and overwrote with new data!", user_name, rp_id);
             } else {
-                println!("[+] Đăng ký WebAuthn thành công! Đã lưu vào SQLite Database.");
+                println!("[+] WebAuthn registration successful! Saved to database.");
             }
             out
         }
 
-        // 0x02: authenticatorGetAssertion (Đăng nhập WebAuthn)
+        // 0x02: authenticatorGetAssertion (WebAuthn Sign-in)
         0x02 => {
-            println!("\n[CTAP2] =================== YÊU CẦU ĐĂNG NHẬP / XÁC THỰC ===================");
+            println!("\n[CTAP2] =================== SIGN-IN / AUTHENTICATION REQUEST ===================");
 
             let mut rp_id = "webauthn.io".to_string();
             let mut client_data_hash = vec![0u8; 32];
@@ -611,7 +611,7 @@ fn handle_cbor(
                 );
             }
 
-            // Tìm credential trong SQLite
+            // Find credential in database
             let all_creds = db.get_credentials().unwrap_or_default();
             let matched_cred = if !allow_list.is_empty() {
                 all_creds
@@ -625,23 +625,23 @@ fn handle_cbor(
             let cred = match matched_cred {
                 Some(c) => c,
                 None => {
-                    println!("[-] Không tìm thấy credential trong SQLite cho domain '{}'", rp_id);
+                    println!("[-] Credential not found in database for domain '{}'", rp_id);
                     db.log_auth(
                         None,
                         &rp_id,
                         "GetAssertion",
                         "FAILED",
                         "NONE",
-                        Some("Không tìm thấy credential cho RP"),
+                        Some("Credential not found for RP"),
                     );
                     return vec![0x2e]; // CTAP2_ERR_NO_CREDENTIALS
                 }
             };
 
-            println!("[CTAP2] Tìm thấy tài khoản: {} ({})", cred.user_name, cred.user_display_name);
+            println!("[CTAP2] Found account: {} ({})", cred.user_name, cred.user_display_name);
 
-            // GỌI XÁC THỰC NGƯỜI DÙNG QUA SECURITY ENGINE
-            println!("[SECURITY] Đang chờ xác nhận từ Web CMS (http://localhost:10209)...");
+            // Request user verification via SecurityEngine
+            println!("[SECURITY] Waiting for confirmation from Web CMS (http://localhost:10209)...");
             let verify_result = tokio_handle.block_on(security.request_user_verification(
                 &rp_id,
                 "GetAssertion",
@@ -650,11 +650,11 @@ fn handle_cbor(
 
             let auth_method = match verify_result {
                 Ok(method) => {
-                    println!("[SECURITY] Xác thực thành công bằng phương thức: {}", method);
+                    println!("[SECURITY] Verification succeeded using method: {}", method);
                     method
                 }
                 Err(err) => {
-                    println!("[SECURITY] Xác thực thất bại / bị từ chối: {}", err);
+                    println!("[SECURITY] Verification failed / rejected: {}", err);
                     db.log_auth(
                         Some(&cred.id),
                         &rp_id,
@@ -667,10 +667,10 @@ fn handle_cbor(
                 }
             };
 
-            // Tăng sign_count trong database
+            // Increment sign_count in database
             let new_count = db.increment_sign_count(&cred.id).unwrap_or(cred.sign_count + 1);
 
-            // Dựng authenticatorData
+            // Build authenticatorData
             let rp_id_hash = Sha256::digest(rp_id.as_bytes());
             let flags = 0x01 | 0x04; // UP | UV
 
@@ -679,7 +679,7 @@ fn handle_cbor(
             auth_data.push(flags);
             auth_data.extend_from_slice(&new_count.to_be_bytes());
 
-            // Ký message = authData + clientDataHash
+            // Sign message = authData + clientDataHash
             let mut message = Vec::new();
             message.extend_from_slice(&auth_data);
             message.extend_from_slice(&client_data_hash);
@@ -688,7 +688,7 @@ fn handle_cbor(
             let signing_key = match SigningKey::from_slice(&private_key_bytes) {
                 Ok(k) => k,
                 Err(e) => {
-                    eprintln!("[CRYPTO] Lỗi khôi phục private key: {}", e);
+                    eprintln!("[CRYPTO] Error recovering private key: {}", e);
                     return vec![0x01];
                 }
             };
@@ -708,25 +708,25 @@ fn handle_cbor(
                 (Value::Integer(3.into()), Value::Bytes(der_sig.as_bytes().to_vec())),
             ];
 
-            // Ghi log audit thành công
+            // Write audit log
             db.log_auth(
                 Some(&cred.id),
                 &rp_id,
                 "GetAssertion",
                 "SUCCESS",
                 &auth_method,
-                Some(&format!("Xác thực thành công tài khoản '{}' (Counter: {})", cred.user_name, new_count)),
+                Some(&format!("Authenticated account '{}' successfully (Counter: {})", cred.user_name, new_count)),
             );
 
             let mut out = vec![0x00]; // CTAP2_OK
             ciborium::into_writer(&Value::Map(resp_map), &mut out).unwrap();
-            println!("[+] Ký Assertion thành công! Đã cập nhật sign_count vào SQLite.");
+            println!("[+] Assertion signed successfully! Updated sign_count in database.");
             out
         }
 
         _ => {
             if debug_mode {
-                println!("[CTAP2] Lệnh chưa hỗ trợ: 0x{:02x}", ctap2_cmd);
+                println!("[CTAP2] Unsupported command: 0x{:02x}", ctap2_cmd);
                 db.log_debug("WARN", "CTAP2", &format!("Unsupported CTAP2 command: 0x{:02x}", ctap2_cmd));
             }
             vec![0x2b] // CTAP2_ERR_UNSUPPORTED_OPTION
@@ -747,7 +747,7 @@ fn handle_frame(
         if cmd == CTAPHID_CMD_INIT {
             let allocated_cid = NEXT_CID.fetch_add(1, Ordering::SeqCst);
             if debug_mode {
-                println!("[CTAPHID] INIT -> Cấp CID: 0x{:08x}", allocated_cid);
+                println!("[CTAPHID] INIT -> Allocated CID: 0x{:08x}", allocated_cid);
                 db.log_debug("DEBUG", "CTAPHID", &format!("INIT handshake, allocated CID: 0x{:08x}", allocated_cid));
             }
 
@@ -777,7 +777,7 @@ fn handle_frame(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 1. Phân tích tham số CLI & Biến môi trường
+    // 1. Parse CLI arguments & environment variables
     let args: Vec<String> = std::env::args().collect();
     let show_help = args.iter().any(|a| a == "--help" || a == "-h");
     let check_quit = args.iter().any(|a| a == "--quit" || a == "-q" || a == "--stop");
@@ -785,9 +785,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let debug_mode = args.iter().any(|a| a == "--debug" || a == "-d");
     let unlimited_fps = args.iter().any(|a| a == "--unlimited-fps" || a == "--unlimited-fingerprints" || a == "-u");
     let exit_after_import = args.iter().any(|a| a == "--exit-after-import");
+    let check_clean_logs: Option<String> = {
+        let mut target = None;
+        let mut i = 0;
+        while i < args.len() {
+            let a = &args[i];
+            if a == "--clean-logs" || a == "clean-logs" || a == "--clear-logs" || a == "clear-logs" {
+                let next_val = args.get(i + 1).and_then(|s| {
+                    if s.starts_with('-') {
+                        None
+                    } else {
+                        Some(s.clone())
+                    }
+                });
+                target = Some(next_val.unwrap_or_else(|| "all".to_string()));
+                break;
+            } else if a.starts_with("--clean-logs=") || a.starts_with("--clear-logs=") {
+                let val = a.split_once('=').map(|(_, v)| v.to_string()).unwrap_or_default();
+                target = Some(if val.is_empty() { "all".to_string() } else { val });
+                break;
+            }
+            i += 1;
+        }
+        target
+    };
     let pid_file = std::env::temp_dir().join("vrtfido.pid");
 
-    // Xử lý --quit: Dừng tiến trình vrtfido đang chạy
+    // Handle --quit: Stop running vrtfido process
     if check_quit {
         let running_pid: Option<i32> = if pid_file.exists() {
             std::fs::read_to_string(&pid_file)
@@ -820,7 +844,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
 
         if let Some(pid) = target_pid {
-            println!("[DAEMON] Đang gửi tín hiệu dừng tới tiến trình vrtfido (PID: {})...", pid);
+            println!("[DAEMON] Sending stop signal to vrtfido process (PID: {})...", pid);
             unsafe { libc::kill(pid, libc::SIGTERM) };
 
             let mut stopped = false;
@@ -833,27 +857,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             if !stopped {
-                println!("[DAEMON] Tiến trình chưa phản hồi, buộc dừng (SIGKILL)...");
+                println!("[DAEMON] Process not responding, forcing stop (SIGKILL)...");
                 unsafe { libc::kill(pid, libc::SIGKILL) };
                 std::thread::sleep(std::time::Duration::from_millis(200));
             }
 
             let _ = std::fs::remove_file(&pid_file);
-            println!("[DAEMON] [+] Đã dừng tiến trình vrtfido (PID: {}) thành công.", pid);
+            println!("[DAEMON] [+] Stopped vrtfido process (PID: {}) successfully.", pid);
             return Ok(());
         } else {
             let _ = std::fs::remove_file(&pid_file);
-            println!("[DAEMON] [-] Không tìm thấy tiến trình vrtfido nào đang chạy.");
+            println!("[DAEMON] [-] No running vrtfido process found.");
             return Ok(());
         }
     }
 
-    // Xử lý --daemon: Chạy ngầm trong background
+    // Handle --daemon: Run in background
     if check_daemon {
         if let Ok(content) = std::fs::read_to_string(&pid_file) {
             if let Ok(existing_pid) = content.trim().parse::<i32>() {
                 if unsafe { libc::kill(existing_pid, 0) == 0 } {
-                    eprintln!("[DAEMON] [!] vrtfido đã đang chạy với PID: {}. Dùng 'vrtfido --quit' để dừng trước.", existing_pid);
+                    eprintln!("[DAEMON] [!] vrtfido is already running with PID: {}. Use 'vrtfido --quit' to stop first.", existing_pid);
                     std::process::exit(1);
                 }
             }
@@ -865,7 +889,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .filter(|a| *a != "--daemon" && *a != "-b")
             .cloned()
             .collect();
-        println!("[UHID] Kiểm tra quyền truy cập /dev/uhid...");
+        println!("[UHID] Checking /dev/uhid access permission...");
         ensure_uhid_permission();
 
         let current_exe = std::env::current_exe()?;
@@ -890,18 +914,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::thread::sleep(std::time::Duration::from_millis(300));
         if unsafe { libc::kill(child_pid, 0) != 0 } {
             let _ = std::fs::remove_file(&pid_file);
-            eprintln!("[DAEMON] [!] Tiến trình chạy ngầm khởi động thất bại. Hãy kiểm tra log tại: {}", log_file_path.display());
+            eprintln!("[DAEMON] [!] Background daemon failed to start. Check log file at: {}", log_file_path.display());
             std::process::exit(1);
         }
 
         println!("============================================================");
         println!("             vrtfido - Virtual FIDO2 / WebAuthn CMS         ");
         println!("============================================================");
-        println!("[DAEMON] [+] Đã khởi động vrtfido chạy ngầm thành công!");
-        println!("[DAEMON]     - Tiến trình (PID): {}", child_pid);
+        println!("[DAEMON] [+] Started vrtfido daemon successfully!");
+        println!("[DAEMON]     - Process (PID): {}", child_pid);
         println!("[DAEMON]     - Log file: {}", log_file_path.display());
         println!("[DAEMON]     - Web CMS: http://localhost:10209");
-        println!("[DAEMON] Dùng 'vrtfido --quit' để dừng tiến trình khi cần.\n");
+        println!("[DAEMON] Use 'vrtfido --quit' to stop the process.\n");
         return Ok(());
     }
 
@@ -909,29 +933,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("============================================================");
         println!("             vrtfido - Virtual FIDO2 / WebAuthn CMS         ");
         println!("============================================================");
-        println!("Cách dùng: vrtfido [TÙY CHỌN]\n");
-        println!("Tùy chọn:");
-        println!("      --daemon, -b              Chạy ứng dụng ở chế độ nền (daemon ngầm)");
-        println!("  -q, --quit, --stop            Dừng tiến trình vrtfido đang chạy (cả foreground lẫn daemon)");
-        println!("  -d, --debug                   Bật chế độ debug packet");
-        println!("  -u, --unlimited-fps           Không giới hạn số lượng vân tay (mặc định: 10)");
-        println!("  -D, --database, --db <SPEC>   Đường dẫn DB hoặc Connection URL (mặc định: authenticator.db)");
-        println!("                                Hỗ trợ:");
-        println!("                                  - SQLite:     authenticator.db hoặc sqlite:my.db");
+        println!("Usage: vrtfido [OPTIONS]\n");
+        println!("Options:");
+        println!("      --daemon, -b              Run application in background (daemon mode)");
+        println!("  -q, --quit, --stop            Stop running vrtfido process (foreground or daemon)");
+        println!("  -d, --debug                   Enable packet debug mode");
+        println!("  -u, --unlimited-fps           Unlimited fingerprint slots (default: 10)");
+        println!("  -D, --database, --db <SPEC>   Database path or connection URL (default: authenticator.db)");
+        println!("                                Supported:");
+        println!("                                  - SQLite:     authenticator.db or sqlite:my.db");
         println!("                                  - PostgreSQL: postgresql://user:pass@host:port/dbname");
-        println!("                                  - LibSQL:     libsql://... hoặc https://... (Turso) hoặc file");
+        println!("                                  - LibSQL:     libsql://... or https://... (Turso) or file");
         println!("                                  - MySQL:      mysql://user:pass@host:port/dbname");
         println!("                                  - MariaDB:    mariadb://user:pass@host:port/dbname");
-        println!("      --db-type <TYPE>          Chỉ định loại DB (sqlite, postgres, libsql, mysql, mariadb)");
-        println!("      --auth-token <TOKEN>      Token xác thực cho LibSQL / Turso Cloud");
-        println!("      --export <FILE.json>      Xuất toàn bộ 100% dữ liệu database ra file JSON rồi thoát");
-        println!("      --import <FILE.json>      Nhập dữ liệu từ file JSON vào database hiện tại");
-        println!("      --exit-after-import       Thoát ngay sau khi hoàn thành import (không chạy server)");
-        println!("  -h, --help                    Hiển thị thông tin trợ giúp này\n");
-        println!("Biến môi trường:");
-        println!("  DATABASE_URL / DB_URL         Connection string hoặc đường dẫn file DB");
-        println!("  DB_TYPE                       Loại database");
-        println!("  LIBSQL_AUTH_TOKEN             Token xác thực LibSQL");
+        println!("      --db-type <TYPE>          Specify DB type (sqlite, postgres, libsql, mysql, mariadb)");
+        println!("      --auth-token <TOKEN>      Authentication token for LibSQL / Turso Cloud");
+        println!("      --export <FILE.json>      Export 100% database data to JSON file and exit");
+        println!("      --import <FILE.json>      Import data from JSON file into current database");
+        println!("      --exit-after-import       Exit immediately after import (do not start server)");
+        println!("      --clean-logs, clean-logs [TYPE]");
+        println!("                                Clear logs (all, auth, debug) and exit");
+        println!("  -h, --help                    Show this help message\n");
+        println!("Environment variables:");
+        println!("  DATABASE_URL / DB_URL         Connection string or database file path");
+        println!("  DB_TYPE                       Database type");
+        println!("  LIBSQL_AUTH_TOKEN             LibSQL authentication token");
         return Ok(());
     }
 
@@ -982,66 +1008,123 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("             vrtfido - Virtual FIDO2 / WebAuthn CMS         ");
     println!("============================================================");
     if debug_mode {
-        println!("[CLI] Chế độ DEBUG: ĐÃ BẬT (--debug)");
+        println!("[CLI] DEBUG mode: ON (--debug)");
     } else {
-        println!("[CLI] Chế độ DEBUG: TẮT (Dùng '--debug' nếu muốn xem packet thô)");
+        println!("[CLI] DEBUG mode: OFF (Use '--debug' to view raw packets)");
     }
     if unlimited_fps {
-        println!("[CLI] Chế độ VÂN TAY: KHÔNG GIỚI HẠN (--unlimited-fps)");
+        println!("[CLI] FINGERPRINT mode: UNLIMITED (--unlimited-fps)");
     } else {
-        println!("[CLI] Chế độ VÂN TAY: GIỚI HẠN 10 (Dùng '--unlimited-fps' để bỏ giới hạn)");
+        println!("[CLI] FINGERPRINT mode: LIMITED TO 10 (Use '--unlimited-fps' to remove limit)");
     }
 
-    // 2. Khởi tạo Database theo cấu hình (SQLite / PostgreSQL / LibSQL / MySQL / MariaDB)
-    println!("[DB] Đang kết nối database: {}", mask_db_url(&db_spec));
+    // 2. Initialize Database connection
+    println!("[DB] Connecting to database: {}", mask_db_url(&db_spec));
     let db = Db::open_with_options(&db_spec, db_type.as_deref(), auth_token.as_deref())?;
-    println!("[DB] [+] Kết nối thành công hệ cơ sở dữ liệu: {}", db.backend_name());
-    db.log_debug("INFO", "SYSTEM", &format!("Virtual FIDO2 Manager started with {} backend", db.backend_name()));
+    println!("[DB] [+] Successfully connected to database backend: {}", db.backend_name());
+    if check_clean_logs.is_none() && export_file.is_none() {
+        db.log_debug("INFO", "SYSTEM", &format!("Virtual FIDO2 Manager started with {} backend", db.backend_name()));
+    }
 
-    // Xử lý Import dữ liệu nếu được yêu cầu
+    // Handle Clean Logs if requested
+    if let Some(target) = check_clean_logs {
+        let target_norm = target.trim().to_lowercase();
+        println!("[CLEAN] Starting log cleanup (mode: {})...", target_norm);
+
+        let clean_auth = target_norm == "all" || target_norm == "auth" || target_norm == "audit";
+        let clean_debug = target_norm == "all" || target_norm == "debug";
+
+        if !clean_auth && !clean_debug {
+            eprintln!("[CLEAN] [!] Invalid log type: '{}'. Supported: all, auth, debug", target);
+            std::process::exit(1);
+        }
+
+        let mut auth_deleted = 0;
+        let mut debug_deleted = 0;
+
+        if clean_auth {
+            match db.clear_auth_logs() {
+                Ok(count) => {
+                    auth_deleted = count;
+                    println!("[CLEAN] [+] Deleted {} authentication log records (auth_logs).", count);
+                }
+                Err(e) => {
+                    eprintln!("[CLEAN] [!] Error deleting auth_logs: {}", e);
+                    return Err(e.into());
+                }
+            }
+        }
+
+        if clean_debug {
+            match db.clear_debug_logs() {
+                Ok(count) => {
+                    debug_deleted = count;
+                    println!("[CLEAN] [+] Deleted {} debug log records (debug_logs).", count);
+                }
+                Err(e) => {
+                    eprintln!("[CLEAN] [!] Error deleting debug_logs: {}", e);
+                    return Err(e.into());
+                }
+            }
+
+            // Clean daemon log file if exists
+            let daemon_log_path = std::env::temp_dir().join("vrtfido.log");
+            if daemon_log_path.exists() {
+                match std::fs::write(&daemon_log_path, "") {
+                    Ok(_) => println!("[CLEAN] [+] Cleaned daemon log file: {}", daemon_log_path.display()),
+                    Err(e) => eprintln!("[CLEAN] [!] Could not clean daemon log file: {}", e),
+                }
+            }
+        }
+
+        println!("============================================================");
+        println!("[CLEAN] [+] Log cleanup complete! Deleted: {} auth logs, {} debug logs.", auth_deleted, debug_deleted);
+        return Ok(());
+    }
+
+    // Handle data import if requested
     if let Some(import_path) = import_file {
-        println!("[MIGRATION] Đang nhập dữ liệu từ file: {}", import_path);
+        println!("[MIGRATION] Importing data from file: {}", import_path);
         match db.import_from_file(&import_path) {
             Ok(stats) => {
-                println!("[MIGRATION] [+] Nhập dữ liệu thành công!");
+                println!("[MIGRATION] [+] Data imported successfully!");
                 println!("            - Credentials: {}", stats.credentials_imported);
-                println!("            - Vân tay: {}", stats.fingerprints_imported);
-                println!("            - Nhật ký xác thực: {}", stats.auth_logs_imported);
+                println!("            - Fingerprints: {}", stats.fingerprints_imported);
+                println!("            - Auth logs: {}", stats.auth_logs_imported);
                 println!("            - Debug logs: {}", stats.debug_logs_imported);
-                println!("            - Cấu hình bảo mật: {}", if stats.security_settings_updated { "Đã cập nhật (PIN, UV)" } else { "Không đổi" });
+                println!("            - Security settings: {}", if stats.security_settings_updated { "Updated (PIN, UV)" } else { "Unchanged" });
             }
             Err(e) => {
-                eprintln!("[MIGRATION] [!] Lỗi nhập dữ liệu: {}", e);
+                eprintln!("[MIGRATION] [!] Import error: {}", e);
                 return Err(e.into());
             }
         }
         if exit_after_import {
-            println!("[MIGRATION] Hoàn thành nhập dữ liệu và thoát (--exit-after-import).");
+            println!("[MIGRATION] Completed import and exiting (--exit-after-import).");
             return Ok(());
         }
     }
 
-    // Xử lý Export dữ liệu nếu được yêu cầu
+    // Handle data export if requested
     if let Some(export_path) = export_file {
-        println!("[MIGRATION] Đang xuất 100% dữ liệu database sang file: {}", export_path);
+        println!("[MIGRATION] Exporting 100% database data to file: {}", export_path);
         match db.export_to_file(&export_path) {
             Ok(_) => {
                 let creds = db.get_credentials().map(|c| c.len()).unwrap_or(0);
-                println!("[MIGRATION] [+] Xuất dữ liệu thành công sang: {}", export_path);
-                println!("            - Tổng số credentials đã lưu: {}", creds);
+                println!("[MIGRATION] [+] Successfully exported data to: {}", export_path);
+                println!("            - Total credentials saved: {}", creds);
                 return Ok(());
             }
             Err(e) => {
-                eprintln!("[MIGRATION] [!] Lỗi xuất dữ liệu: {}", e);
-                return Err(e.into());
+                eprintln!("[MIGRATION] [!] Export error: {}", e);
             }
         }
     }
 
-    // 3. Kiểm tra và tự động cấp quyền truy cập /dev/uhid qua sudo nếu chưa có
-    println!("[UHID] Kiểm tra quyền truy cập /dev/uhid...");
+    // 3. Check and grant /dev/uhid access via sudo if needed
+    println!("[UHID] Checking /dev/uhid access permission...");
     ensure_uhid_permission();
-    // 4. Khởi tạo SecurityEngine & AppState
+    // 4. Initialize SecurityEngine & AppState
     let sensor = sensor::UsbSensor::new();
     let security = SecurityEngine::new(db.clone(), sensor.clone(), unlimited_fps);
     let debug_mode_arc = Arc::new(AtomicBool::new(debug_mode));
@@ -1055,39 +1138,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         unlimited_fps,
     };
 
-    // 5. Khởi động Web CMS Server trên cổng 10209
+    // 5. Start Web CMS Server on port
     let app = web::create_router(app_state);
-    let port = 10209;
+    let port = get_opt("--port", Some("-p"))
+        .or_else(|| std::env::var("PORT").ok())
+        .and_then(|p| p.parse::<u16>().ok())
+        .unwrap_or(10209);
     let addr = format!("0.0.0.0:{}", port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    println!("[CMS] Web Management CMS đang chạy tại: http://localhost:{}", port);
-    println!("[CMS] Mở trình duyệt truy cập http://localhost:{} để quản lý và duyệt xác thực\n", port);
+    println!("[CMS] Web Management CMS is running at: http://localhost:{}", port);
+    println!("[CMS] Open browser at http://localhost:{} to manage and approve verification requests\n", port);
 
-    // Chạy Web Server trong background task
+    // Run Web Server in background task
     tokio::spawn(async move {
         if let Err(e) = axum::serve(listener, app).await {
-            eprintln!("[CMS] Lỗi Web Server: {}", e);
+            eprintln!("[CMS] Web Server error: {}", e);
         }
     });
 
-    // 6. Khởi động UHID Daemon trong dedicated thread
+    // 6. Start UHID Daemon in dedicated thread
     let tokio_handle = tokio::runtime::Handle::current();
     let uhid_flag = uhid_connected.clone();
     let db_uhid = db.clone();
     let security_uhid = security.clone();
 
     std::thread::spawn(move || {
-        println!("[UHID] Đang mở /dev/uhid...");
+        println!("[UHID] Opening /dev/uhid...");
         let mut dev = match UhidDevice::open() {
             Ok(d) => {
                 uhid_flag.store(true, Ordering::SeqCst);
-                println!("[UHID] [+] Thiết bị FIDO2 ảo đã được tạo thành công trên Kernel!");
-                println!("[UHID] [+] Trình duyệt đã có thể nhận diện USB FIDO2.");
+                println!("[UHID] [+] Virtual FIDO2 device created on kernel successfully!");
+                println!("[UHID] [+] Browsers can now detect the USB FIDO2 device.");
                 d
             }
             Err(e) => {
-                eprintln!("\n[UHID] [!] LỖI TRUY CẬP /dev/uhid: {}", e);
-                eprintln!("[UHID] [!] Hãy chạy 'sudo chmod 666 /dev/uhid' hoặc chạy app với quyền root.");
+                eprintln!("\n[UHID] [!] ERROR ACCESSING /dev/uhid: {}", e);
+                eprintln!("[UHID] [!] Please run 'sudo chmod 666 /dev/uhid' or run the application as root.");
                 db_uhid.log_debug("ERROR", "UHID", &format!("Failed to open /dev/uhid: {}", e));
                 return;
             }
@@ -1099,7 +1185,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let ev = match dev.read_event() {
                 Ok(e) => e,
                 Err(err) => {
-                    eprintln!("[UHID] Lỗi đọc sự kiện kernel: {}", err);
+                    eprintln!("[UHID] Error reading kernel event: {}", err);
                     break;
                 }
             };
@@ -1116,15 +1202,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 UHID_OPEN => {
-                    println!("[Kernel] Ứng dụng đã mở /dev/hidraw");
+                    println!("[Kernel] Application opened /dev/hidraw");
                 }
                 UHID_CLOSE => {
                     if debug_mode {
-                        println!("[Kernel] Ứng dụng đã đóng /dev/hidraw");
+                        println!("[Kernel] Application closed /dev/hidraw");
                     }
                 }
 
-                // Phản hồi ngay lập tức để kernel không bị block
+                // Reply immediately so kernel is not blocked
                 UHID_GET_REPORT => {
                     let get_rep = unsafe { &*ev.u.get_report };
                     let req_id = get_rep.id;
@@ -1210,17 +1296,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // Ghi PID file để phục vụ lệnh --quit
+    // Write PID file for --quit command
     let _ = std::fs::write(&pid_file, std::process::id().to_string());
 
-    // Giữ tiến trình chính chạy và lắng nghe tín hiệu dừng SIGINT (Ctrl+C) hoặc SIGTERM (--quit)
+    // Keep main process running and listen for SIGINT (Ctrl+C) or SIGTERM (--quit)
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {
-            println!("\n[!] Nhận tín hiệu dừng (Ctrl+C). Đang tắt ứng dụng...");
+            println!("\n[!] Received stop signal (Ctrl+C). Shutting down...");
         }
         _ = sigterm.recv() => {
-            println!("\n[!] Nhận tín hiệu dừng (SIGTERM). Đang tắt ứng dụng...");
+            println!("\n[!] Received stop signal (SIGTERM). Shutting down...");
         }
     }
 

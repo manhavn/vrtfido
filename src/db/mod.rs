@@ -191,6 +191,10 @@ pub trait DbBackend: Send + Sync {
 
     fn get_debug_logs(&self, limit: usize) -> Result<Vec<DebugLogRow>>;
 
+    fn clear_auth_logs(&self) -> Result<usize>;
+
+    fn clear_debug_logs(&self) -> Result<usize>;
+
     fn get_security_settings_raw(&self) -> Result<SecuritySettingsData>;
 
     fn get_fingerprint_count(&self) -> Result<usize>;
@@ -347,7 +351,7 @@ impl Db {
         public_key_cose: &[u8],
         sign_count: u32,
     ) -> Result<bool> {
-        // 1. Quét các credential hiện có của RP để kiểm tra trùng tài khoản
+        // 1. Scan existing credentials for RP to detect duplicate accounts
         let existing = self.backend.get_credentials_for_rp(rp_id)?;
 
         let dummy_id = [0u8; 16];
@@ -389,13 +393,13 @@ impl Db {
 
         let is_update = !matching_ids.is_empty();
 
-        // 2. Nếu đã tồn tại bản ghi cùng tài khoản, xóa data cũ và cập nhật audit log sang ID mới
+        // 2. If existing record found for same account, delete old data and update audit logs to new ID
         for old_id in &matching_ids {
             let _ = self.backend.delete_credential(old_id);
             let _ = self.backend.update_auth_log_credential_id(old_id, id_hex);
         }
 
-        // 3. Ghi đè / thêm mới bản ghi với dữ liệu mới nhất
+        // 3. Overwrite / insert record with latest data
         let now = current_timestamp();
         let created_at_val = earliest_created_at.unwrap_or_else(|| now.clone());
 
@@ -434,6 +438,20 @@ impl Db {
 
     pub fn get_debug_logs(&self, limit: usize) -> Result<Vec<DebugLogRow>> {
         self.backend.get_debug_logs(limit)
+    }
+
+    pub fn clear_auth_logs(&self) -> Result<usize> {
+        self.backend.clear_auth_logs()
+    }
+
+    pub fn clear_debug_logs(&self) -> Result<usize> {
+        self.backend.clear_debug_logs()
+    }
+
+    pub fn clear_all_logs(&self) -> Result<(usize, usize)> {
+        let auth = self.backend.clear_auth_logs()?;
+        let debug = self.backend.clear_debug_logs()?;
+        Ok((auth, debug))
     }
 
     pub fn get_security_settings(&self, unlimited_fps: bool) -> Result<SecuritySettings> {
@@ -596,7 +614,7 @@ mod tests {
     fn test_duplicate_same_username_same_rp_overwrites() {
         let db = create_test_db();
 
-        // Đăng ký lần 1
+        // First registration
         let res1 = db.save_credential(
             "id_1",
             "webauthn.io",
@@ -607,7 +625,7 @@ mod tests {
             b"cose_key_1",
             1,
         ).unwrap();
-        assert!(!res1, "Lần đầu tiên đăng ký không phải là update");
+        assert!(!res1, "First registration should not be an update");
 
         let creds1 = db.get_credentials().unwrap();
         assert_eq!(creds1.len(), 1);
@@ -615,7 +633,7 @@ mod tests {
         assert_eq!(creds1[0].user_name, "testuser");
         assert_eq!(creds1[0].user_display_name, "User Display 1");
 
-        // Đăng ký lần 2 cùng rp_id và user_name
+        // Second registration with same rp_id and user_name
         let res2 = db.save_credential(
             "id_2",
             "webauthn.io",
@@ -626,14 +644,14 @@ mod tests {
             b"cose_key_2",
             1,
         ).unwrap();
-        assert!(res2, "Lần thứ hai đăng ký cùng tài khoản phải là update");
+        assert!(res2, "Second registration for same account must be an update");
 
-        // Kiểm tra không sinh thêm bản ghi mới, chỉ có đúng 1 bản ghi
+        // Verify only one record exists
         let creds2 = db.get_credentials().unwrap();
-        assert_eq!(creds2.len(), 1, "Chỉ được phép có 1 bản ghi duy nhất cho cùng một tài khoản của 1 trang web");
-        assert_eq!(creds2[0].id, "id_2", "ID phải được cập nhật sang ID mới");
-        assert_eq!(creds2[0].user_display_name, "User Display 2", "Data phải được cập nhật mới");
-        assert_eq!(hex::decode(&creds2[0].private_key_sec1_hex).unwrap(), b"sec1_key_2", "Private key mới");
+        assert_eq!(creds2.len(), 1, "Only one record allowed per account per RP");
+        assert_eq!(creds2[0].id, "id_2", "ID must be updated to new ID");
+        assert_eq!(creds2[0].user_display_name, "User Display 2", "Data must be updated");
+        assert_eq!(hex::decode(&creds2[0].private_key_sec1_hex).unwrap(), b"sec1_key_2", "New private key");
     }
 
     #[test]
@@ -651,7 +669,7 @@ mod tests {
             1,
         ).unwrap();
 
-        // Đăng ký lại với chữ hoa "Alice"
+        // Re-register with uppercase "Alice"
         let is_update = db.save_credential(
             "id_2",
             "webauthn.io",
@@ -662,7 +680,7 @@ mod tests {
             b"cose2",
             1,
         ).unwrap();
-        assert!(is_update, "Tên tài khoản không phân biệt hoa thường phải nhận diện trùng");
+        assert!(is_update, "Case-insensitive username must be detected as duplicate");
 
         let creds = db.get_credentials().unwrap();
         assert_eq!(creds.len(), 1);
@@ -684,7 +702,7 @@ mod tests {
             1,
         ).unwrap();
 
-        // Đổi username nhưng cùng user_id
+        // Change username but with same user_id
         let is_update = db.save_credential(
             "id_2",
             "webauthn.io",
@@ -695,7 +713,7 @@ mod tests {
             b"cose2",
             1,
         ).unwrap();
-        assert!(is_update, "Cùng user_id phải nhận diện là cùng một tài khoản và ghi đè");
+        assert!(is_update, "Same user_id must be detected as same account and overwrite");
 
         let creds = db.get_credentials().unwrap();
         assert_eq!(creds.len(), 1);
@@ -732,7 +750,7 @@ mod tests {
         assert!(!res2);
 
         let creds = db.get_credentials().unwrap();
-        assert_eq!(creds.len(), 2, "Hai tài khoản khác nhau trên cùng RP phải được lưu độc lập");
+        assert_eq!(creds.len(), 2, "Two different accounts on same RP must be stored independently");
     }
 
     #[test]
@@ -762,7 +780,7 @@ mod tests {
         ).unwrap();
 
         let creds = db.get_credentials().unwrap();
-        assert_eq!(creds.len(), 2, "Cùng username nhưng khác trang web phải được lưu độc lập");
+        assert_eq!(creds.len(), 2, "Same username on different RPs must be stored independently");
     }
 
     #[test]
@@ -780,7 +798,7 @@ mod tests {
             1,
         ).unwrap();
 
-        // Tạo auth log liên kết với id_old
+        // Create auth log associated with id_old
         db.log_auth(
             Some("id_old"),
             "webauthn.io",
@@ -793,7 +811,7 @@ mod tests {
         let logs_before = db.get_auth_logs(Some("id_old"), 10).unwrap();
         assert_eq!(logs_before.len(), 1);
 
-        // Đăng ký lại ghi đè sang id_new
+        // Re-register and overwrite with id_new
         db.save_credential(
             "id_new",
             "webauthn.io",
@@ -805,7 +823,7 @@ mod tests {
             1,
         ).unwrap();
 
-        // Logs của id_old phải được chuyển sang id_new
+        // Logs for id_old must be updated to id_new
         let logs_old = db.get_auth_logs(Some("id_old"), 10).unwrap();
         assert_eq!(logs_old.len(), 0);
 
@@ -820,7 +838,7 @@ mod tests {
         let db_path = temp_dir.join(format!("vrtfido_test_dedup_{}.db", rand::random::<u32>()));
         let path_str = db_path.to_str().unwrap();
 
-        // Tạo database và chèn thủ công 3 bản ghi trùng lặp (mô phỏng dữ liệu cũ)
+        // Create database and manually insert 3 duplicate records (simulating legacy data)
         {
             let conn = Connection::open(path_str).unwrap();
             conn.execute_batch(
@@ -842,10 +860,10 @@ mod tests {
             ).unwrap();
         }
 
-        // Mở qua Db::open -> Phải tự động dọn dẹp các bản ghi trùng cũ, chỉ giữ lại bản ghi mới nhất ('id3')
+        // Open via Db::open -> Must automatically clean older duplicates, keeping only the newest ('id3')
         let db = Db::open(path_str).unwrap();
         let creds = db.get_credentials().unwrap();
-        assert_eq!(creds.len(), 1, "Chỉ giữ lại 1 bản ghi mới nhất sau khi mở DB");
+        assert_eq!(creds.len(), 1, "Only 1 newest record kept after opening DB");
         assert_eq!(creds[0].id, "id3");
 
         let _ = std::fs::remove_file(db_path);
@@ -1007,5 +1025,47 @@ mod tests {
 
         let del = db.delete_credential(&test_id).expect("Failed to delete credential");
         assert!(del);
+    }
+
+    #[test]
+    fn test_clean_logs() {
+        let db = create_test_db();
+
+        // Add auth logs
+        db.log_auth(Some("cred_1"), "rp.test", "MakeCredential", "SUCCESS", "PIN", Some("Test auth log"));
+        db.log_auth(Some("cred_2"), "rp.test", "GetAssertion", "SUCCESS", "FP", Some("Test auth log 2"));
+        let auth_logs = db.get_auth_logs(None, 10).unwrap();
+        assert_eq!(auth_logs.len(), 2);
+
+        // Add debug logs
+        db.log_debug("INFO", "TEST", "Debug log 1");
+        db.log_debug("WARN", "TEST", "Debug log 2");
+        db.log_debug("ERROR", "TEST", "Debug log 3");
+        let debug_logs = db.get_debug_logs(10).unwrap();
+        assert_eq!(debug_logs.len(), 3);
+
+        // Clear auth logs
+        let deleted_auth = db.clear_auth_logs().unwrap();
+        assert_eq!(deleted_auth, 2);
+        assert_eq!(db.get_auth_logs(None, 10).unwrap().len(), 0);
+        // Debug logs remain untouched
+        assert_eq!(db.get_debug_logs(10).unwrap().len(), 3);
+
+        // Clear debug logs
+        let deleted_debug = db.clear_debug_logs().unwrap();
+        assert_eq!(deleted_debug, 3);
+        assert_eq!(db.get_debug_logs(10).unwrap().len(), 0);
+
+        // Re-add both log types and test clear_all_logs
+        db.log_auth(None, "rp.test", "MakeCredential", "SUCCESS", "PIN", None);
+        db.log_debug("INFO", "TEST", "Another debug log");
+        assert_eq!(db.get_auth_logs(None, 10).unwrap().len(), 1);
+        assert_eq!(db.get_debug_logs(10).unwrap().len(), 1);
+
+        let (cleared_auth, cleared_debug) = db.clear_all_logs().unwrap();
+        assert_eq!(cleared_auth, 1);
+        assert_eq!(cleared_debug, 1);
+        assert_eq!(db.get_auth_logs(None, 10).unwrap().len(), 0);
+        assert_eq!(db.get_debug_logs(10).unwrap().len(), 0);
     }
 }

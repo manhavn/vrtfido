@@ -462,6 +462,24 @@ impl DbBackend for PostgresBackend {
         })
     }
 
+    fn clear_auth_logs(&self) -> Result<usize, DbError> {
+        self.worker.run(|client| {
+            let rows = client
+                .execute("DELETE FROM auth_logs", &[])
+                .map_err(|e| DbError::Postgres(e.to_string()))?;
+            Ok(rows as usize)
+        })
+    }
+
+    fn clear_debug_logs(&self) -> Result<usize, DbError> {
+        self.worker.run(|client| {
+            let rows = client
+                .execute("DELETE FROM debug_logs", &[])
+                .map_err(|e| DbError::Postgres(e.to_string()))?;
+            Ok(rows as usize)
+        })
+    }
+
     fn get_security_settings_raw(&self) -> Result<SecuritySettingsData, DbError> {
         self.worker.run(|client| {
             let rows = client.query(

@@ -1,196 +1,198 @@
 # vrtfido
 
-**vrtfido** là ứng dụng giả lập khóa bảo mật phần cứng **Virtual FIDO2 / WebAuthn Authenticator** chạy trên Linux thông qua kernel character device `/dev/uhid`. 
+**vrtfido** is a **Virtual FIDO2 / WebAuthn Authenticator** hardware emulator running on Linux through the kernel character device `/dev/uhid`.
 
-Ứng dụng tích hợp sẵn **Web CMS Dashboard** trên cổng **10209**, hỗ trợ lưu trữ linh hoạt đa cơ sở dữ liệu (**SQLite**, **PostgreSQL**, **LibSQL/Turso**, **MySQL**, **MariaDB**) cùng tính năng **Export / Import 100% dữ liệu sang JSON** để chuyển đổi server dễ dàng, hỗ trợ chính sách xác thực đa lớp (Mã PIN passkey 6 số, quản lý tối đa 10 dấu vân tay, và mở rộng sinh trắc học khuôn mặt/mống mắt).
+The application includes an embedded **Web CMS Dashboard** on port **10209**, supports multiple database backends (**SQLite**, **PostgreSQL**, **LibSQL/Turso**, **MySQL**, **MariaDB**), features **100% Data Export / Import to JSON** for migration, and supports multi-factor authentication policies (6-digit passkey PIN, hardware USB fingerprint sensor management, and future biometric modalities).
 
 ---
 
-## 🌟 Tính năng chính
+## 🌟 Key Features
 
 1. **Kernel Virtual HID (`/dev/uhid`):**
-   - Tự tạo một thiết bị USB HID ảo với FIDO Usage Page (`0xF1D0`).
-   - Mọi trình duyệt (Chrome, Chromium, Firefox, Edge) tự động nhận diện như một USB Security Key vật lý cắm vào máy.
-   - Hỗ trợ đầy đủ các lệnh CTAP2: `authenticatorGetInfo`, `authenticatorMakeCredential` (Đăng ký Passkey), `authenticatorGetAssertion` (Đăng nhập WebAuthn).
+   - Creates a virtual USB HID device with the FIDO Usage Page (`0xF1D0`).
+   - All browsers (Chrome, Chromium, Firefox, Edge) automatically recognize it as a physical USB Security Key.
+   - Full support for standard CTAP2 commands: `authenticatorGetInfo`, `authenticatorMakeCredential` (Passkey Registration), and `authenticatorGetAssertion` (WebAuthn Sign-in).
 
-2. **Cửa sổ Phê duyệt Tương tác (Interactive Verification Modal):**
-   - Khi website (ví dụ: `webauthn.io`, GitHub, Google) gửi yêu cầu xác thực WebAuthn, Web CMS tự động bật modal xác thực thời gian thực.
-   - Nếu chưa cài đặt bảo mật: Tự động yêu cầu khởi tạo mã PIN 6 số.
-   - Nếu đã cài đặt: Cho phép xác thực bằng mã PIN 6 số hoặc Chạm cảm biến vân tay.
+2. **Interactive Verification Modal:**
+   - When a website (e.g. `webauthn.io`, GitHub, Google) sends a WebAuthn verification request, the Web CMS displays a real-time verification modal.
+   - If security is not yet configured: Prompts to set up a 6-digit PIN.
+   - If configured: Allows verification via 6-digit PIN or USB fingerprint sensor.
 
-3. **Chính sách Quản lý Bảo mật:**
-   - **Mã PIN 6 số (Mật khẩu Passkey):** Kiểm tra định dạng 6 chữ số, băm mật mã SHA-256 kèm muối (salt). Chỉ cho phép duy nhất 1 mã PIN (Thêm / Đổi cần PIN cũ / Xóa).
-   - **Quản lý Vân tay:** Đăng ký tối đa 10 dấu vân tay (slot 0 đến 9), có đặt tên gợi nhớ và xóa slot.
-   - **Mở rộng đa sinh trắc học tương lai:** Cấu trúc module hỗ trợ mở rộng FaceID, Iris, Voiceprint.
+3. **Security & Biometrics Policies:**
+   - **6-Digit PIN (Passkey Password):** Enforces 6 numeric digits, hashed with SHA-256 and salt. Supports setup, changing (requires old PIN), and removal.
+   - **Fingerprint Management:** Enrolls up to 10 fingerprints (or unlimited with `--unlimited-fps`), with customizable labels and slot deletion.
+   - **Future Biometrics:** Modular architecture ready for Face ID, Iris, and Voiceprint extensions.
 
-4. **Web Management CMS (Cổng 10209):**
-   - Giao diện Dark theme hiện đại, nhẹ, nhúng trực tiếp vào binary (không phụ thuộc Node/npm).
-   - Quản lý danh sách tài khoản Passkey đã lưu (Relying Party domain, username, số lần ký, ngày tạo, lần dùng cuối).
-   - Cho phép chỉnh sửa tên hiển thị hoặc xóa tài khoản.
-   - **Nhật ký Truy vết (Audit Trail):** Lưu vết toàn bộ lịch sử thao tác với thông tin chi tiết từng tài khoản.
-   - **Logs Debug & Lỗi:** Bảng hiển thị logs hệ thống và gói tin CTAP2.
+4. **Web Management CMS (Port 10209):**
+   - Modern, lightweight Dark theme embedded directly into the binary (zero Node.js/npm dependencies).
+   - Manage registered passkey credentials (Relying Party domain, username, sign count, creation date, last used date).
+   - Edit usernames and display names, or delete credentials.
+   - **Operational Audit Trail:** Complete operation history with detailed logs.
+   - **Debug & Error Logs:** System logs and CTAP2 packet inspection.
+   - **Clean Logs:** Dedicated buttons to clear audit logs, debug logs, or all logs at once.
 
-5. **Chế độ Debug qua CLI:**
-   - Mặc định tắt debug để giữ log sạch.
-   - Kích hoạt qua cờ `--debug` hoặc `-d` để in chi tiết các gói tin CTAPHID và lưu vào bảng `debug_logs`.
+5. **CLI Debug & Log Management:**
+   - Debug output disabled by default for clean logs.
+   - Enable via `--debug` or `-d` flag to print raw CTAPHID packets and record to `debug_logs`.
+   - Clear logs via `--clean-logs` or `clean-logs` [all|auth|debug].
 
+6. **Multi-Database Support & 100% Data Migration:**
+   - Connects flexibly to **SQLite**, **PostgreSQL**, **LibSQL (Turso Cloud)**, **MySQL**, and **MariaDB**.
+   - Export and Import 100% of data (Credentials, PIN, Fingerprints, Audit Logs, Debug Logs) to a single JSON file.
+   - Integrated REST API endpoints `/api/database/export` and `/api/database/import`.
 
-6. **Hỗ trợ Đa Cơ sở Dữ liệu & Chuyển dịch Dữ liệu (100% Data Migration):**
-   - Kết nối linh hoạt với **SQLite**, **PostgreSQL**, **LibSQL (Turso Cloud)**, **MySQL** và **MariaDB**.
-   - Xuất (Export) và Nhập (Import) 100% dữ liệu (Credentials, PIN, Vân tay, Logs) sang 1 file JSON duy nhất để dễ dàng sao lưu, di chuyển server hoặc chuyển đổi giữa các loại database.
-   - Tích hợp REST API `/api/database/export` và `/api/database/import` trên Web CMS.
 ---
 
-## 🚀 Cài đặt & Sử dụng
+## 🚀 Installation & Usage
 
-### 1. Cài đặt qua [mise](https://mise.jdx.dev/) (Khuyên dùng)
+### 1. Install via [mise](https://mise.jdx.dev/) (Recommended)
 
-Bạn có thể cài đặt và cập nhật binary `vrtfido` trực tiếp từ GitHub Releases trên bất kỳ máy tính Linux nào bằng `mise`:
+You can install and update the `vrtfido` binary directly from GitHub Releases on any Linux machine with `mise`:
 
 ```bash
-# Cài đặt toàn cục (Global)
+# Global install
 mise use -g github:manhavn/vrtfido
 
-# Hoặc cài đặt riêng cho thư mục/dự án hiện tại
+# Or install for current directory/project
 mise use github:manhavn/vrtfido
 
-# Hoặc chạy trực tiếp không cần cài đặt
+# Or run directly without installation
 mise x github:manhavn/vrtfido -- vrtfido --daemon
 ```
 
-Hoặc thêm vào file `mise.toml`:
+Or add to your `mise.toml`:
 
 ```toml
 [tools]
 "github:manhavn/vrtfido" = "latest"
 ```
 
-### 2. Cấp quyền truy cập `/dev/uhid`
-Ứng dụng **đã được tích hợp sẵn tính năng tự động kiểm tra và yêu cầu cấp quyền qua `sudo`/`pkexec`** mỗi khi khởi động nếu chưa có quyền truy cập `/dev/uhid`.
+### 2. Granting `/dev/uhid` Access Permissions
 
-Nếu muốn cấu hình udev rule vĩnh viễn (không bao giờ bị hỏi mật khẩu sudo):
+`vrtfido` automatically checks and requests permission via `sudo`/`pkexec` upon startup if `/dev/uhid` is not accessible.
+
+To configure a permanent udev rule (avoiding password prompts):
 
 ```bash
 echo 'KERNEL=="uhid", MODE="0666"' | sudo tee /etc/udev/rules.d/99-uhid.rules
 sudo udevadm control --reload-rules && sudo udevadm trigger
 ```
 
-### 3. Biên dịch & Chạy từ mã nguồn
+### 3. Build & Run from Source
 
 ```bash
-# Biên dịch phiên bản Release
+# Build release binary
 cargo build --release
 
-# Chạy ứng dụng thông thường (giới hạn 10 vân tay)
+# Run normally (default 10 fingerprints limit)
 ./target/release/vrtfido
 
-# Chạy ngầm trong nền (DAEMON MODE):
+# Run in background (DAEMON MODE):
 ./target/release/vrtfido --daemon
 
-# Chạy ngầm kết hợp PostgreSQL và chế độ vân tay không giới hạn:
+# Run as daemon with PostgreSQL and unlimited fingerprints:
 ./target/release/vrtfido --database "postgresql://postgres:vrtfido@127.0.0.1:5435/postgres" --unlimited-fps --daemon
 
-# Dừng tiến trình vrtfido đang chạy (cả daemon lẫn foreground):
+# Stop running vrtfido process (foreground or daemon):
 ./target/release/vrtfido --quit
 
-# Xem log khi chạy ngầm:
+# Clear logs via CLI:
+./target/release/vrtfido clean-logs
+./target/release/vrtfido --clean-logs auth
+./target/release/vrtfido --clean-logs debug
+
+# View daemon log file:
 tail -f /tmp/vrtfido.log
 
-# Chạy với chế độ KHÔNG GIỚI HẠN VÂN TAY (--unlimited-fps hoặc -u)
+# Run with UNLIMITED FINGERPRINTS (--unlimited-fps or -u):
 ./target/release/vrtfido --unlimited-fps
 
-# Kết hợp chế độ không giới hạn vân tay và debug chi tiết
-./target/release/vrtfido --unlimited-fps --debug
+# Run with debug mode enabled:
+./target/release/vrtfido --debug
 ```
 
-### 4. Tự build đa nền tảng cho GitHub Releases (Local Cross-build)
+### 4. Local Cross-Compilation for GitHub Releases
 
-Dự án tích hợp sẵn script `build-cross.sh` (sử dụng `cargo-zigbuild`) tương tự dự án `manhavn/beauty` để bạn có thể biên dịch đa kiến trúc (x86_64 GNU/musl, aarch64 GNU/musl) ngay tại máy local mà không cần đến GitHub Actions CI:
+The repository includes `build-cross.sh` (using `cargo-zigbuild`) to compile release binaries across architectures (x86_64 GNU/musl, aarch64 GNU/musl) locally:
 
 ```bash
-# Cài đặt công cụ cross-build nếu chưa có:
+# Install cross-build prerequisites:
 cargo install cargo-zigbuild --locked
 mise use -g zig
 
-# Chạy build toàn bộ các target:
+# Build all targets:
 ./build-cross.sh
 
-# Hoặc chỉ định target mong muốn:
+# Or build specific targets:
 TARGETS=x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu ./build-cross.sh
 ```
 
-Toàn bộ file nén upload-ready (`.tar.gz`) và mã băm kiểm tra (`.sha256`) sẽ được tạo tự động trong thư mục `dist/packages/`:
+Release packages (`.tar.gz`) and checksums (`.sha256`) are generated in `dist/packages/`:
 - `vrtfido-x86_64-unknown-linux-gnu.tar.gz`
 - `vrtfido-x86_64-unknown-linux-musl.tar.gz`
 - `vrtfido-aarch64-unknown-linux-gnu.tar.gz`
 - `vrtfido-aarch64-unknown-linux-musl.tar.gz`
 
-Bạn chỉ cần tạo Release trên GitHub và kéo thả các file trong `dist/packages/` lên. Người dùng ở bất kỳ máy tính nào đều có thể cài đặt ngay qua lệnh:
-```bash
-mise use -g github:manhavn/vrtfido
-```
+### 5. Getting Started
 
-### 5. Trải nghiệm
+1. Open Web CMS in your browser: **http://localhost:10209**
+2. In another tab, open a test site: **https://webauthn.io/**
+3. Enter any username $\rightarrow$ Click **Register** or **Authenticate**.
+4. The popup window on Web CMS will appear for you to enter your 6-digit PIN or touch the fingerprint sensor.
 
-1. Mở trình duyệt truy cập Web CMS: **http://localhost:10209**
-2. Mở tab mới truy cập trang kiểm thử: **https://webauthn.io/**
-3. Nhập tên tài khoản bất kỳ $\rightarrow$ Bấm **Register** hoặc **Authenticate**.
-4. Cửa sổ popup trên Web CMS sẽ xuất hiện để bạn nhập PIN 6 số hoặc bấm xác thực vân tay.
 ---
 
-## 📂 Cơ sở dữ liệu & Chuyển đổi dữ liệu (Data Migration)
+## 📂 Database & Data Migration
 
-Ứng dụng hỗ trợ đa dạng các hệ cơ sở dữ liệu: **SQLite**, **PostgreSQL**, **LibSQL (Turso)**, **MySQL** và **MariaDB**.
+Supported database backends: **SQLite**, **PostgreSQL**, **LibSQL (Turso)**, **MySQL**, and **MariaDB**.
 
-### 1. Cấu hình cơ sở dữ liệu qua CLI hoặc Biến môi trường
+### 1. Database Configuration via CLI or Environment Variables
 
-Mặc định, ứng dụng sử dụng file SQLite nội bộ `authenticator.db`. Bạn có thể thay đổi sang PostgreSQL, LibSQL, MySQL hoặc MariaDB bằng tham số `--database` / `--db` / `-D` hoặc biến môi trường `DATABASE_URL`:
+By default, the application uses local SQLite file `authenticator.db`. Configure another database via `--database` / `--db` / `-D` or `DATABASE_URL`:
 
 ```bash
-# Sử dụng SQLite với file chỉ định:
+# SQLite with custom file:
 ./vrtfido --database my_data.db
 
-# Sử dụng PostgreSQL:
+# PostgreSQL:
 ./vrtfido --database "postgresql://postgres:vrtfido@127.0.0.1:5435/postgres"
 
-# Sử dụng LibSQL / Turso Cloud (với token xác thực):
+# LibSQL / Turso Cloud (with auth token):
 ./vrtfido --database "libsql://my-db.turso.io" --auth-token "my-turso-token"
 
-# Sử dụng MySQL / MariaDB:
+# MySQL / MariaDB:
 ./vrtfido --database "mysql://root:secret@127.0.0.1:3306/vrtfido"
 ./vrtfido --database "mariadb://root:secret@127.0.0.1:3306/vrtfido"
 
-# Hoặc thiết lập qua biến môi trường:
+# Or configure via environment variable:
 export DATABASE_URL="postgresql://postgres:vrtfido@127.0.0.1:5435/postgres"
 ./vrtfido
 ```
 
-### 2. Xuất (Export) & Nhập (Import) 100% dữ liệu để chuyển server / chuyển DB
-
-Hệ thống hỗ trợ xuất trọn vẹn 100% dữ liệu (bao gồm Credentials, Mã PIN, Dấu vân tay, Nhật ký xác thực Audit Logs, Debug Logs) ra 1 file JSON chuẩn để dễ dàng chuyển sang server khác hoặc chuyển đổi giữa các loại database (ví dụ: chuyển từ SQLite sang PostgreSQL hoặc ngược lại):
+### 2. Export & Import 100% Data
 
 ```bash
-# 1. Xuất 100% dữ liệu từ SQLite ra file JSON rồi thoát:
+# 1. Export 100% data to JSON and exit:
 ./vrtfido --database authenticator.db --export backup.json
 
-# 2. Nhập file JSON vào PostgreSQL:
+# 2. Import JSON file into PostgreSQL and exit:
 ./vrtfido --database "postgresql://postgres:vrtfido@127.0.0.1:5435/postgres" --import backup.json --exit-after-import
 
-# 3. Hoặc vừa import vừa chạy tiếp ứng dụng:
+# 3. Import and continue running:
 ./vrtfido --database "postgresql://postgres:vrtfido@127.0.0.1:5435/postgres" --import backup.json
 ```
 
-Ngoài ra, Web CMS API cũng cung cấp 2 endpoint:
-- `GET /api/database/export`: Tải về toàn bộ dữ liệu định dạng JSON.
-- `POST /api/database/import`: Nhận payload JSON để nhập dữ liệu trực tiếp vào database đang hoạt động.
+Web CMS API endpoints:
+- `GET /api/database/export`: Download all database data as JSON.
+- `POST /api/database/import`: Upload and import JSON payload into active database.
 
-### 3. Cấu trúc bảng cơ sở dữ liệu
+### 3. Database Schema
 
-* `credentials`: Lưu private key (P-256 SEC1), public key (COSE), sign counter và thông tin Relying Party.
-* `auth_logs`: Lưu vết toàn bộ thao tác xác thực và đăng ký.
-* `security_settings`: Lưu trạng thái PIN (hash + salt) và chính sách xác thực.
-* `fingerprints`: Quản lý các slot vân tay và tên gợi nhớ.
-* `debug_logs`: Lưu vết lỗi và gói tin CTAPHID/CTAP2 khi bật debug.
+* `credentials`: Stores private keys (P-256 SEC1), public keys (COSE), sign counter, and Relying Party metadata.
+* `auth_logs`: Audit trail for registration and authentication operations.
+* `security_settings`: PIN configuration (hash + salt) and verification policies.
+* `fingerprints`: Fingerprint slot mappings and labels.
+* `debug_logs`: CTAPHID/CTAP2 packet trace logs and system errors.
 
 ## 📜 License
 MIT

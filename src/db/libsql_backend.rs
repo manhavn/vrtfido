@@ -446,6 +446,32 @@ impl DbBackend for LibSqlBackend {
         })
     }
 
+    fn clear_auth_logs(&self) -> Result<usize, DbError> {
+        let conn = self.conn.clone();
+        self.worker.run(move |rt| {
+            rt.block_on(async move {
+                let count = conn
+                    .execute("DELETE FROM auth_logs", ())
+                    .await
+                    .map_err(|e| DbError::LibSql(e.to_string()))?;
+                Ok(count as usize)
+            })
+        })
+    }
+
+    fn clear_debug_logs(&self) -> Result<usize, DbError> {
+        let conn = self.conn.clone();
+        self.worker.run(move |rt| {
+            rt.block_on(async move {
+                let count = conn
+                    .execute("DELETE FROM debug_logs", ())
+                    .await
+                    .map_err(|e| DbError::LibSql(e.to_string()))?;
+                Ok(count as usize)
+            })
+        })
+    }
+
     fn get_security_settings_raw(&self) -> Result<SecuritySettingsData, DbError> {
         let conn = self.conn.clone();
         self.worker.run(move |rt| {

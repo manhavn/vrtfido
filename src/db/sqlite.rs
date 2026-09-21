@@ -18,6 +18,7 @@ impl SqliteBackend {
 
     pub fn open_with_name(path: &str, name: &'static str) -> Result<Self, DbError> {
         let conn = Connection::open(path).map_err(DbError::Sqlite)?;
+        let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
              PRAGMA synchronous = NORMAL;
@@ -74,7 +75,7 @@ impl SqliteBackend {
              INSERT OR IGNORE INTO security_settings (id, pin_hash, pin_salt, pin_enabled, fp_enabled, require_uv, updated_at)
              VALUES (1, NULL, NULL, 0, 1, 1, datetime('now'));
 
-             -- Dọn dẹp bản ghi trùng lặp trước đó (nếu có), chỉ giữ lại bản ghi mới nhất theo lần dùng/ngày tạo
+             -- Clean up prior duplicates (if any), keep newest by last_used_at/created_at
              DELETE FROM credentials
              WHERE id NOT IN (
                  SELECT id FROM (
@@ -354,6 +355,18 @@ impl DbBackend for SqliteBackend {
             list.push(r.map_err(DbError::Sqlite)?);
         }
         Ok(list)
+    }
+
+    fn clear_auth_logs(&self) -> Result<usize, DbError> {
+        let conn = self.conn.lock();
+        let rows = conn.execute("DELETE FROM auth_logs", []).map_err(DbError::Sqlite)?;
+        Ok(rows)
+    }
+
+    fn clear_debug_logs(&self) -> Result<usize, DbError> {
+        let conn = self.conn.lock();
+        let rows = conn.execute("DELETE FROM debug_logs", []).map_err(DbError::Sqlite)?;
+        Ok(rows)
     }
 
     fn get_security_settings_raw(&self) -> Result<SecuritySettingsData, DbError> {

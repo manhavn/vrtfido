@@ -103,8 +103,9 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/credentials/{id}", put(update_credential))
         .route("/api/credentials/{id}", delete(delete_credential))
         .route("/api/credentials/{id}/logs", get(get_credential_logs))
-        .route("/api/logs", get(list_auth_logs))
-        .route("/api/debug-logs", get(list_debug_logs))
+        .route("/api/logs", get(list_auth_logs).delete(clear_auth_logs))
+        .route("/api/debug-logs", get(list_debug_logs).delete(clear_debug_logs))
+        .route("/api/logs/clean", post(clean_all_logs).delete(clean_all_logs))
         .route("/api/security", get(get_security))
         .route("/api/security/pin", post(set_pin))
         .route("/api/security/pin", delete(remove_pin))
@@ -167,7 +168,7 @@ async fn update_credential(
                 "CredentialUpdate",
                 "SUCCESS",
                 "CMS",
-                Some(&format!("Cập nhật tên tài khoản: {}", payload.user_name)),
+                Some(&format!("Update credential name: {}", payload.user_name)),
             );
             Json(ApiResponse::ok(ok))
         }
@@ -187,7 +188,7 @@ async fn delete_credential(
                 "CredentialDelete",
                 "SUCCESS",
                 "CMS",
-                Some("Xóa tài khoản khỏi bộ nhớ"),
+                Some("Delete credential from store"),
             );
             Json(ApiResponse::ok(ok))
         }
@@ -215,6 +216,42 @@ async fn list_auth_logs(State(state): State<AppState>) -> Json<ApiResponse<Vec<c
 async fn list_debug_logs(State(state): State<AppState>) -> Json<ApiResponse<Vec<crate::db::DebugLogRow>>> {
     match state.db.get_debug_logs(200) {
         Ok(logs) => Json(ApiResponse::ok(logs)),
+        Err(e) => Json(ApiResponse::err(e.to_string())),
+    }
+}
+
+#[derive(Serialize)]
+pub struct CleanLogsResult {
+    pub auth_logs_deleted: usize,
+    pub debug_logs_deleted: usize,
+}
+
+async fn clear_auth_logs(State(state): State<AppState>) -> Json<ApiResponse<usize>> {
+    match state.db.clear_auth_logs() {
+        Ok(count) => Json(ApiResponse::ok(count)),
+        Err(e) => Json(ApiResponse::err(e.to_string())),
+    }
+}
+
+async fn clear_debug_logs(State(state): State<AppState>) -> Json<ApiResponse<usize>> {
+    match state.db.clear_debug_logs() {
+        Ok(count) => Json(ApiResponse::ok(count)),
+        Err(e) => Json(ApiResponse::err(e.to_string())),
+    }
+}
+
+async fn clean_all_logs(State(state): State<AppState>) -> Json<ApiResponse<CleanLogsResult>> {
+    match state.db.clear_all_logs() {
+        Ok((auth, debug)) => {
+            let daemon_log_path = std::env::temp_dir().join("vrtfido.log");
+            if daemon_log_path.exists() {
+                let _ = std::fs::write(&daemon_log_path, "");
+            }
+            Json(ApiResponse::ok(CleanLogsResult {
+                auth_logs_deleted: auth,
+                debug_logs_deleted: debug,
+            }))
+        }
         Err(e) => Json(ApiResponse::err(e.to_string())),
     }
 }
@@ -269,7 +306,7 @@ async fn start_enroll_fingerprint(
 ) -> Json<ApiResponse<bool>> {
     let name = payload.name.trim().to_string();
     if name.is_empty() {
-        return Json(ApiResponse::err("Tên gợi nhớ vân tay không được để trống"));
+        return Json(ApiResponse::err("Fingerprint label cannot be empty"));
     }
     let sec = state.security.clone();
     tokio::task::spawn_blocking(move || {
@@ -298,7 +335,7 @@ async fn add_fingerprint(
 ) -> Json<ApiResponse<crate::db::FingerprintRow>> {
     let name = payload.name.trim().to_string();
     if name.is_empty() {
-        return Json(ApiResponse::err("Tên gợi nhớ vân tay không được để trống"));
+        return Json(ApiResponse::err("Fingerprint label cannot be empty"));
     }
     let sec = state.security.clone();
     let res = tokio::task::spawn_blocking(move || sec.enroll_fingerprint(&name)).await;
@@ -340,7 +377,7 @@ async fn reject_verify(
     State(state): State<AppState>,
     Json(payload): Json<RejectVerifyRequest>,
 ) -> Json<ApiResponse<bool>> {
-    let reason = payload.reason.unwrap_or_else(|| "Người dùng từ chối thao tác".into());
+    let reason = payload.reason.unwrap_or_else(|| "User rejected operation".into());
     match state.security.reject_pending(payload.request_id, &reason) {
         Ok(_) => Json(ApiResponse::ok(true)),
         Err(e) => Json(ApiResponse::err(e)),
@@ -474,17 +511,17 @@ async fn index_html() -> Html<&'static str> {
         <div style="display: flex; align-items: center;">
             <div id="uhidStatus" class="badge-status badge-offline">
                 <span class="dot"></span>
-                <span id="uhidText">UHID Đang kết nối...</span>
+                <span id="uhidText">UHID Connecting...</span>
             </div>
             <div id="usbSensorStatus" class="badge-status badge-offline" style="margin-left: 0.5rem;">
                 <span class="dot"></span>
                 <span id="usbSensorText">USB Sensor 3274:8012</span>
             </div>
             <div id="unlimitedFpStatus" class="badge-status" style="background: rgba(168, 85, 247, 0.15); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.3); margin-left: 0.5rem; display: none;">
-                ♾️ Vân tay: Không giới hạn
+                ♾️ Fingerprints: Unlimited
             </div>
             <div id="debugStatus" class="badge-status badge-debug" style="display: none; margin-left: 0.5rem;">
-                DEBUG CLI BẬT
+                CLI DEBUG ACTIVE
             </div>
         </div>
     </header>
@@ -492,34 +529,34 @@ async fn index_html() -> Html<&'static str> {
     <div class="container">
         <!-- Navigation -->
         <div class="tabs">
-            <button class="tab-btn active" onclick="switchTab('tab-creds')">🔑 Tài khoản Passkey (<span id="credCount">0</span>)</button>
-            <button class="tab-btn" onclick="switchTab('tab-security')">🛡️ Cài đặt Bảo mật & Sinh trắc</button>
-            <button class="tab-btn" onclick="switchTab('tab-logs')">📜 Nhật ký Truy vết (Audit)</button>
-            <button class="tab-btn" onclick="switchTab('tab-debug')">🐞 Logs Debug & Lỗi</button>
+            <button class="tab-btn active" onclick="switchTab('tab-creds')">🔑 Passkey Credentials (<span id="credCount">0</span>)</button>
+            <button class="tab-btn" onclick="switchTab('tab-security')">🛡️ Security & Biometrics</button>
+            <button class="tab-btn" onclick="switchTab('tab-logs')">📜 Audit Trail</button>
+            <button class="tab-btn" onclick="switchTab('tab-debug')">🐞 Debug Logs</button>
         </div>
 
         <!-- TAB 1: CREDENTIALS -->
         <div id="tab-creds" class="tab-content active">
             <div class="card">
                 <div class="card-header">
-                    <div class="card-title">Tài khoản WebAuthn đã đăng ký</div>
-                    <button class="btn btn-secondary btn-sm" onclick="loadCredentials()">🔄 Làm mới</button>
+                    <div class="card-title">Registered WebAuthn Credentials</div>
+                    <button class="btn btn-secondary btn-sm" onclick="loadCredentials()">🔄 Refresh</button>
                 </div>
                 <div style="overflow-x: auto;">
                     <table>
                         <thead>
                             <tr>
                                 <th>Relying Party (Domain)</th>
-                                <th>Tên người dùng</th>
-                                <th>Tên hiển thị</th>
-                                <th>Số lần ký</th>
-                                <th>Ngày tạo</th>
-                                <th>Dùng lần cuối</th>
-                                <th>Thao tác</th>
+                                <th>Username</th>
+                                <th>Display Name</th>
+                                <th>Sign Count</th>
+                                <th>Created At</th>
+                                <th>Last Used</th>
+                                <th>Actions</th>
                             </tr>
                         </thead>
                         <tbody id="credTableBody">
-                            <tr><td colspan="7" style="text-align: center; color: var(--text-muted);">Đang tải dữ liệu...</td></tr>
+                            <tr><td colspan="7" style="text-align: center; color: var(--text-muted);">Loading data...</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -529,51 +566,51 @@ async fn index_html() -> Html<&'static str> {
         <!-- TAB 2: SECURITY & BIOMETRICS -->
         <div id="tab-security" class="tab-content">
             <div class="grid-2">
-                <!-- Mã PIN 6 số -->
+                <!-- 6-Digit PIN -->
                 <div class="card">
                     <div class="card-header">
-                        <div class="card-title">🔢 Mật khẩu Passkey (Mã PIN 6 số)</div>
-                        <span id="pinBadge" class="badge-status badge-offline">Chưa thiết lập</span>
+                        <div class="card-title">🔢 Passkey PIN (6 Digits)</div>
+                        <span id="pinBadge" class="badge-status badge-offline">Not Configured</span>
                     </div>
                     <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem;">
-                        Chỉ cho phép duy nhất 1 mã PIN gồm đúng 6 chữ số (0-9) dùng để xác thực nhanh khi truy cập website.
+                        A single 6-digit numeric PIN (0-9) used for rapid user verification when accessing websites.
                     </p>
                     <div id="pinFormArea">
                         <div class="form-group" id="oldPinGroup" style="display: none;">
-                            <label class="form-label">Mã PIN hiện tại:</label>
-                            <input type="password" maxlength="6" id="oldPinInput" class="form-control" placeholder="6 chữ số cũ">
+                            <label class="form-label">Current PIN:</label>
+                            <input type="password" maxlength="6" id="oldPinInput" class="form-control" placeholder="Current 6 digits">
                         </div>
                         <div class="form-group">
-                            <label class="form-label" id="newPinLabel">Nhập mã PIN 6 số mới:</label>
-                            <input type="password" maxlength="6" id="newPinInput" class="form-control" placeholder="6 chữ số (vd: 123456)">
+                            <label class="form-label" id="newPinLabel">Enter New 6-Digit PIN:</label>
+                            <input type="password" maxlength="6" id="newPinInput" class="form-control" placeholder="6 digits (e.g. 123456)">
                         </div>
                         <div style="display: flex; gap: 0.5rem;">
-                            <button class="btn btn-primary" onclick="submitPin()">💾 Lưu mã PIN</button>
-                            <button class="btn btn-danger" id="removePinBtn" style="display: none;" onclick="removePin()">🗑️ Xóa mã PIN</button>
+                            <button class="btn btn-primary" onclick="submitPin()">💾 Save PIN</button>
+                            <button class="btn btn-danger" id="removePinBtn" style="display: none;" onclick="removePin()">🗑️ Remove PIN</button>
                         </div>
                     </div>
                 </div>
 
-                <!-- Sinh trắc học Vân tay (Max 10) -->
+                <!-- Fingerprint Biometrics (Max 10) -->
                 <div class="card">
                     <div class="card-header">
-                        <div class="card-title">🖐️ Quản lý Vân tay (<span id="fpCount">0</span><span id="fpLimitText">/10</span>)</div>
+                        <div class="card-title">🖐️ Fingerprint Management (<span id="fpCount">0</span><span id="fpLimitText">/10</span>)</div>
                     </div>
                     <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem;">
-                        Đăng ký tối đa 10 dấu vân tay. Khi bấm thêm, hệ thống sẽ chờ bạn chạm ngón tay 6 lần vào đầu đọc USB.
+                        Enroll up to 10 fingerprints. Click add and touch the USB sensor 6 times when prompted.
                     </p>
                     <div class="form-group" style="display: flex; gap: 0.5rem;">
-                        <input type="text" id="fpNameInput" class="form-control" placeholder="Tên gợi nhớ (vd: Ngón trỏ phải, Ngón cái trái...)">
-                        <button class="btn btn-primary" id="addFpBtn" onclick="addFingerprint()">➕ Thêm vân tay</button>
+                        <input type="text" id="fpNameInput" class="form-control" placeholder="Label (e.g. Right Index, Left Thumb...)">
+                        <button class="btn btn-primary" id="addFpBtn" onclick="addFingerprint()">➕ Add Fingerprint</button>
                     </div>
                     <div style="max-height: 250px; overflow-y: auto;">
                         <table>
                             <thead>
                                 <tr>
                                     <th>Slot</th>
-                                    <th>Tên vân tay</th>
-                                    <th>Ngày thêm</th>
-                                    <th>Xóa</th>
+                                    <th>Fingerprint Name</th>
+                                    <th>Enrolled At</th>
+                                    <th>Action</th>
                                 </tr>
                             </thead>
                             <tbody id="fpTableBody"></tbody>
@@ -584,23 +621,23 @@ async fn index_html() -> Html<&'static str> {
 
             <div class="card">
                 <div class="card-header">
-                    <div class="card-title">🚀 Chế độ Sinh trắc học mở rộng (Future Technologies)</div>
+                    <div class="card-title">🚀 Extended Biometrics (Future Technologies)</div>
                 </div>
                 <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem;">
                     <div style="background: var(--bg-secondary); padding: 1rem; border-radius: 8px; border: 1px dashed var(--border);">
                         <div style="font-size: 1.5rem; margin-bottom: 0.5rem;">👤</div>
-                        <div style="font-weight: 600;">Nhận diện khuôn mặt (FaceID)</div>
-                        <div style="font-size: 0.75rem; color: var(--accent); margin-top: 0.25rem;">[Sẵn sàng Module]</div>
+                        <div style="font-weight: 600;">Facial Recognition (Face ID)</div>
+                        <div style="font-size: 0.75rem; color: var(--accent); margin-top: 0.25rem;">[Module Ready]</div>
                     </div>
                     <div style="background: var(--bg-secondary); padding: 1rem; border-radius: 8px; border: 1px dashed var(--border);">
                         <div style="font-size: 1.5rem; margin-bottom: 0.5rem;">👁️</div>
-                        <div style="font-weight: 600;">Quét mống mắt (Iris Scan)</div>
-                        <div style="font-size: 0.75rem; color: var(--accent); margin-top: 0.25rem;">[Sẵn sàng Module]</div>
+                        <div style="font-weight: 600;">Iris Scanner</div>
+                        <div style="font-size: 0.75rem; color: var(--accent); margin-top: 0.25rem;">[Module Ready]</div>
                     </div>
                     <div style="background: var(--bg-secondary); padding: 1rem; border-radius: 8px; border: 1px dashed var(--border);">
                         <div style="font-size: 1.5rem; margin-bottom: 0.5rem;">🎙️</div>
-                        <div style="font-weight: 600;">Sinh trắc giọng nói (Voiceprint)</div>
-                        <div style="font-size: 0.75rem; color: var(--accent); margin-top: 0.25rem;">[Sẵn sàng Module]</div>
+                        <div style="font-weight: 600;">Voiceprint Biometrics</div>
+                        <div style="font-size: 0.75rem; color: var(--accent); margin-top: 0.25rem;">[Module Ready]</div>
                     </div>
                 </div>
             </div>
@@ -610,19 +647,23 @@ async fn index_html() -> Html<&'static str> {
         <div id="tab-logs" class="tab-content">
             <div class="card">
                 <div class="card-header">
-                    <div class="card-title">📜 Nhật ký Truy vết Thao tác (Audit Trail)</div>
-                    <button class="btn btn-secondary btn-sm" onclick="loadAuditLogs()">🔄 Làm mới</button>
+                    <div class="card-title">📜 Operational Audit Trail</div>
+                    <div style="display: flex; gap: 0.5rem;">
+                        <button class="btn btn-danger btn-sm" onclick="cleanAuditLogs()">🗑️ Clear Logs</button>
+                        <button class="btn btn-secondary btn-sm" onclick="cleanAllLogs()">🧹 Clear All</button>
+                        <button class="btn btn-secondary btn-sm" onclick="loadAuditLogs()">🔄 Refresh</button>
+                    </div>
                 </div>
                 <div style="overflow-x: auto;">
                     <table>
                         <thead>
                             <tr>
-                                <th>Thời gian</th>
+                                <th>Timestamp</th>
                                 <th>Relying Party</th>
-                                <th>Thao tác</th>
-                                <th>Phương thức</th>
-                                <th>Trạng thái</th>
-                                <th>Chi tiết</th>
+                                <th>Operation</th>
+                                <th>Method</th>
+                                <th>Status</th>
+                                <th>Details</th>
                             </tr>
                         </thead>
                         <tbody id="auditTableBody"></tbody>
@@ -635,17 +676,21 @@ async fn index_html() -> Html<&'static str> {
         <div id="tab-debug" class="tab-content">
             <div class="card">
                 <div class="card-header">
-                    <div class="card-title">🐞 Logs Lỗi & Debug Hệ thống</div>
-                    <button class="btn btn-secondary btn-sm" onclick="loadDebugLogs()">🔄 Làm mới</button>
+                    <div class="card-title">🐞 System Debug Logs & Errors</div>
+                    <div style="display: flex; gap: 0.5rem;">
+                        <button class="btn btn-danger btn-sm" onclick="cleanDebugLogs()">🗑️ Clear Logs</button>
+                        <button class="btn btn-secondary btn-sm" onclick="cleanAllLogs()">🧹 Clear All</button>
+                        <button class="btn btn-secondary btn-sm" onclick="loadDebugLogs()">🔄 Refresh</button>
+                    </div>
                 </div>
                 <div style="overflow-x: auto; max-height: 400px;">
                     <table>
                         <thead>
                             <tr>
-                                <th>Thời gian</th>
+                                <th>Timestamp</th>
                                 <th>Level</th>
                                 <th>Component</th>
-                                <th>Nội dung Log</th>
+                                <th>Message</th>
                             </tr>
                         </thead>
                         <tbody id="debugTableBody"></tbody>
@@ -655,28 +700,28 @@ async fn index_html() -> Html<&'static str> {
         </div>
     </div>
 
-    <!-- MODAL TIẾN TRÌNH QUÉT VÂN TAY 6 LẦN TRÊN USB -->
+    <!-- 6-STAGE USB FINGERPRINT ENROLLMENT MODAL -->
     <div id="enrollModal" class="modal-overlay">
         <div class="modal-box" style="max-width: 440px;">
             <div class="modal-icon" id="enrollIcon" style="font-size: 3.5rem;">🖐️</div>
-            <div class="modal-title" id="enrollModalTitle">Đang quét vân tay USB</div>
-            <p id="enrollStepDesc" style="font-size: 1.25rem; font-weight: 700; color: var(--accent); margin: 0.5rem 0;">Lần 1 / 6</p>
-            <p id="enrollActionPrompt" style="font-size: 0.95rem; color: var(--text-main); margin-bottom: 1.5rem;">Vui lòng chạm ngón tay vào cảm biến USB...</p>
+            <div class="modal-title" id="enrollModalTitle">Scanning USB Fingerprint</div>
+            <p id="enrollStepDesc" style="font-size: 1.25rem; font-weight: 700; color: var(--accent); margin: 0.5rem 0;">Stage 1 / 6</p>
+            <p id="enrollActionPrompt" style="font-size: 0.95rem; color: var(--text-main); margin-bottom: 1.5rem;">Please place your finger on the USB sensor...</p>
             
             <div style="background: var(--bg-secondary); border-radius: 9999px; height: 12px; width: 100%; overflow: hidden; margin-bottom: 1.5rem; border: 1px solid var(--border);">
                 <div id="enrollProgressBar" style="background: var(--accent); height: 100%; width: 16%; transition: width 0.3s;"></div>
             </div>
 
-            <button class="btn btn-danger" onclick="cancelEnrollment()">❌ Hủy bỏ</button>
+            <button class="btn btn-danger" onclick="cancelEnrollment()">❌ Cancel</button>
         </div>
     </div>
 
-    <!-- MODAL XÁC THỰC WEBAUTHN TỰ ĐỘNG BẬT KHI CÓ REQUEST -->
+    <!-- REAL-TIME WEBAUTHN VERIFICATION PROMPT MODAL -->
     <div id="verifyModal" class="modal-overlay">
         <div class="modal-box">
             <div class="modal-icon" id="modalIcon">🛡️</div>
-            <div class="modal-title" id="modalTitle">Yêu cầu xác thực WebAuthn</div>
-            <p style="font-size: 0.9rem; color: var(--text-muted);">Website đang yêu cầu khóa bảo mật của bạn:</p>
+            <div class="modal-title" id="modalTitle">WebAuthn Verification Request</div>
+            <p style="font-size: 0.9rem; color: var(--text-muted);">A website is requesting your security key:</p>
             <div>
                 <span class="modal-rp" id="modalRpId">webauthn.io</span>
             </div>
@@ -684,33 +729,33 @@ async fn index_html() -> Html<&'static str> {
 
             <div id="modalSetupView" style="display: none; margin-top: 1rem; border-top: 1px solid var(--border); padding-top: 1rem;">
                 <p style="font-size: 0.9rem; color: var(--warning); margin-bottom: 0.75rem; font-weight: 600;">
-                    ⚠️ Bạn chưa cài đặt bảo mật. Vui lòng tạo mã PIN 6 số để kích hoạt:
+                    ⚠️ Security is not configured. Please create a 6-digit PIN to activate:
                 </p>
-                <input type="password" maxlength="6" id="setupPinInput" class="form-control" placeholder="Nhập 6 chữ số" style="text-align: center; font-size: 1.25rem; letter-spacing: 0.5rem; margin-bottom: 1rem;">
+                <input type="password" maxlength="6" id="setupPinInput" class="form-control" placeholder="Enter 6 digits" style="text-align: center; font-size: 1.25rem; letter-spacing: 0.5rem; margin-bottom: 1rem;">
                 <div style="display: flex; gap: 0.5rem; justify-content: center;">
-                    <button class="btn btn-primary" onclick="submitModalApproval('SETUP')">Kích hoạt & Duyệt</button>
-                    <button class="btn btn-danger" onclick="submitModalReject()">Từ chối</button>
+                    <button class="btn btn-primary" onclick="submitModalApproval('SETUP')">Activate & Approve</button>
+                    <button class="btn btn-danger" onclick="submitModalReject()">Reject</button>
                 </div>
             </div>
 
             <div id="modalVerifyView" style="display: none; margin-top: 1rem;">
                 <p style="font-size: 0.85rem; color: var(--accent); margin-bottom: 0.5rem; font-weight: 600;">
-                    💡 Bạn có thể chạm ngón tay vào cảm biến USB ngay bây giờ hoặc nhập mã PIN:
+                    💡 Touch the USB fingerprint sensor now or enter your PIN:
                 </p>
-                <input type="password" maxlength="6" id="verifyPinInput" class="form-control" placeholder="Nhập mã PIN 6 số" style="text-align: center; font-size: 1.25rem; letter-spacing: 0.5rem; margin-bottom: 1rem;" autofocus>
+                <input type="password" maxlength="6" id="verifyPinInput" class="form-control" placeholder="Enter 6-digit PIN" style="text-align: center; font-size: 1.25rem; letter-spacing: 0.5rem; margin-bottom: 1rem;" autofocus>
                 
                 <div style="display: flex; flex-direction: column; gap: 0.75rem;">
                     <div style="display: flex; gap: 0.5rem; justify-content: center;">
-                        <button class="btn btn-primary" onclick="submitModalApproval('PIN')">🔑 Xác thực bằng PIN</button>
-                        <button class="btn btn-secondary" onclick="submitModalApproval('FINGERPRINT')">🖐️ Chạm Vân tay USB</button>
+                        <button class="btn btn-primary" onclick="submitModalApproval('PIN')">🔑 Verify with PIN</button>
+                        <button class="btn btn-secondary" onclick="submitModalApproval('FINGERPRINT')">🖐️ Touch USB Sensor</button>
                     </div>
-                    <button class="btn btn-danger" style="margin-top: 0.5rem;" onclick="submitModalReject()">❌ Từ chối yêu cầu</button>
+                    <button class="btn btn-danger" style="margin-top: 0.5rem;" onclick="submitModalReject()">❌ Reject Request</button>
                 </div>
             </div>
         </div>
     </div>
 
-    <!-- SCRIPT CHÍNH -->
+    <!-- MAIN SCRIPT -->
     <script>
         let currentPromptId = null;
         let enrollInterval = null;
@@ -748,10 +793,10 @@ async fn index_html() -> Html<&'static str> {
                     const usbTxt = document.getElementById('usbSensorText');
                     if (s.usb_sensor_connected) {
                         usbEl.className = 'badge-status badge-online';
-                        usbTxt.innerText = 'USB 3274:8012 Sẵn sàng';
+                        usbTxt.innerText = 'USB 3274:8012 Ready';
                     } else {
                         usbEl.className = 'badge-status badge-offline';
-                        usbTxt.innerText = 'USB 3274:8012 Chưa cắm';
+                        usbTxt.innerText = 'USB 3274:8012 Disconnected';
                     }
 
                     if (document.getElementById('debugStatus')) {
@@ -761,7 +806,7 @@ async fn index_html() -> Html<&'static str> {
                         document.getElementById('unlimitedFpStatus').style.display = s.unlimited_fingerprints ? 'inline-flex' : 'none';
                     }
                     if (document.getElementById('fpLimitText')) {
-                        document.getElementById('fpLimitText').innerText = s.unlimited_fingerprints ? ' - Không giới hạn' : '/10';
+                        document.getElementById('fpLimitText').innerText = s.unlimited_fingerprints ? ' - Unlimited' : '/10';
                     }
                     if (document.getElementById('credCount')) {
                         document.getElementById('credCount').innerText = s.credentials_count;
@@ -787,23 +832,23 @@ async fn index_html() -> Html<&'static str> {
                             <td style="color:var(--text-muted);">${c.created_at}</td>
                             <td style="color:var(--text-muted);">${c.last_used_at}</td>
                             <td>
-                                <button class="btn btn-secondary btn-sm" onclick="editCredential('${c.id}', '${escapeHtml(c.user_name)}', '${escapeHtml(c.user_display_name)}')">✏️ Sửa</button>
-                                <button class="btn btn-danger btn-sm" onclick="deleteCredential('${c.id}', '${escapeHtml(c.rp_id)}')">🗑️ Xóa</button>
+                                <button class="btn btn-secondary btn-sm" onclick="editCredential('${c.id}', '${escapeHtml(c.user_name)}', '${escapeHtml(c.user_display_name)}')">✏️ Edit</button>
+                                <button class="btn btn-danger btn-sm" onclick="deleteCredential('${c.id}', '${escapeHtml(c.rp_id)}')">🗑️ Delete</button>
                             </td>
                         </tr>
                     `).join('');
                 } else {
-                    tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: var(--text-muted); padding: 2rem;">Chưa có tài khoản Passkey nào được lưu. Hãy mở webauthn.io để đăng ký!</td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: var(--text-muted); padding: 2rem;">No passkey credentials stored yet. Open webauthn.io to register!</td></tr>';
                 }
             } catch (e) {
-                tbody.innerHTML = `<tr><td colspan="7" style="color:var(--danger);">Lỗi tải dữ liệu: ${e}</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="7" style="color:var(--danger);">Error loading data: ${e}</td></tr>`;
             }
         }
 
         async function editCredential(id, oldName, oldDisplay) {
-            const newName = prompt("Nhập tên đăng nhập mới:", oldName);
+            const newName = prompt("Enter new username:", oldName);
             if (newName === null) return;
-            const newDisplay = prompt("Nhập tên hiển thị mới:", oldDisplay);
+            const newDisplay = prompt("Enter new display name:", oldDisplay);
             if (newDisplay === null) return;
 
             const res = await fetch(`/api/credentials/${id}`, {
@@ -815,18 +860,18 @@ async fn index_html() -> Html<&'static str> {
             if (json.success) {
                 loadCredentials();
             } else {
-                alert("Lỗi: " + json.error);
+                alert("Error: " + json.error);
             }
         }
 
         async function deleteCredential(id, rpId) {
-            if (!confirm(`Bạn có chắc chắn muốn xóa khóa bảo mật của domain '${rpId}'?`)) return;
+            if (!confirm(`Are you sure you want to delete credential for domain '${rpId}'?`)) return;
             const res = await fetch(`/api/credentials/${id}`, { method: 'DELETE' });
             const json = await res.json();
             if (json.success) {
                 loadCredentials();
             } else {
-                alert("Lỗi: " + json.error);
+                alert("Error: " + json.error);
             }
         }
 
@@ -845,16 +890,16 @@ async fn index_html() -> Html<&'static str> {
 
                     if (sec.pin_enabled) {
                         pinBadge.className = 'badge-status badge-online';
-                        pinBadge.innerText = 'Đã kích hoạt';
+                        pinBadge.innerText = 'Active';
                         oldGroup.style.display = 'block';
                         removeBtn.style.display = 'inline-flex';
-                        newPinLabel.innerText = 'Nhập mã PIN 6 số thay thế:';
+                        newPinLabel.innerText = 'Enter replacement 6-digit PIN:';
                     } else {
                         pinBadge.className = 'badge-status badge-offline';
-                        pinBadge.innerText = 'Chưa thiết lập';
+                        pinBadge.innerText = 'Not Configured';
                         oldGroup.style.display = 'none';
                         removeBtn.style.display = 'none';
-                        newPinLabel.innerText = 'Nhập mã PIN 6 số mới:';
+                        newPinLabel.innerText = 'Enter new 6-digit PIN:';
                     }
 
                     document.getElementById('fpCount').innerText = fps.length;
@@ -865,11 +910,11 @@ async fn index_html() -> Html<&'static str> {
                                 <td>Slot ${f.slot_index}</td>
                                 <td><strong>${escapeHtml(f.name)}</strong></td>
                                 <td style="color:var(--text-muted);">${f.enrolled_at}</td>
-                                <td><button class="btn btn-danger btn-sm" onclick="deleteFp(${f.id})">Xóa</button></td>
+                                <td><button class="btn btn-danger btn-sm" onclick="deleteFp(${f.id})">Delete</button></td>
                             </tr>
                         `).join('');
                     } else {
-                        fpTbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--text-muted);">Chưa có vân tay nào. Tối đa 10 vân tay.</td></tr>';
+                        fpTbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--text-muted);">No fingerprints enrolled yet. Up to 10 fingerprints.</td></tr>';
                     }
                 }
             } catch (e) {
@@ -882,7 +927,7 @@ async fn index_html() -> Html<&'static str> {
             const oldPin = document.getElementById('oldPinInput').value.trim();
 
             if (pin.length !== 6 || !/^\d+$/.test(pin)) {
-                alert("Mã PIN bắt buộc phải gồm đúng 6 chữ số (0-9)!");
+                alert("PIN must be exactly 6 numeric digits (0-9)!");
                 return;
             }
 
@@ -898,17 +943,17 @@ async fn index_html() -> Html<&'static str> {
             });
             const json = await res.json();
             if (json.success) {
-                alert("Cập nhật mã PIN thành công!");
+                alert("PIN updated successfully!");
                 document.getElementById('newPinInput').value = '';
                 document.getElementById('oldPinInput').value = '';
                 loadSecurity();
             } else {
-                alert("Lỗi: " + json.error);
+                alert("Error: " + json.error);
             }
         }
 
         async function removePin() {
-            const current_pin = prompt("Vui lòng nhập mã PIN hiện tại để xác nhận xóa:");
+            const current_pin = prompt("Please enter current PIN to confirm removal:");
             if (!current_pin) return;
 
             const res = await fetch('/api/security/pin', {
@@ -918,25 +963,25 @@ async fn index_html() -> Html<&'static str> {
             });
             const json = await res.json();
             if (json.success) {
-                alert("Đã xóa mã PIN bảo mật!");
+                alert("Security PIN removed successfully!");
                 loadSecurity();
             } else {
-                alert("Lỗi: " + json.error);
+                alert("Error: " + json.error);
             }
         }
 
-        // BẮT ĐẦU QUY TRÌNH QUÉT VÂN TAY 6 LẦN TRÊN USB (NON-BLOCKING)
+        // START 6-STAGE USB FINGERPRINT ENROLLMENT (NON-BLOCKING)
         async function addFingerprint() {
             const nameInput = document.getElementById('fpNameInput');
             const name = nameInput.value.trim();
             if (!name) {
-                alert("Vui lòng nhập tên cho dấu vân tay!");
+                alert("Please enter a name for the fingerprint!");
                 return;
             }
 
             document.getElementById('enrollModal').style.display = 'flex';
-            document.getElementById('enrollStepDesc').innerText = 'Khởi tạo...';
-            document.getElementById('enrollActionPrompt').innerText = 'Đang kết nối cảm biến USB...';
+            document.getElementById('enrollStepDesc').innerText = 'Initializing...';
+            document.getElementById('enrollActionPrompt').innerText = 'Connecting to USB sensor...';
             document.getElementById('enrollProgressBar').style.width = '10%';
             document.getElementById('enrollIcon').innerText = '🖐️';
 
@@ -947,7 +992,7 @@ async fn index_html() -> Html<&'static str> {
             });
             const json = await res.json();
             if (!json.success) {
-                alert("Lỗi: " + json.error);
+                alert("Error: " + json.error);
                 document.getElementById('enrollModal').style.display = 'none';
                 return;
             }
@@ -965,7 +1010,7 @@ async fn index_html() -> Html<&'static str> {
                     if (p.active) {
                         const pct = Math.round((p.stage / p.total_stages) * 100);
                         document.getElementById('enrollProgressBar').style.width = pct + '%';
-                        document.getElementById('enrollStepDesc').innerText = `Lần ${p.stage} / ${p.total_stages}`;
+                        document.getElementById('enrollStepDesc').innerText = `Stage ${p.stage} / ${p.total_stages}`;
                         document.getElementById('enrollActionPrompt').innerText = p.message;
                         document.getElementById('enrollIcon').innerText = p.status === 'finger_lift' ? '👆' : '🖐️';
                     } else if (p.status === 'completed') {
@@ -973,8 +1018,8 @@ async fn index_html() -> Html<&'static str> {
                         enrollInterval = null;
                         document.getElementById('enrollProgressBar').style.width = '100%';
                         document.getElementById('enrollIcon').innerText = '✅';
-                        document.getElementById('enrollStepDesc').innerText = 'Thành công!';
-                        document.getElementById('enrollActionPrompt').innerText = 'Đã quét đủ 6 mẫu và lưu vào chip USB!';
+                        document.getElementById('enrollStepDesc').innerText = 'Success!';
+                        document.getElementById('enrollActionPrompt').innerText = 'Captured 6 stages and saved to USB chip!';
                         setTimeout(() => {
                             document.getElementById('enrollModal').style.display = 'none';
                             document.getElementById('fpNameInput').value = '';
@@ -984,8 +1029,8 @@ async fn index_html() -> Html<&'static str> {
                         clearInterval(enrollInterval);
                         enrollInterval = null;
                         document.getElementById('enrollIcon').innerText = '❌';
-                        document.getElementById('enrollStepDesc').innerText = 'Thất bại';
-                        document.getElementById('enrollActionPrompt').innerText = p.error || 'Có lỗi xảy ra';
+                        document.getElementById('enrollStepDesc').innerText = 'Failed';
+                        document.getElementById('enrollActionPrompt').innerText = p.error || 'An error occurred';
                         setTimeout(() => {
                             document.getElementById('enrollModal').style.display = 'none';
                         }, 2500);
@@ -1006,13 +1051,13 @@ async fn index_html() -> Html<&'static str> {
         }
 
         async function deleteFp(id) {
-            if (!confirm("Xóa vân tay này?")) return;
+            if (!confirm("Delete this fingerprint?")) return;
             const res = await fetch(`/api/security/fingerprints/${id}`, { method: 'DELETE' });
             const json = await res.json();
             if (json.success) {
                 loadSecurity();
             } else {
-                alert("Lỗi: " + json.error);
+                alert("Error: " + json.error);
             }
         }
 
@@ -1037,10 +1082,10 @@ async fn index_html() -> Html<&'static str> {
                         `;
                     }).join('');
                 } else {
-                    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; color:var(--text-muted);">Chưa có nhật ký nào.</td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; color:var(--text-muted);">No audit logs yet.</td></tr>';
                 }
             } catch (e) {
-                tbody.innerHTML = `<tr><td colspan="6" style="color:var(--danger);">Lỗi tải logs: ${e}</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="6" style="color:var(--danger);">Error loading logs: ${e}</td></tr>`;
             }
         }
 
@@ -1059,10 +1104,56 @@ async fn index_html() -> Html<&'static str> {
                         </tr>
                     `).join('');
                 } else {
-                    tbody.innerHTML = '<tr><td colspan="4" style="text-align:center; color:var(--text-muted);">Không có debug log nào (Bật flag --debug khi chạy để xem).</td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="4" style="text-align:center; color:var(--text-muted);">No debug logs yet (Enable --debug CLI flag to view packets).</td></tr>';
                 }
             } catch (e) {
-                tbody.innerHTML = `<tr><td colspan="4" style="color:var(--danger);">Lỗi: ${e}</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="4" style="color:var(--danger);">Error: ${e}</td></tr>`;
+            }
+        }
+
+        async function cleanAuditLogs() {
+            if (!confirm("Are you sure you want to clear all Audit Logs?")) return;
+            try {
+                const res = await fetch('/api/logs', { method: 'DELETE' });
+                const json = await res.json();
+                if (json.success) {
+                    loadAuditLogs();
+                } else {
+                    alert("Error clearing logs: " + json.error);
+                }
+            } catch (e) {
+                alert("Error: " + e);
+            }
+        }
+
+        async function cleanDebugLogs() {
+            if (!confirm("Are you sure you want to clear all Debug Logs?")) return;
+            try {
+                const res = await fetch('/api/debug-logs', { method: 'DELETE' });
+                const json = await res.json();
+                if (json.success) {
+                    loadDebugLogs();
+                } else {
+                    alert("Error clearing debug logs: " + json.error);
+                }
+            } catch (e) {
+                alert("Error: " + e);
+            }
+        }
+
+        async function cleanAllLogs() {
+            if (!confirm("Are you sure you want to clear ALL logs (both Audit and Debug)?")) return;
+            try {
+                const res = await fetch('/api/logs/clean', { method: 'POST' });
+                const json = await res.json();
+                if (json.success) {
+                    loadAuditLogs();
+                    loadDebugLogs();
+                } else {
+                    alert("Error clearing logs: " + json.error);
+                }
+            } catch (e) {
+                alert("Error: " + e);
             }
         }
 
@@ -1076,9 +1167,9 @@ async fn index_html() -> Html<&'static str> {
                     currentPromptId = p.request_id;
 
                     document.getElementById('modalRpId').innerText = p.rp_id;
-                    const opText = p.operation === 'MakeCredential' ? 'Đăng ký Passkey mới' : 'Xác thực Đăng nhập';
+                    const opText = p.operation === 'MakeCredential' ? 'Register New Passkey' : 'Authenticate Sign-in';
                     document.getElementById('modalTitle').innerText = opText;
-                    document.getElementById('modalUserDesc').innerText = p.user_name ? `Tài khoản: ${p.user_name}` : '';
+                    document.getElementById('modalUserDesc').innerText = p.user_name ? `Account: ${p.user_name}` : '';
 
                     if (!p.is_security_setup) {
                         document.getElementById('modalSetupView').style.display = 'block';
@@ -1110,13 +1201,13 @@ async fn index_html() -> Html<&'static str> {
             if (method === 'SETUP') {
                 pin = document.getElementById('setupPinInput').value.trim();
                 if (pin.length !== 6 || !/^\d+$/.test(pin)) {
-                    alert("Mã PIN kích hoạt phải có đúng 6 chữ số!");
+                    alert("Activation PIN must be exactly 6 digits!");
                     return;
                 }
             } else if (method === 'PIN') {
                 pin = document.getElementById('verifyPinInput').value.trim();
                 if (pin.length !== 6 || !/^\d+$/.test(pin)) {
-                    alert("Mã PIN phải có đúng 6 chữ số!");
+                    alert("PIN must be exactly 6 digits!");
                     return;
                 }
             }
@@ -1134,7 +1225,7 @@ async fn index_html() -> Html<&'static str> {
                 currentPromptId = null;
                 setTimeout(() => { loadCredentials(); loadAuditLogs(); }, 500);
             } else {
-                alert("Lỗi xác thực: " + json.error);
+                alert("Authentication error: " + json.error);
             }
         }
 
@@ -1143,7 +1234,7 @@ async fn index_html() -> Html<&'static str> {
             await fetch('/api/verify/reject', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ request_id: currentPromptId, reason: "Từ chối trên Web CMS" })
+                body: JSON.stringify({ request_id: currentPromptId, reason: "Rejected on Web CMS" })
             });
             document.getElementById('verifyModal').style.display = 'none';
             currentPromptId = null;
@@ -1164,4 +1255,141 @@ async fn index_html() -> Html<&'static str> {
 </body>
 </html>
 "#)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::security::SecurityEngine;
+    use crate::sensor::UsbSensor;
+
+    fn create_test_state() -> AppState {
+        let db = Db::open(":memory:").expect("Failed to open test db");
+        let sensor = UsbSensor::new();
+        let security = SecurityEngine::new(db.clone(), sensor, false);
+        AppState {
+            db,
+            security,
+            debug_mode: Arc::new(AtomicBool::new(false)),
+            uhid_connected: Arc::new(AtomicBool::new(false)),
+            unlimited_fps: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_web_clear_auth_logs() {
+        let state = create_test_state();
+        state.db.log_auth(None, "example.com", "MakeCredential", "SUCCESS", "PIN", None);
+        assert_eq!(state.db.get_auth_logs(None, 10).unwrap().len(), 1);
+
+        let res = clear_auth_logs(State(state.clone())).await;
+        assert!(res.0.success);
+        assert_eq!(res.0.data, Some(1));
+        assert_eq!(state.db.get_auth_logs(None, 10).unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_web_clear_debug_logs() {
+        let state = create_test_state();
+        state.db.log_debug("INFO", "TEST", "Debug message");
+        assert_eq!(state.db.get_debug_logs(10).unwrap().len(), 1);
+
+        let res = clear_debug_logs(State(state.clone())).await;
+        assert!(res.0.success);
+        assert_eq!(res.0.data, Some(1));
+        assert_eq!(state.db.get_debug_logs(10).unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_web_clean_all_logs() {
+        let state = create_test_state();
+        state.db.log_auth(None, "example.com", "GetAssertion", "SUCCESS", "FP", None);
+        state.db.log_debug("WARN", "TEST", "Debug warning");
+        assert_eq!(state.db.get_auth_logs(None, 10).unwrap().len(), 1);
+        assert_eq!(state.db.get_debug_logs(10).unwrap().len(), 1);
+
+        let res = clean_all_logs(State(state.clone())).await;
+        assert!(res.0.success);
+        let result = res.0.data.unwrap();
+        assert_eq!(result.auth_logs_deleted, 1);
+        assert_eq!(result.debug_logs_deleted, 1);
+        assert_eq!(state.db.get_auth_logs(None, 10).unwrap().len(), 0);
+        assert_eq!(state.db.get_debug_logs(10).unwrap().len(), 0);
+    }
+
+    async fn send_http_request(addr: std::net::SocketAddr, method: &str, path: &str, body: &str) -> (String, String) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let req = format!(
+            "{} {} HTTP/1.1\r\nHost: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            method, path, addr, body.len(), body
+        );
+        stream.write_all(req.as_bytes()).await.unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).await.unwrap();
+        let parts: Vec<&str> = response.splitn(2, "\r\n\r\n").collect();
+        let header = parts.get(0).unwrap_or(&"").to_string();
+        let body = parts.get(1).unwrap_or(&"").to_string();
+        (header, body)
+    }
+
+    #[tokio::test]
+    async fn test_web_routes_http_e2e() {
+        let state = create_test_state();
+        state.db.log_auth(None, "example.com", "GetAssertion", "SUCCESS", "FP", None);
+        state.db.log_debug("WARN", "TEST", "Debug warning");
+
+        let app = create_router(state.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        // Test GET /
+        let (status, body) = send_http_request(addr, "GET", "/", "").await;
+        assert!(status.contains("200 OK"));
+        assert!(body.contains("cleanAuditLogs()"));
+        assert!(body.contains("cleanDebugLogs()"));
+        assert!(body.contains("cleanAllLogs()"));
+        assert!(body.contains("🗑️ Clear Logs"));
+        assert!(body.contains("🧹 Clear All"));
+
+        // Test DELETE /api/logs
+        let (status, body) = send_http_request(addr, "DELETE", "/api/logs", "").await;
+        assert!(status.contains("200 OK"));
+        assert!(body.contains("\"success\":true"));
+        assert_eq!(state.db.get_auth_logs(None, 10).unwrap().len(), 0);
+
+        // Seed auth log again
+        state.db.log_auth(None, "example.com", "GetAssertion", "SUCCESS", "FP", None);
+
+        // Test DELETE /api/debug-logs
+        let (status, body) = send_http_request(addr, "DELETE", "/api/debug-logs", "").await;
+        assert!(status.contains("200 OK"));
+        assert!(body.contains("\"success\":true"));
+        assert_eq!(state.db.get_debug_logs(10).unwrap().len(), 0);
+
+        // Seed debug log again
+        state.db.log_debug("ERROR", "TEST", "Another debug error");
+
+        // Test POST /api/logs/clean
+        let (status, body) = send_http_request(addr, "POST", "/api/logs/clean", "").await;
+        assert!(status.contains("200 OK"));
+        assert!(body.contains("\"success\":true"));
+        assert_eq!(state.db.get_auth_logs(None, 10).unwrap().len(), 0);
+        assert_eq!(state.db.get_debug_logs(10).unwrap().len(), 0);
+
+        // Seed both again
+        state.db.log_auth(None, "example.com", "GetAssertion", "SUCCESS", "FP", None);
+        state.db.log_debug("ERROR", "TEST", "Another debug error");
+
+        // Test DELETE /api/logs/clean
+        let (status, body) = send_http_request(addr, "DELETE", "/api/logs/clean", "").await;
+        assert!(status.contains("200 OK"));
+        assert!(body.contains("\"success\":true"));
+        assert_eq!(state.db.get_auth_logs(None, 10).unwrap().len(), 0);
+        assert_eq!(state.db.get_debug_logs(10).unwrap().len(), 0);
+    }
 }
