@@ -12,6 +12,7 @@ use p256::elliptic_curve::Generate;
 use security::SecurityEngine;
 use sha2::{Digest, Sha256};
 use std::fs::{File, OpenOptions};
+use std::path::Path;
 use std::io::{Read, Write};
 use std::process::Command;
 use std::mem::{size_of, zeroed};
@@ -200,56 +201,99 @@ impl UhidDevice {
     }
 }
 
-/// Check if /dev/uhid is accessible (read + write).
-/// If permission is missing, automatically invoke sudo/pkexec to load module and set chmod 666.
-pub fn ensure_uhid_permission() -> bool {
-    // 1. Check if /dev/uhid can already be opened with read + write
-    if OpenOptions::new().read(true).write(true).open("/dev/uhid").is_ok() {
-        return true;
-    }
+/// Checks whether permanent udev and module-load configurations exist for /dev/uhid.
+pub fn has_permanent_uhid_rule() -> bool {
+    Path::new("/etc/udev/rules.d/99-uhid.rules").exists()
+        && Path::new("/etc/modules-load.d/uhid.conf").exists()
+}
 
-    println!("[UHID] [!] No access permission for /dev/uhid.");
-    println!("[UHID] [*] Automatically requesting permission via sudo...");
+/// Execute elevated commands to permanently configure /dev/uhid udev rule,
+/// load kernel module at boot, and set permissions for the current session.
+pub fn ensure_permanent_uhid_permission() -> bool {
+    println!("[UHID] [*] Requesting permission to configure permanent /dev/uhid udev rule...");
 
-    // Load uhid kernel module if not loaded and grant read/write access
-    let cmd_str = "modprobe uhid 2>/dev/null || true; chmod 666 /dev/uhid";
+    let cmd_str = "mkdir -p /etc/modules-load.d /etc/udev/rules.d && \
+                   echo 'uhid' > /etc/modules-load.d/uhid.conf && \
+                   echo 'KERNEL==\"uhid\", MODE=\"0666\"' > /etc/udev/rules.d/99-uhid.rules && \
+                   modprobe uhid 2>/dev/null || true; \
+                   chmod 666 /dev/uhid 2>/dev/null || true; \
+                   udevadm control --reload-rules 2>/dev/null || true; \
+                   udevadm trigger 2>/dev/null || true";
 
-    // 2. Prefer sudo (works well in terminal)
+    // 1. Try sudo (works well in terminal)
     let sudo_status = Command::new("sudo")
         .args(["sh", "-c", cmd_str])
         .status();
 
-    let success = match sudo_status {
+    let mut success = match sudo_status {
         Ok(s) if s.success() => true,
-        _ => {
-            // If sudo fails or no TTY, try pkexec (GUI dialog on Linux Desktop)
-            if std::env::var("DISPLAY").is_ok() || std::env::var("WAYLAND_DISPLAY").is_ok() {
-                if let Ok(pk_status) = Command::new("pkexec")
-                    .args(["sh", "-c", cmd_str])
-                    .status()
-                {
-                    pk_status.success()
-                } else {
-                    false
-                }
-            } else {
-                false
+        _ => false,
+    };
+
+    // 2. If sudo fails or running in GUI environment (no TTY), try graphical elevation
+    if !success && (std::env::var("DISPLAY").is_ok() || std::env::var("WAYLAND_DISPLAY").is_ok()) {
+        // Try pkexec (Polkit graphical authentication dialog)
+        if let Ok(pk_status) = Command::new("pkexec")
+            .args(["sh", "-c", cmd_str])
+            .status()
+        {
+            if pk_status.success() {
+                success = true;
             }
         }
-    };
+
+        // Try zenity password dialog if pkexec failed or not available
+        if !success && Command::new("which").arg("zenity").output().map(|o| o.status.success()).unwrap_or(false) {
+            let zenity_cmd = format!(
+                "zenity --password --title=\"vrtfido - Cấp quyền /dev/uhid vĩnh viễn\" | sudo -S sh -c '{}'",
+                cmd_str
+            );
+            if let Ok(z_status) = Command::new("sh").args(["-c", &zenity_cmd]).status() {
+                if z_status.success() {
+                    success = true;
+                }
+            }
+        }
+    }
 
     if success {
         if OpenOptions::new().read(true).write(true).open("/dev/uhid").is_ok() {
-            println!("[UHID] [+] Granted /dev/uhid access permission successfully!");
+            println!("[UHID] [+] Granted permanent /dev/uhid access permission successfully!");
             return true;
         }
     }
 
-    eprintln!("[UHID] [-] Could not automatically grant permission for /dev/uhid via sudo.");
+    false
+}
+
+/// Check if /dev/uhid is accessible (read + write).
+/// If permission is missing or permanent rule is not configured, automatically request permission.
+pub fn ensure_uhid_permission() -> bool {
+    let can_open = OpenOptions::new().read(true).write(true).open("/dev/uhid").is_ok();
+    let has_rules = has_permanent_uhid_rule();
+
+    // If /dev/uhid is already accessible AND permanent rule is in place, nothing to do
+    if can_open && has_rules {
+        return true;
+    }
+
+    // If not accessible or missing permanent rules, automatically configure permanent permission
+    if !can_open || autostart::is_autostart_enabled() {
+        if ensure_permanent_uhid_permission() {
+            return true;
+        }
+    }
+
+    if can_open {
+        println!("[UHID] [!] Continuing with session /dev/uhid access.");
+        return true;
+    }
+
+    eprintln!("[UHID] [-] Could not automatically grant permanent permission for /dev/uhid.");
     eprintln!("[UHID] [!] You can grant permission manually with:");
-    eprintln!("          sudo chmod 666 /dev/uhid");
-    eprintln!("       or configure permanent udev rule (recommended):");
+    eprintln!("          echo 'uhid' | sudo tee /etc/modules-load.d/uhid.conf");
     eprintln!("          echo 'KERNEL==\"uhid\", MODE=\"0666\"' | sudo tee /etc/udev/rules.d/99-uhid.rules");
+    eprintln!("          sudo modprobe uhid");
     eprintln!("          sudo udevadm control --reload-rules && sudo udevadm trigger");
     false
 }

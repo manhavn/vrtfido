@@ -93,6 +93,12 @@ impl Tray for VrtfidoTray {
                                 "[TRAY] Autostart with system {}",
                                 if new_state { "enabled" } else { "disabled" }
                             );
+                            if new_state && !crate::has_permanent_uhid_rule() {
+                                println!("[TRAY] Setting up permanent /dev/uhid udev rule for system autostart...");
+                                std::thread::spawn(|| {
+                                    let _ = crate::ensure_permanent_uhid_permission();
+                                });
+                            }
                         }
                         Err(e) => {
                             eprintln!("[TRAY] Failed to toggle autostart: {}", e);
