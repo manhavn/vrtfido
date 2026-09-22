@@ -17,6 +17,15 @@ pub enum BiometricModality {
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct PendingAccountOption {
+    pub id: String,
+    pub user_name: String,
+    pub user_display_name: String,
+    pub last_used_at: String,
+    pub created_at: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct PendingPrompt {
     pub request_id: u64,
     pub rp_id: String,
@@ -29,13 +38,22 @@ pub struct PendingPrompt {
     pub available_modalities: Vec<BiometricModality>,
     pub created_at_secs: u64,
     pub timeout_seconds: u64,
+    pub accounts: Vec<PendingAccountOption>,
+    pub selected_credential_id: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct VerificationSuccess {
+    pub method: String,
+    pub selected_credential_id: Option<String>,
 }
 
 pub struct ActiveVerification {
     pub prompt: PendingPrompt,
     pub start_time: Instant,
-    pub responder: Option<oneshot::Sender<Result<String, String>>>,
+    pub responder: Option<oneshot::Sender<Result<VerificationSuccess, String>>>,
 }
+
 
 #[derive(Clone)]
 pub struct SecurityEngine {
@@ -204,6 +222,20 @@ impl SecurityEngine {
         operation: &str,
         user_name: &str,
     ) -> Result<String, String> {
+        let res = self
+            .request_user_verification_with_accounts(rp_id, operation, user_name, Vec::new(), None)
+            .await?;
+        Ok(res.method)
+    }
+
+    pub async fn request_user_verification_with_accounts(
+        &self,
+        rp_id: &str,
+        operation: &str,
+        user_name: &str,
+        accounts: Vec<PendingAccountOption>,
+        default_selected_cred_id: Option<String>,
+    ) -> Result<VerificationSuccess, String> {
         let settings = self.db.get_security_settings(self.unlimited_fps).map_err(|e| e.to_string())?;
         let is_security_setup = settings.pin_enabled || settings.fp_count > 0;
         let sensor_ok = UsbSensor::is_hardware_plugged();
@@ -227,6 +259,8 @@ impl SecurityEngine {
                 .unwrap_or_default()
                 .as_secs(),
             timeout_seconds: 60,
+            accounts,
+            selected_credential_id: default_selected_cred_id,
         };
 
         let (tx, rx) = oneshot::channel();
@@ -269,8 +303,12 @@ impl SecurityEngine {
                             let mut guard = pending_ref.lock();
                             if let Some(mut active) = guard.take() {
                                 if active.prompt.request_id == req_id {
+                                    let chosen_id = active.prompt.selected_credential_id.clone();
                                     if let Some(responder) = active.responder.take() {
-                                        let _ = responder.send(Ok("USB_FINGERPRINT_HARDWARE".to_string()));
+                                        let _ = responder.send(Ok(VerificationSuccess {
+                                            method: "USB_FINGERPRINT_HARDWARE".to_string(),
+                                            selected_credential_id: chosen_id,
+                                        }));
                                     }
                                     db_clone.log_auth(
                                         None,
@@ -331,7 +369,13 @@ impl SecurityEngine {
         result
     }
 
-    pub fn approve_pending(&self, req_id: u64, method: &str, input_pin: Option<&str>) -> Result<(), String> {
+    pub fn approve_pending(
+        &self,
+        req_id: u64,
+        method: &str,
+        input_pin: Option<&str>,
+        selected_credential_id: Option<String>,
+    ) -> Result<(), String> {
         let mut guard = self.pending.lock();
         if let Some(mut active) = guard.take() {
             if active.prompt.request_id != req_id {
@@ -339,12 +383,17 @@ impl SecurityEngine {
                 return Err("Request ID mismatch".to_string());
             }
 
+            let chosen_cred_id = selected_credential_id.or_else(|| active.prompt.selected_credential_id.clone());
+
             match method {
                 "PIN" => {
                     let pin = input_pin.ok_or_else(|| "PIN not provided".to_string())?;
                     self.verify_pin(pin)?;
                     if let Some(responder) = active.responder.take() {
-                        let _ = responder.send(Ok("PIN".to_string()));
+                        let _ = responder.send(Ok(VerificationSuccess {
+                            method: "PIN".to_string(),
+                            selected_credential_id: chosen_cred_id,
+                        }));
                     }
                     self.db.log_auth(
                         None,
@@ -382,7 +431,10 @@ impl SecurityEngine {
                     }
 
                     if let Some(responder) = active.responder.take() {
-                        let _ = responder.send(Ok("FINGERPRINT".to_string()));
+                        let _ = responder.send(Ok(VerificationSuccess {
+                            method: "FINGERPRINT".to_string(),
+                            selected_credential_id: chosen_cred_id,
+                        }));
                     }
                     self.db.log_auth(
                         None,
@@ -399,7 +451,10 @@ impl SecurityEngine {
                         self.set_pin(pin)?;
                     }
                     if let Some(responder) = active.responder.take() {
-                        let _ = responder.send(Ok("SETUP".to_string()));
+                        let _ = responder.send(Ok(VerificationSuccess {
+                            method: "SETUP".to_string(),
+                            selected_credential_id: chosen_cred_id,
+                        }));
                     }
                     self.db.log_auth(
                         None,

@@ -613,16 +613,22 @@ fn handle_cbor(
 
             // Find credential in database
             let all_creds = db.get_credentials().unwrap_or_default();
-            let matched_cred = if !allow_list.is_empty() {
-                all_creds
+            let (cred, is_user_specified) = if !allow_list.is_empty() {
+                let found = all_creds
                     .iter()
-                    .find(|c| c.rp_id == rp_id && allow_list.contains(&c.id))
-                    .cloned()
+                    .find(|c| c.rp_id.eq_ignore_ascii_case(&rp_id) && allow_list.contains(&c.id))
+                    .cloned();
+                (found, true)
             } else {
-                all_creds.iter().find(|c| c.rp_id == rp_id).cloned()
+                let rp_creds: Vec<_> = all_creds
+                    .iter()
+                    .filter(|c| c.rp_id.eq_ignore_ascii_case(&rp_id))
+                    .cloned()
+                    .collect();
+                (rp_creds.first().cloned(), false)
             };
 
-            let cred = match matched_cred {
+            let initial_cred = match cred {
                 Some(c) => c,
                 None => {
                     println!("[-] Credential not found in database for domain '{}'", rp_id);
@@ -638,25 +644,50 @@ fn handle_cbor(
                 }
             };
 
-            println!("[CTAP2] Found account: {} ({})", cred.user_name, cred.user_display_name);
+            // Build account list if RP did not specify a user (allow_list is empty)
+            let (accounts_list, default_cred_id) = if !is_user_specified {
+                let rp_creds: Vec<_> = all_creds
+                    .iter()
+                    .filter(|c| c.rp_id.eq_ignore_ascii_case(&rp_id))
+                    .cloned()
+                    .collect();
+                let list: Vec<crate::security::PendingAccountOption> = rp_creds
+                    .iter()
+                    .map(|c| crate::security::PendingAccountOption {
+                        id: c.id.clone(),
+                        user_name: c.user_name.clone(),
+                        user_display_name: c.user_display_name.clone(),
+                        last_used_at: c.last_used_at.clone(),
+                        created_at: c.created_at.clone(),
+                    })
+                    .collect();
+                let default_id = rp_creds.first().map(|c| c.id.clone());
+                (list, default_id)
+            } else {
+                (Vec::new(), None)
+            };
+
+            println!("[CTAP2] Found account: {} ({})", initial_cred.user_name, initial_cred.user_display_name);
 
             // Request user verification via SecurityEngine
             println!("[SECURITY] Waiting for confirmation from Web CMS (http://localhost:10209)...");
-            let verify_result = tokio_handle.block_on(security.request_user_verification(
+            let verify_result = tokio_handle.block_on(security.request_user_verification_with_accounts(
                 &rp_id,
                 "GetAssertion",
-                &cred.user_name,
+                &initial_cred.user_name,
+                accounts_list,
+                default_cred_id,
             ));
 
-            let auth_method = match verify_result {
-                Ok(method) => {
-                    println!("[SECURITY] Verification succeeded using method: {}", method);
-                    method
+            let (auth_method, selected_cred_id) = match verify_result {
+                Ok(success) => {
+                    println!("[SECURITY] Verification succeeded using method: {}", success.method);
+                    (success.method, success.selected_credential_id)
                 }
                 Err(err) => {
                     println!("[SECURITY] Verification failed / rejected: {}", err);
                     db.log_auth(
-                        Some(&cred.id),
+                        Some(&initial_cred.id),
                         &rp_id,
                         "GetAssertion",
                         "REJECTED",
@@ -665,6 +696,21 @@ fn handle_cbor(
                     );
                     return vec![0x27]; // CTAP2_ERR_OPERATION_DENIED
                 }
+            };
+
+            // If user selected a different account in Web CMS when website did not specify user
+            let cred = if !is_user_specified {
+                if let Some(sel_id) = &selected_cred_id {
+                    if let Some(c) = all_creds.iter().find(|c| c.id == *sel_id && c.rp_id.eq_ignore_ascii_case(&rp_id)) {
+                        c.clone()
+                    } else {
+                        initial_cred
+                    }
+                } else {
+                    initial_cred
+                }
+            } else {
+                initial_cred
             };
 
             // Increment sign_count in database

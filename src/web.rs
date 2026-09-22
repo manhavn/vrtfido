@@ -61,6 +61,7 @@ pub struct ApproveVerifyRequest {
     pub request_id: u64,
     pub method: String,
     pub pin: Option<String>,
+    pub credential_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -369,7 +370,12 @@ async fn approve_verify(
     State(state): State<AppState>,
     Json(payload): Json<ApproveVerifyRequest>,
 ) -> Json<ApiResponse<bool>> {
-    match state.security.approve_pending(payload.request_id, &payload.method, payload.pin.as_deref()) {
+    match state.security.approve_pending(
+        payload.request_id,
+        &payload.method,
+        payload.pin.as_deref(),
+        payload.credential_id,
+    ) {
         Ok(_) => Json(ApiResponse::ok(true)),
         Err(e) => Json(ApiResponse::err(e)),
     }
@@ -728,7 +734,17 @@ async fn index_html() -> Html<&'static str> {
             <div>
                 <span class="modal-rp" id="modalRpId">webauthn.io</span>
             </div>
-            <p id="modalUserDesc" style="font-size: 0.85rem; margin-bottom: 1rem; color: var(--text-muted);"></p>
+            <p id="modalUserDesc" style="font-size: 0.85rem; margin-bottom: 0.5rem; color: var(--text-muted);"></p>
+
+            <!-- MULTI-ACCOUNT SELECTION (WHEN USER NOT PROVIDED BY RP) -->
+            <div id="modalAccountSelectionArea" style="display: none; text-align: left; margin: 0.75rem 0 1rem 0; background: var(--bg-secondary); padding: 0.75rem 1rem; border-radius: 8px; border: 1px solid var(--border);">
+                <label class="form-label" style="font-size: 0.8rem; margin-bottom: 0.35rem; color: var(--accent);">👤 Select Account to Authenticate:</label>
+                <select id="modalAccountSelect" class="form-control" style="font-weight: 600; cursor: pointer;">
+                </select>
+                <div id="modalAccountNote" style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.35rem;">
+                    Defaulted to latest used/added account.
+                </div>
+            </div>
 
             <div id="modalSetupView" style="display: none; margin-top: 1rem; border-top: 1px solid var(--border); padding-top: 1rem;">
                 <p style="font-size: 0.9rem; color: var(--warning); margin-bottom: 0.75rem; font-weight: 600;">
@@ -1184,7 +1200,46 @@ async fn index_html() -> Html<&'static str> {
                     document.getElementById('modalRpId').innerText = p.rp_id;
                     const opText = p.operation === 'MakeCredential' ? 'Register New Passkey' : 'Authenticate Sign-in';
                     document.getElementById('modalTitle').innerText = opText;
-                    document.getElementById('modalUserDesc').innerText = p.user_name ? `Account: ${p.user_name}` : '';
+
+                    const accountSelectArea = document.getElementById('modalAccountSelectionArea');
+                    const accountSelect = document.getElementById('modalAccountSelect');
+
+                    if (p.accounts && p.accounts.length > 1) {
+                        // Trang web không cung cấp user và có nhiều tài khoản cùng domain -> hiển thị danh sách chọn
+                        accountSelectArea.style.display = 'block';
+                        document.getElementById('modalUserDesc').innerText = '';
+
+                        // Render options only if changed to avoid resetting user selection on next poll
+                        const currentVal = accountSelect.value;
+                        const optionIds = Array.from(accountSelect.options).map(o => o.value).join(',');
+                        const newOptionIds = p.accounts.map(a => a.id).join(',');
+
+                        if (optionIds !== newOptionIds) {
+                            accountSelect.innerHTML = '';
+                            p.accounts.forEach(acc => {
+                                const opt = document.createElement('option');
+                                opt.value = acc.id;
+                                const displayName = acc.user_display_name && acc.user_display_name !== acc.user_name 
+                                    ? ` (${acc.user_display_name})` 
+                                    : '';
+                                opt.text = `${acc.user_name}${displayName}`;
+                                accountSelect.appendChild(opt);
+                            });
+                            // Mặc định lấy tài khoản cuối cùng đã được xác thực hoặc thêm vào cuối cùng
+                            if (p.selected_credential_id) {
+                                accountSelect.value = p.selected_credential_id;
+                            } else if (p.accounts.length > 0) {
+                                accountSelect.value = p.accounts[0].id;
+                            }
+                        } else if (currentVal) {
+                            accountSelect.value = currentVal;
+                        }
+                    } else {
+                        // Nếu đã có thông tin user hoặc chỉ có 1 account: giữ nguyên luồng hiện tại, không hiển thị danh sách chọn
+                        accountSelectArea.style.display = 'none';
+                        accountSelect.innerHTML = '';
+                        document.getElementById('modalUserDesc').innerText = p.user_name ? `Account: ${p.user_name}` : '';
+                    }
 
                     if (!p.is_security_setup) {
                         document.getElementById('modalSetupView').style.display = 'block';
@@ -1227,10 +1282,13 @@ async fn index_html() -> Html<&'static str> {
                 }
             }
 
+            const accountSelect = document.getElementById('modalAccountSelect');
+            const credential_id = (accountSelect && accountSelect.value) ? accountSelect.value : null;
+
             const res = await fetch('/api/verify/approve', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ request_id: currentPromptId, method, pin })
+                body: JSON.stringify({ request_id: currentPromptId, method, pin, credential_id })
             });
             const json = await res.json();
             if (json.success) {
@@ -1243,7 +1301,6 @@ async fn index_html() -> Html<&'static str> {
                 alert("Authentication error: " + json.error);
             }
         }
-
         async function submitModalReject() {
             if (!currentPromptId) return;
             await fetch('/api/verify/reject', {
@@ -1424,5 +1481,64 @@ mod tests {
         let (status, _body) = send_http_request(addr, "GET", "/favicon.ico", "").await;
         assert!(status.contains("200 OK"));
         assert!(status.contains("image/x-icon"));
+    }
+
+    #[tokio::test]
+    async fn test_verify_pending_with_accounts_selection() {
+        let state = create_test_state();
+        state.security.set_pin("123456").unwrap();
+
+        let accounts = vec![
+            crate::security::PendingAccountOption {
+                id: "cred_1".into(),
+                user_name: "alice".into(),
+                user_display_name: "Alice A".into(),
+                last_used_at: "2026-09-22 10:00:00".into(),
+                created_at: "2026-09-20 10:00:00".into(),
+            },
+            crate::security::PendingAccountOption {
+                id: "cred_2".into(),
+                user_name: "bob".into(),
+                user_display_name: "Bob B".into(),
+                last_used_at: "2026-09-21 10:00:00".into(),
+                created_at: "2026-09-20 11:00:00".into(),
+            },
+        ];
+
+        let sec_clone = state.security.clone();
+        let verify_task = tokio::spawn(async move {
+            sec_clone
+                .request_user_verification_with_accounts(
+                    "example.com",
+                    "GetAssertion",
+                    "alice",
+                    accounts,
+                    Some("cred_1".into()),
+                )
+                .await
+        });
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // GET /api/verify/pending
+        let pending_res = get_pending_verify(State(state.clone())).await;
+        assert!(pending_res.0.success);
+        let prompt = pending_res.0.data.unwrap().unwrap();
+        assert_eq!(prompt.accounts.len(), 2);
+        assert_eq!(prompt.selected_credential_id, Some("cred_1".into()));
+
+        // Approve choosing cred_2
+        let approve_req = ApproveVerifyRequest {
+            request_id: prompt.request_id,
+            method: "PIN".into(),
+            pin: Some("123456".into()),
+            credential_id: Some("cred_2".into()),
+        };
+        let approve_res = approve_verify(State(state.clone()), axum::Json(approve_req)).await;
+        assert!(approve_res.0.success);
+
+        let result = verify_task.await.unwrap().unwrap();
+        assert_eq!(result.method, "PIN");
+        assert_eq!(result.selected_credential_id, Some("cred_2".into()));
     }
 }
