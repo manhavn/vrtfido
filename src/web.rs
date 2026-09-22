@@ -2,7 +2,8 @@ use crate::db::Db;
 use crate::security::SecurityEngine;
 use axum::{
     extract::{Path, State},
-    response::Html,
+    http::header,
+    response::{Html, IntoResponse},
     routing::{delete, get, post, put},
     Json, Router,
 };
@@ -98,6 +99,7 @@ impl<T> ApiResponse<T> {
 pub fn create_router(state: AppState) -> Router {
     Router::new()
         .route("/", get(index_html))
+        .route("/favicon.ico", get(favicon_ico))
         .route("/api/status", get(get_status))
         .route("/api/credentials", get(list_credentials))
         .route("/api/credentials/{id}", put(update_credential))
@@ -423,6 +425,7 @@ async fn index_html() -> Html<&'static str> {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>vrtfido - Virtual FIDO2 & Passkey Manager</title>
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
     <style>
         :root {
             --bg-primary: #0f172a;
@@ -823,20 +826,32 @@ async fn index_html() -> Html<&'static str> {
                 const res = await fetch('/api/credentials');
                 const json = await res.json();
                 if (json.success && json.data.length > 0) {
-                    tbody.innerHTML = json.data.map(c => `
-                        <tr>
-                            <td><strong>${escapeHtml(c.rp_id)}</strong></td>
-                            <td>${escapeHtml(c.user_name)}</td>
-                            <td>${escapeHtml(c.user_display_name)}</td>
-                            <td><span style="font-weight:700; color:var(--accent);">${c.sign_count}</span></td>
-                            <td style="color:var(--text-muted);">${c.created_at}</td>
-                            <td style="color:var(--text-muted);">${c.last_used_at}</td>
-                            <td>
-                                <button class="btn btn-secondary btn-sm" onclick="editCredential('${c.id}', '${escapeHtml(c.user_name)}', '${escapeHtml(c.user_display_name)}')">✏️ Edit</button>
-                                <button class="btn btn-danger btn-sm" onclick="deleteCredential('${c.id}', '${escapeHtml(c.rp_id)}')">🗑️ Delete</button>
-                            </td>
-                        </tr>
-                    `).join('');
+                    tbody.innerHTML = json.data.map(c => {
+                        const idAttr = escapeHtml(c.id);
+                        const uNameAttr = escapeHtml(c.user_name);
+                        const uDisplayAttr = escapeHtml(c.user_display_name);
+                        const rpIdAttr = escapeHtml(c.rp_id);
+                        return `
+                            <tr>
+                                <td><strong>${rpIdAttr}</strong></td>
+                                <td>${uNameAttr}</td>
+                                <td>${uDisplayAttr}</td>
+                                <td><span style="font-weight:700; color:var(--accent);">${c.sign_count}</span></td>
+                                <td style="color:var(--text-muted);">${c.created_at}</td>
+                                <td style="color:var(--text-muted);">${c.last_used_at}</td>
+                                <td>
+                                    <button class="btn btn-secondary btn-sm btn-edit" data-id="${idAttr}" data-username="${uNameAttr}" data-displayname="${uDisplayAttr}">✏️ Edit</button>
+                                    <button class="btn btn-danger btn-sm btn-delete" data-id="${idAttr}" data-rpid="${rpIdAttr}">🗑️ Delete</button>
+                                </td>
+                            </tr>
+                        `;
+                    }).join('');
+                    tbody.querySelectorAll('.btn-edit').forEach(btn => {
+                        btn.onclick = () => editCredential(btn.dataset.id, btn.dataset.username, btn.dataset.displayname);
+                    });
+                    tbody.querySelectorAll('.btn-delete').forEach(btn => {
+                        btn.onclick = () => deleteCredential(btn.dataset.id, btn.dataset.rpid);
+                    });
                 } else {
                     tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: var(--text-muted); padding: 2rem;">No passkey credentials stored yet. Open webauthn.io to register!</td></tr>';
                 }
@@ -1243,7 +1258,12 @@ async fn index_html() -> Html<&'static str> {
 
         function escapeHtml(str) {
             if (!str) return '';
-            return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+            return String(str)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
         }
 
         // Init
@@ -1257,6 +1277,10 @@ async fn index_html() -> Html<&'static str> {
 "#)
 }
 
+async fn favicon_ico() -> impl IntoResponse {
+    const FAVICON: &[u8] = include_bytes!("../assets/favicon.ico");
+    ([(header::CONTENT_TYPE, "image/x-icon")], FAVICON)
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1325,12 +1349,16 @@ mod tests {
             method, path, addr, body.len(), body
         );
         stream.write_all(req.as_bytes()).await.unwrap();
-        let mut response = String::new();
-        stream.read_to_string(&mut response).await.unwrap();
-        let parts: Vec<&str> = response.splitn(2, "\r\n\r\n").collect();
-        let header = parts.get(0).unwrap_or(&"").to_string();
-        let body = parts.get(1).unwrap_or(&"").to_string();
-        (header, body)
+        let mut response_bytes = Vec::new();
+        stream.read_to_end(&mut response_bytes).await.unwrap();
+        let sep = b"\r\n\r\n";
+        if let Some(pos) = response_bytes.windows(sep.len()).position(|w| w == sep) {
+            let header = String::from_utf8_lossy(&response_bytes[..pos]).to_string();
+            let body = String::from_utf8_lossy(&response_bytes[pos + sep.len()..]).to_string();
+            (header, body)
+        } else {
+            (String::from_utf8_lossy(&response_bytes).to_string(), String::new())
+        }
     }
 
     #[tokio::test]
@@ -1391,5 +1419,10 @@ mod tests {
         assert!(body.contains("\"success\":true"));
         assert_eq!(state.db.get_auth_logs(None, 10).unwrap().len(), 0);
         assert_eq!(state.db.get_debug_logs(10).unwrap().len(), 0);
+
+        // Test GET /favicon.ico
+        let (status, _body) = send_http_request(addr, "GET", "/favicon.ico", "").await;
+        assert!(status.contains("200 OK"));
+        assert!(status.contains("image/x-icon"));
     }
 }
