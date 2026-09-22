@@ -41,6 +41,11 @@ The application includes an embedded **Web CMS Dashboard** on port **10209**, su
    - Export and Import 100% of data (Credentials, PIN, Fingerprints, Audit Logs, Debug Logs) to a single JSON file.
    - Integrated REST API endpoints `/api/database/export` and `/api/database/import`.
 
+7. **System Tray & Autostart (FreeDesktop / KDE / GNOME):**
+   - Integrated system tray icon with direct access to the Web CMS Dashboard.
+   - Click the tray icon or select **Dashboard** from the tray menu to open your default browser.
+   - Toggle **Start with the system** directly in the tray menu (with checkmark status) to enable or disable automatic startup upon system login (`~/.config/autostart/vrtfido.desktop`).
+   - Option `--no-tray` to disable system tray on headless/server systems.
 ---
 
 ## 🚀 Installation & Usage

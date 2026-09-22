@@ -1,6 +1,8 @@
+mod autostart;
 mod db;
 mod security;
 mod sensor;
+mod tray;
 mod web;
 use ciborium::Value;
 use db::Db;
@@ -845,6 +847,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let debug_mode = args.iter().any(|a| a == "--debug" || a == "-d");
     let unlimited_fps = args.iter().any(|a| a == "--unlimited-fps" || a == "--unlimited-fingerprints" || a == "-u");
     let exit_after_import = args.iter().any(|a| a == "--exit-after-import");
+    let no_tray = args.iter().any(|a| a == "--no-tray");
     let check_clean_logs: Option<String> = {
         let mut target = None;
         let mut i = 0;
@@ -999,6 +1002,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  -q, --quit, --stop            Stop running vrtfido process (foreground or daemon)");
         println!("  -d, --debug                   Enable packet debug mode");
         println!("  -u, --unlimited-fps           Unlimited fingerprint slots (default: 10)");
+        println!("      --no-tray                 Disable system tray icon");
         println!("  -D, --database, --db <SPEC>   Database path or connection URL (default: authenticator.db)");
         println!("                                Supported:");
         println!("                                  - SQLite:     authenticator.db or sqlite:my.db");
@@ -1356,10 +1360,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    // 7. Start System Tray icon in background
+    let _tray_handle = if !no_tray {
+        tray::spawn_tray(port).await
+    } else {
+        println!("[TRAY] System tray disabled (--no-tray)");
+        None
+    };
+
     // Write PID file for --quit command
     let _ = std::fs::write(&pid_file, std::process::id().to_string());
-
-    // Keep main process running and listen for SIGINT (Ctrl+C) or SIGTERM (--quit)
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {
@@ -1368,6 +1378,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ = sigterm.recv() => {
             println!("\n[!] Received stop signal (SIGTERM). Shutting down...");
         }
+    }
+
+    if let Some(handle) = _tray_handle {
+        println!("[TRAY] Shutting down system tray service...");
+        handle.shutdown().await;
     }
 
     let _ = std::fs::remove_file(&pid_file);
