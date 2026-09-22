@@ -1195,6 +1195,7 @@ async fn index_html() -> Html<&'static str> {
                 const json = await res.json();
                 if (json.success && json.data) {
                     const p = json.data;
+                    const isNewPrompt = (currentPromptId !== p.request_id);
                     currentPromptId = p.request_id;
 
                     document.getElementById('modalRpId').innerText = p.rp_id;
@@ -1205,16 +1206,10 @@ async fn index_html() -> Html<&'static str> {
                     const accountSelect = document.getElementById('modalAccountSelect');
 
                     if (p.accounts && p.accounts.length > 1) {
-                        // Trang web không cung cấp user và có nhiều tài khoản cùng domain -> hiển thị danh sách chọn
                         accountSelectArea.style.display = 'block';
                         document.getElementById('modalUserDesc').innerText = '';
 
-                        // Render options only if changed to avoid resetting user selection on next poll
-                        const currentVal = accountSelect.value;
-                        const optionIds = Array.from(accountSelect.options).map(o => o.value).join(',');
-                        const newOptionIds = p.accounts.map(a => a.id).join(',');
-
-                        if (optionIds !== newOptionIds) {
+                        if (isNewPrompt) {
                             accountSelect.innerHTML = '';
                             p.accounts.forEach(acc => {
                                 const opt = document.createElement('option');
@@ -1225,17 +1220,13 @@ async fn index_html() -> Html<&'static str> {
                                 opt.text = `${acc.user_name}${displayName}`;
                                 accountSelect.appendChild(opt);
                             });
-                            // Mặc định lấy tài khoản cuối cùng đã được xác thực hoặc thêm vào cuối cùng
                             if (p.selected_credential_id) {
                                 accountSelect.value = p.selected_credential_id;
                             } else if (p.accounts.length > 0) {
                                 accountSelect.value = p.accounts[0].id;
                             }
-                        } else if (currentVal) {
-                            accountSelect.value = currentVal;
                         }
                     } else {
-                        // Nếu đã có thông tin user hoặc chỉ có 1 account: giữ nguyên luồng hiện tại, không hiển thị danh sách chọn
                         accountSelectArea.style.display = 'none';
                         accountSelect.innerHTML = '';
                         document.getElementById('modalUserDesc').innerText = p.user_name ? `Account: ${p.user_name}` : '';
@@ -1247,10 +1238,18 @@ async fn index_html() -> Html<&'static str> {
                     } else {
                         document.getElementById('modalSetupView').style.display = 'none';
                         document.getElementById('modalVerifyView').style.display = 'block';
-                        setTimeout(() => document.getElementById('verifyPinInput').focus(), 100);
+                        if (isNewPrompt) {
+                            setTimeout(() => {
+                                if (document.activeElement !== accountSelect) {
+                                    document.getElementById('verifyPinInput').focus();
+                                }
+                            }, 100);
+                        }
                     }
 
-                    document.getElementById('verifyModal').style.display = 'flex';
+                    if (isNewPrompt) {
+                        document.getElementById('verifyModal').style.display = 'flex';
+                    }
                 } else {
                     if (currentPromptId !== null) {
                         document.getElementById('verifyModal').style.display = 'none';
