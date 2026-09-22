@@ -466,11 +466,28 @@ impl SecurityEngine {
                     );
                     Ok(())
                 }
+
                 _ => {
                     *guard = Some(active);
                     Err("Invalid verification method".to_string())
                 }
             }
+        } else {
+            Err("No pending verification request".to_string())
+        }
+    }
+
+    pub fn select_account(&self, req_id: u64, credential_id: &str) -> Result<(), String> {
+        let mut guard = self.pending.lock();
+        if let Some(mut active) = guard.take() {
+            if active.prompt.request_id != req_id {
+                *guard = Some(active);
+                return Err("Request ID mismatch".to_string());
+            }
+
+            active.prompt.selected_credential_id = Some(credential_id.to_string());
+            *guard = Some(active);
+            Ok(())
         } else {
             Err("No pending verification request".to_string())
         }

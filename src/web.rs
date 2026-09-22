@@ -63,6 +63,12 @@ pub struct ApproveVerifyRequest {
     pub pin: Option<String>,
     pub credential_id: Option<String>,
 }
+#[derive(Deserialize)]
+pub struct SelectAccountRequest {
+    pub request_id: u64,
+    pub credential_id: String,
+}
+
 
 #[derive(Deserialize)]
 pub struct RejectVerifyRequest {
@@ -118,6 +124,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/security/fingerprints/enroll/cancel", post(cancel_enroll))
         .route("/api/security/fingerprints/{id}", delete(delete_fingerprint))
         .route("/api/verify/pending", get(get_pending_verify))
+        .route("/api/verify/select", post(select_verify_account))
         .route("/api/verify/approve", post(approve_verify))
         .route("/api/verify/reject", post(reject_verify))
         .route("/api/database/export", get(export_database))
@@ -376,6 +383,16 @@ async fn approve_verify(
         payload.pin.as_deref(),
         payload.credential_id,
     ) {
+        Ok(_) => Json(ApiResponse::ok(true)),
+        Err(e) => Json(ApiResponse::err(e)),
+    }
+}
+
+async fn select_verify_account(
+    State(state): State<AppState>,
+    Json(payload): Json<SelectAccountRequest>,
+) -> Json<ApiResponse<bool>> {
+    match state.security.select_account(payload.request_id, &payload.credential_id) {
         Ok(_) => Json(ApiResponse::ok(true)),
         Err(e) => Json(ApiResponse::err(e)),
     }
@@ -1225,6 +1242,19 @@ async fn index_html() -> Html<&'static str> {
                             } else if (p.accounts.length > 0) {
                                 accountSelect.value = p.accounts[0].id;
                             }
+
+                            accountSelect.onchange = async () => {
+                                if (currentPromptId && accountSelect.value) {
+                                    await fetch('/api/verify/select', {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({
+                                            request_id: currentPromptId,
+                                            credential_id: accountSelect.value
+                                        })
+                                    });
+                                }
+                            };
                         }
                     } else {
                         accountSelectArea.style.display = 'none';
@@ -1518,13 +1548,24 @@ mod tests {
         });
 
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-
-        // GET /api/verify/pending
         let pending_res = get_pending_verify(State(state.clone())).await;
         assert!(pending_res.0.success);
         let prompt = pending_res.0.data.unwrap().unwrap();
         assert_eq!(prompt.accounts.len(), 2);
         assert_eq!(prompt.selected_credential_id, Some("cred_1".into()));
+
+        // Test POST /api/verify/select (change selected account)
+        let select_req = SelectAccountRequest {
+            request_id: prompt.request_id,
+            credential_id: "cred_2".into(),
+        };
+        let select_res = select_verify_account(State(state.clone()), axum::Json(select_req)).await;
+        assert!(select_res.0.success);
+
+        // Verify prompt state updated
+        let pending_res2 = get_pending_verify(State(state.clone())).await;
+        let prompt2 = pending_res2.0.data.unwrap().unwrap();
+        assert_eq!(prompt2.selected_credential_id, Some("cred_2".into()));
 
         // Approve choosing cred_2
         let approve_req = ApproveVerifyRequest {

@@ -702,17 +702,19 @@ fn handle_cbor(
             let cred = if !is_user_specified {
                 if let Some(sel_id) = &selected_cred_id {
                     if let Some(c) = all_creds.iter().find(|c| c.id == *sel_id && c.rp_id.eq_ignore_ascii_case(&rp_id)) {
+                        println!("[CTAP2] Account selected for authentication: {} ({}) [ID: {}]", c.user_name, c.user_display_name, c.id);
                         c.clone()
                     } else {
+                        println!("[CTAP2] Selected ID not found, using default: {} ({}) [ID: {}]", initial_cred.user_name, initial_cred.user_display_name, initial_cred.id);
                         initial_cred
                     }
                 } else {
+                    println!("[CTAP2] No specific account selected, using default: {} ({}) [ID: {}]", initial_cred.user_name, initial_cred.user_display_name, initial_cred.id);
                     initial_cred
                 }
             } else {
                 initial_cred
             };
-
             // Increment sign_count in database
             let new_count = db.increment_sign_count(&cred.id).unwrap_or(cred.sign_count + 1);
 
@@ -748,10 +750,22 @@ fn handle_cbor(
                 (Value::Text("type".into()), Value::Text("public-key".into())),
             ]);
 
+            let user_id_bytes = hex::decode(&cred.user_id_hex).unwrap_or_default();
+            let mut user_map = vec![
+                (Value::Text("id".into()), Value::Bytes(user_id_bytes)),
+            ];
+            if !cred.user_name.is_empty() {
+                user_map.push((Value::Text("name".into()), Value::Text(cred.user_name.clone())));
+            }
+            if !cred.user_display_name.is_empty() {
+                user_map.push((Value::Text("displayName".into()), Value::Text(cred.user_display_name.clone())));
+            }
+
             let resp_map = vec![
                 (Value::Integer(1.into()), cred_descriptor),
                 (Value::Integer(2.into()), Value::Bytes(auth_data)),
                 (Value::Integer(3.into()), Value::Bytes(der_sig.as_bytes().to_vec())),
+                (Value::Integer(4.into()), Value::Map(user_map)),
             ];
 
             // Write audit log
