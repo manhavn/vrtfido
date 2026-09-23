@@ -490,44 +490,54 @@ fn handle_cbor(
                 }
             }
 
-            println!("[CTAP2] Relying Party (Domain): {}", rp_id);
+            let is_dummy_probe = crate::db::Db::is_dummy_probe(&rp_id, &user_name);
+
+            if is_dummy_probe {
+                println!("[CTAP2] Relying Party (Domain): {} [BROWSER TOUCH/PRESENCE PROBE]", rp_id);
+            } else {
+                println!("[CTAP2] Relying Party (Domain): {}", rp_id);
+            }
             println!("[CTAP2] Account: {} ({})", user_name, user_display_name);
 
             if debug_mode {
                 db.log_debug(
                     "DEBUG",
                     "CTAP2",
-                    &format!("MakeCredential for RP: {}, User: {}", rp_id, user_name),
+                    &format!("MakeCredential for RP: {}, User: {} (dummy probe: {})", rp_id, user_name, is_dummy_probe),
                 );
             }
 
-            // Request user verification via SecurityEngine (Web CMS will show confirmation modal)
-            println!("[SECURITY] Waiting for confirmation from Web CMS (http://localhost:10209)...");
-            let verify_result = tokio_handle.block_on(security.request_user_verification(
-                &rp_id,
-                "MakeCredential",
-                &user_name,
-            ));
+            let auth_method = if is_dummy_probe {
+                println!("[SECURITY] Browser touch/blink presence probe detected ('{}') -> Auto-acknowledged without prompting user or saving to database.", rp_id);
+                "INTERNAL_PROBE".to_string()
+            } else {
+                // Request user verification via SecurityEngine (Web CMS will show confirmation modal)
+                println!("[SECURITY] Waiting for confirmation from Web CMS (http://localhost:10209)...");
+                let verify_result = tokio_handle.block_on(security.request_user_verification(
+                    &rp_id,
+                    "MakeCredential",
+                    &user_name,
+                ));
 
-            let auth_method = match verify_result {
-                Ok(method) => {
-                    println!("[SECURITY] Verification succeeded using method: {}", method);
-                    method
-                }
-                Err(err) => {
-                    println!("[SECURITY] Verification failed / rejected: {}", err);
-                    db.log_auth(
-                        None,
-                        &rp_id,
-                        "MakeCredential",
-                        "REJECTED",
-                        "NONE",
-                        Some(&err),
-                    );
-                    return vec![0x27]; // CTAP2_ERR_OPERATION_DENIED
+                match verify_result {
+                    Ok(method) => {
+                        println!("[SECURITY] Verification succeeded using method: {}", method);
+                        method
+                    }
+                    Err(err) => {
+                        println!("[SECURITY] Verification failed / rejected: {}", err);
+                        db.log_auth(
+                            None,
+                            &rp_id,
+                            "MakeCredential",
+                            "REJECTED",
+                            "NONE",
+                            Some(&err),
+                        );
+                        return vec![0x27]; // CTAP2_ERR_OPERATION_DENIED
+                    }
                 }
             };
-
             // Generate new P-256 key
             let signing_key = SigningKey::generate();
             let verifying_key = signing_key.verifying_key();
@@ -549,39 +559,44 @@ fn handle_cbor(
             let cred_id: Vec<u8> = (0..32).map(|_| rand::random::<u8>()).collect();
             let cred_id_hex = hex::encode(&cred_id);
 
-            // Save Credential to database (automatically checks and overwrites duplicates by RP and account)
-            let sec1_key_bytes = signing_key.to_bytes();
-            let is_update = match db.save_credential(
-                &cred_id_hex,
-                &rp_id,
-                &user_id,
-                &user_name,
-                &user_display_name,
-                sec1_key_bytes.as_slice(),
-                &cose_bytes,
-                1,
-            ) {
-                Ok(updated) => updated,
-                Err(e) => {
-                    eprintln!("[DB] Error saving credential: {}", e);
-                    return vec![0x01];
-                }
-            };
+            // Save Credential to database (only for legitimate sites, skip dummy probes)
+            let is_update = if !is_dummy_probe {
+                let sec1_key_bytes = signing_key.to_bytes();
+                let is_update = match db.save_credential(
+                    &cred_id_hex,
+                    &rp_id,
+                    &user_id,
+                    &user_name,
+                    &user_display_name,
+                    sec1_key_bytes.as_slice(),
+                    &cose_bytes,
+                    1,
+                ) {
+                    Ok(updated) => updated,
+                    Err(e) => {
+                        eprintln!("[DB] Error saving credential: {}", e);
+                        return vec![0x01];
+                    }
+                };
 
-            // Write audit log to database
-            let log_msg = if is_update {
-                format!("Updated and overwrote credential for account '{}' on domain '{}'", user_name, rp_id)
+                // Write audit log to database
+                let log_msg = if is_update {
+                    format!("Updated and overwrote credential for account '{}' on domain '{}'", user_name, rp_id)
+                } else {
+                    format!("Registered credential for account '{}' on domain '{}'", user_name, rp_id)
+                };
+                db.log_auth(
+                    Some(&cred_id_hex),
+                    &rp_id,
+                    "MakeCredential",
+                    "SUCCESS",
+                    &auth_method,
+                    Some(&log_msg),
+                );
+                is_update
             } else {
-                format!("Registered credential for account '{}' on domain '{}'", user_name, rp_id)
+                false
             };
-            db.log_auth(
-                Some(&cred_id_hex),
-                &rp_id,
-                "MakeCredential",
-                "SUCCESS",
-                &auth_method,
-                Some(&log_msg),
-            );
             // Build authenticatorData
             let rp_id_hash = Sha256::digest(rp_id.as_bytes());
             let flags = 0x01 | 0x04 | 0x40; // UP | UV | AT
@@ -604,7 +619,9 @@ fn handle_cbor(
 
             let mut out = vec![0x00]; // CTAP2_OK
             ciborium::into_writer(&Value::Map(resp_map), &mut out).unwrap();
-            if is_update {
+            if is_dummy_probe {
+                println!("[+] Handled browser touch/blink probe successfully (not saved to database).");
+            } else if is_update {
                 println!("[+] Account '{}' already exists on domain '{}' -> Updated and overwrote with new data!", user_name, rp_id);
             } else {
                 println!("[+] WebAuthn registration successful! Saved to database.");

@@ -307,7 +307,34 @@ impl Db {
             }
         };
 
-        Ok(Self { backend })
+        let db = Self { backend };
+        let _ = db.cleanup_dummy_credentials();
+        Ok(db)
+    }
+
+    pub fn is_dummy_probe(rp_id: &str, user_name: &str) -> bool {
+        let rp_clean = rp_id.trim();
+        let user_clean = user_name.trim();
+        rp_clean.eq_ignore_ascii_case("make.me.blink")
+            || rp_clean == ".dummy"
+            || user_clean.eq_ignore_ascii_case("dummy")
+            || rp_clean.eq_ignore_ascii_case("SelectDevice")
+            || user_clean.eq_ignore_ascii_case("SelectDevice")
+    }
+
+    pub fn cleanup_dummy_credentials(&self) -> Result<usize> {
+        let creds = self.get_credentials()?;
+        let mut count = 0;
+        for c in creds {
+            if Self::is_dummy_probe(&c.rp_id, &c.user_name) {
+                let _ = self.delete_credential(&c.id);
+                count += 1;
+            }
+        }
+        if count > 0 {
+            println!("[DB] Automatically cleaned up {} legacy dummy probe credential(s).", count);
+        }
+        Ok(count)
     }
 
     pub fn backend_name(&self) -> &'static str {
@@ -351,6 +378,10 @@ impl Db {
         public_key_cose: &[u8],
         sign_count: u32,
     ) -> Result<bool> {
+        // Prevent saving dummy/probe credentials from browsers (e.g. Chrome .dummy, Firefox make.me.blink)
+        if Self::is_dummy_probe(rp_id, user_name) {
+            return Ok(false);
+        }
         // 1. Scan existing credentials for RP to detect duplicate accounts
         let existing = self.backend.get_credentials_for_rp(rp_id)?;
 
@@ -608,6 +639,23 @@ mod tests {
 
     fn create_test_db() -> Db {
         Db::open(":memory:").expect("Failed to open in-memory db")
+    }
+
+    #[test]
+    fn test_dummy_probe_credentials_ignored_and_cleaned() {
+        let db = create_test_db();
+
+        // Attempts to save dummy probes should be rejected (return Ok(false) and not stored)
+        assert!(!db.save_credential("id_blink", "make.me.blink", b"uid", "make.me.blink", "User", b"k", b"c", 1).unwrap());
+        assert!(!db.save_credential("id_dummy", ".dummy", b"uid", "dummy", "User", b"k", b"c", 1).unwrap());
+        assert!(!db.save_credential("id_select", "SelectDevice", b"uid", "SelectDevice", "User", b"k", b"c", 1).unwrap());
+
+        let creds = db.get_credentials().unwrap();
+        assert_eq!(creds.len(), 0, "No dummy credentials should be saved");
+
+        // Normal credential works
+        assert!(!db.save_credential("id_normal", "google.com", b"uid", "alice", "Alice", b"k", b"c", 1).unwrap());
+        assert_eq!(db.get_credentials().unwrap().len(), 1);
     }
 
     #[test]
