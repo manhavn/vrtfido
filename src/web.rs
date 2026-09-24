@@ -672,14 +672,44 @@ async fn index_html() -> Html<&'static str> {
         /* ---------- Tables ---------- */
         .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
         .table-wrap.scroll-y { max-height: 400px; overflow-y: auto; }
-        table { width: 100%; border-collapse: collapse; text-align: left; font-size: 0.9rem; }
-        th { padding: 0.75rem 1rem; color: var(--text-muted); font-weight: 600; border-bottom: 1px solid var(--border); background: var(--bg-secondary); white-space: nowrap; position: sticky; top: 0; z-index: 1; }
+        /* Fixed layout plus per-column budgets keeps long domains, usernames and log messages
+           inside the card instead of stretching the table; the value itself is clipped with an
+           ellipsis by .cell-value and the full text is exposed through a title tooltip. */
+        table { width: 100%; border-collapse: collapse; text-align: left; font-size: 0.9rem; table-layout: fixed; }
+        th { padding: 0.75rem 1rem; color: var(--text-muted); font-weight: 600; border-bottom: 1px solid var(--border); background: var(--bg-secondary); white-space: nowrap; position: sticky; top: 0; z-index: 1; overflow: hidden; text-overflow: ellipsis; }
         td { padding: 0.85rem 1rem; border-bottom: 1px solid rgba(51, 65, 85, 0.5); vertical-align: middle; }
         tbody tr:last-child td { border-bottom: none; }
         tr:hover td { background: rgba(51, 65, 85, 0.2); }
-        .actions-cell { white-space: nowrap; }
+        .cell-value { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .actions-cell { white-space: normal; }
         .actions-cell .btn + .btn { margin-left: 0.4rem; }
         .empty-row td { text-align: center; color: var(--text-muted); padding: 2rem 1rem; }
+
+        /* Column budgets. These percentages are only the pre-JS fallback: sizeTableColumns()
+           measures the rigid columns (timestamps, badges, buttons) and hands the remaining width
+           to the columns marked .col-flex, so long domains, usernames and log messages are the
+           only values that ever get clipped. */
+        .table-creds th:nth-child(1) { width: 16%; }
+        .table-creds th:nth-child(2) { width: 11%; }
+        .table-creds th:nth-child(3) { width: 11%; }
+        .table-creds th:nth-child(4) { width: 12%; }
+        .table-creds th:nth-child(5) { width: 15%; }
+        .table-creds th:nth-child(6) { width: 15%; }
+        .table-creds th:nth-child(7) { width: 20%; }
+        .table-fp th:nth-child(1) { width: 18%; }
+        .table-fp th:nth-child(2) { width: 21%; }
+        .table-fp th:nth-child(3) { width: 34%; }
+        .table-fp th:nth-child(4) { width: 27%; }
+        .table-logs th:nth-child(1) { width: 18%; }
+        .table-logs th:nth-child(2) { width: 19%; }
+        .table-logs th:nth-child(3) { width: 14%; }
+        .table-logs th:nth-child(4) { width: 13%; }
+        .table-logs th:nth-child(5) { width: 14%; }
+        .table-logs th:nth-child(6) { width: 22%; }
+        .table-debug th:nth-child(1) { width: 18%; }
+        .table-debug th:nth-child(2) { width: 13%; }
+        .table-debug th:nth-child(3) { width: 21%; }
+        .table-debug th:nth-child(4) { width: 48%; }
 
         /* ---------- Buttons ---------- */
         .btn { padding: 0.55rem 1rem; border-radius: 8px; font-weight: 600; font-size: 0.85rem; cursor: pointer; border: 1px solid transparent; transition: background-color 0.15s, color 0.15s, border-color 0.15s; display: inline-flex; align-items: center; justify-content: center; gap: 0.4rem; min-height: 40px; line-height: 1.1; }
@@ -750,10 +780,15 @@ async fn index_html() -> Html<&'static str> {
             table tbody { display: block; }
             table tr { display: block; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 10px; margin-bottom: 0.75rem; padding: 0.25rem 0.25rem; }
             table tr:hover td { background: transparent; }
-            table td { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.85rem; border-bottom: 1px dashed rgba(51, 65, 85, 0.6); padding: 0.55rem 0.7rem; text-align: right; }
+            table td { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.85rem; border-bottom: 1px dashed rgba(51, 65, 85, 0.6); padding: 0.55rem 0.7rem; text-align: right; min-width: 0; }
             table tr td:last-child { border-bottom: none; }
             table td::before { content: attr(data-label); color: var(--text-muted); font-size: 0.72rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; text-align: left; flex: 0 0 40%; }
             table td:not([data-label])::before, table td[colspan]::before { content: none; }
+            /* The value must be allowed to shrink below its content width for the ellipsis to work.
+               On a phone there is no hover, so a value is wrapped instead of being clipped after a
+               single line: three lines are shown at most, which keeps the card compact while still
+               revealing most of a long domain, username or log message. */
+            table td > .cell-value { flex: 1 1 auto; min-width: 0; white-space: normal; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
             table td[colspan] { display: block; text-align: center; }
             table td.empty-row-cell { display: block; }
             .actions-cell { white-space: normal; }
@@ -812,12 +847,12 @@ async fn index_html() -> Html<&'static str> {
                     </div>
                 </div>
                 <div class="table-wrap">
-                    <table>
+                    <table class="table-creds">
                         <thead>
                             <tr>
-                                <th data-i18n="creds.h.rp">Relying Party (Domain)</th>
-                                <th data-i18n="creds.h.user">Username</th>
-                                <th data-i18n="creds.h.display">Display Name</th>
+                                <th class="col-flex" data-i18n="creds.h.rp">Relying Party (Domain)</th>
+                                <th class="col-flex" data-i18n="creds.h.user">Username</th>
+                                <th class="col-flex" data-i18n="creds.h.display">Display Name</th>
                                 <th data-i18n="creds.h.signCount">Sign Count</th>
                                 <th data-i18n="creds.h.created">Created At</th>
                                 <th data-i18n="creds.h.lastUsed">Last Used</th>
@@ -873,11 +908,11 @@ async fn index_html() -> Html<&'static str> {
                         <button class="btn btn-primary" id="addFpBtn" onclick="addFingerprint()" data-i18n="sec.fp.add">➕ Add Fingerprint</button>
                     </div>
                     <div class="table-wrap scroll-y">
-                        <table>
+                        <table class="table-fp">
                             <thead>
                                 <tr>
                                     <th data-i18n="sec.fp.h.slot">Slot</th>
-                                    <th data-i18n="sec.fp.h.name">Fingerprint Name</th>
+                                    <th class="col-flex" data-i18n="sec.fp.h.name">Fingerprint Name</th>
                                     <th data-i18n="sec.fp.h.enrolled">Enrolled At</th>
                                     <th data-i18n="sec.fp.h.action">Action</th>
                                 </tr>
@@ -924,15 +959,15 @@ async fn index_html() -> Html<&'static str> {
                     </div>
                 </div>
                 <div class="table-wrap">
-                    <table>
+                    <table class="table-logs">
                         <thead>
                             <tr>
                                 <th data-i18n="logs.h.time">Timestamp</th>
-                                <th data-i18n="logs.h.rp">Relying Party</th>
+                                <th class="col-flex" data-i18n="logs.h.rp">Relying Party</th>
                                 <th data-i18n="logs.h.op">Operation</th>
                                 <th data-i18n="logs.h.method">Method</th>
                                 <th data-i18n="logs.h.status">Status</th>
-                                <th data-i18n="logs.h.details">Details</th>
+                                <th class="col-flex" data-i18n="logs.h.details">Details</th>
                             </tr>
                         </thead>
                         <tbody id="auditTableBody"></tbody>
@@ -953,13 +988,13 @@ async fn index_html() -> Html<&'static str> {
                     </div>
                 </div>
                 <div class="table-wrap scroll-y">
-                    <table>
+                    <table class="table-debug">
                         <thead>
                             <tr>
                                 <th>Timestamp</th>
                                 <th data-i18n="debug.h.level">Level</th>
                                 <th data-i18n="debug.h.component">Component</th>
-                                <th data-i18n="debug.h.message">Message</th>
+                                <th class="col-flex" data-i18n="debug.h.message">Message</th>
                             </tr>
                         </thead>
                         <tbody id="debugTableBody"></tbody>
@@ -1062,16 +1097,144 @@ async fn index_html() -> Html<&'static str> {
             });
         }
 
+        // Long values must not widen the table: each value cell gets a .cell-value wrapper that
+        // the stylesheet clips with an ellipsis. The wrapper is appended to the existing markup so
+        // <strong>/<code>/badge styling inside the cell survives.
+        function wrapCellValues(root) {
+            (root || document).querySelectorAll('table tbody td').forEach(td => {
+                if (td.hasAttribute('colspan')) return;
+                if (td.classList.contains('actions-cell') || td.classList.contains('empty-row-cell')) return;
+                if (td.childElementCount === 1 && td.firstElementChild.classList.contains('cell-value')) return;
+                if (!td.textContent.trim()) return;
+                const span = document.createElement('span');
+                span.className = 'cell-value';
+                while (td.firstChild) span.appendChild(td.firstChild);
+                td.appendChild(span);
+            });
+        }
+
+        // A title is only attached where something is actually hidden - horizontally through the
+        // ellipsis, or vertically where the mobile line clamp cuts a wrapped value off - so short
+        // cells do not get a pointless tooltip. Hidden tabs report no layout, so they are skipped
+        // and picked up again once their panel becomes visible (switchTab -> refreshTableLayout).
+        function syncCellTitles(root) {
+            (root || document).querySelectorAll('table thead th, table tbody td > .cell-value').forEach(el => {
+                const visible = el.offsetParent !== null;
+                const clipped = visible && (el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1);
+                if (clipped) {
+                    const text = el.textContent.trim();
+                    if (text) el.title = text;
+                } else {
+                    el.removeAttribute('title');
+                }
+            });
+        }
+
+        function refreshTableLayout(root, force) {
+            decorateTables(root, force);
+            wrapCellValues(root);
+            sizeTableColumns(root);
+            syncCellTitles(root);
+        }
+
+        // Fixed table-layout needs explicit widths. The stylesheet percentages are only a first-paint
+        // fallback and cannot work on their own: a timestamp or a pair of buttons needs its content
+        // width while a domain or a debug message does not, and the labels change with the language.
+        // So rigid columns are measured on their full content and the leftover width is shared out
+        // between the .col-flex columns - the ones whose long values the ellipsis may clip.
+        function sizeTableColumns(root) {
+            const MIN_FLEX = 56;      // a flexible column never collapses below this
+            const RIGID_SHARE = 0.75; // rigid columns may claim at most this much of the table
+            (root || document).querySelectorAll('table').forEach(table => {
+                const ths = Array.from(table.querySelectorAll('thead th'));
+                if (!ths.length) return;
+                if (isMobile() || table.offsetParent === null) {
+                    ths.forEach(th => { th.style.width = ''; });
+                    return;
+                }
+                const flex = ths.map(th => th.classList.contains('col-flex'));
+                if (!flex.some(Boolean)) return;
+
+                // A Range rect reports the natural width of the content even while the box clips it,
+                // so each pass measures the value rather than the width the previous pass assigned.
+                // Wrapping is suppressed while measuring: a wrapped cell (the action buttons, for
+                // example) would otherwise report the width of its widest line and stay wrapped.
+                const needed = ths.map(() => 0);
+                const range = document.createRange();
+                const cells = ths.slice();
+                table.querySelectorAll('tbody tr').forEach(row => cells.push(...row.children));
+                const restoreWrap = cells.map(cell => [cell, cell.style.whiteSpace]);
+                cells.forEach(cell => { cell.style.whiteSpace = 'nowrap'; });
+                const measure = (cell, index) => {
+                    if (index >= needed.length) return;
+                    if (cell.tagName !== 'TH' && cell.hasAttribute('colspan')) return;
+                    const inner = (cell.childElementCount === 1 && cell.firstElementChild.classList.contains('cell-value'))
+                        ? cell.firstElementChild : cell;
+                    range.selectNodeContents(inner);
+                    const cs = getComputedStyle(cell);
+                    const width = Math.ceil(range.getBoundingClientRect().width + parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight));
+                    needed[index] = Math.max(needed[index], width);
+                };
+                ths.forEach(measure);
+                table.querySelectorAll('tbody tr').forEach(row => Array.from(row.children).forEach(measure));
+                restoreWrap.forEach(([cell, whiteSpace]) => { cell.style.whiteSpace = whiteSpace; });
+
+                const avail = table.clientWidth;
+                if (!avail) return;
+                const rigidIndexes = flex.map((isFlex, i) => isFlex ? -1 : i).filter(i => i >= 0);
+                const rigidNeeded = rigidIndexes.reduce((sum, i) => sum + needed[i], 0);
+                const rigidBudget = Math.min(rigidNeeded, avail * RIGID_SHARE);
+                const rigidScale = rigidNeeded > 0 ? rigidBudget / rigidNeeded : 1;
+
+                const widths = ths.map(() => 0);
+                rigidIndexes.forEach(i => { widths[i] = needed[i] * rigidScale; });
+
+                // Water-fill the flexible columns proportionally to their content, capping each one at
+                // what it actually needs so a short value does not steal space from a long one.
+                let remaining = avail - rigidBudget;
+                let pending = flex.map((isFlex, i) => isFlex ? i : -1).filter(i => i >= 0);
+                while (pending.length) {
+                    const weight = pending.reduce((sum, i) => sum + Math.max(needed[i], MIN_FLEX), 0);
+                    const share = i => remaining * Math.max(needed[i], MIN_FLEX) / weight;
+                    const satisfied = pending.filter(i => needed[i] > 0 && share(i) >= needed[i]);
+                    if (satisfied.length) {
+                        satisfied.forEach(i => { widths[i] = needed[i]; remaining -= needed[i]; });
+                        pending = pending.filter(i => !satisfied.includes(i));
+                        continue;
+                    }
+                    const starving = pending.filter(i => share(i) < MIN_FLEX);
+                    if (starving.length && remaining >= MIN_FLEX * starving.length) {
+                        starving.forEach(i => { widths[i] = MIN_FLEX; remaining -= MIN_FLEX; });
+                        pending = pending.filter(i => !starving.includes(i));
+                        continue;
+                    }
+                    pending.forEach(i => { widths[i] = share(i); });
+                    pending = [];
+                }
+                ths.forEach((th, i) => { th.style.width = Math.max(0, Math.floor(widths[i])) + 'px'; });
+            });
+        }
+
         let decorateScheduled = false;
         const tableObserver = new MutationObserver(() => {
             if (decorateScheduled) return;
             decorateScheduled = true;
             requestAnimationFrame(() => {
                 decorateScheduled = false;
-                decorateTables();
+                refreshTableLayout();
             });
         });
         tableObserver.observe(document.body, { childList: true, subtree: true });
+
+        let resizeScheduled = false;
+        window.addEventListener('resize', () => {
+            if (resizeScheduled) return;
+            resizeScheduled = true;
+            requestAnimationFrame(() => {
+                resizeScheduled = false;
+                refreshTableLayout();
+            });
+        });
 
         // ---------------------------------------------------------------------------
         // i18n: English is the default; the choice is stored server-side in the database
@@ -1327,7 +1490,7 @@ async fn index_html() -> Html<&'static str> {
             document.querySelectorAll('[data-i18n]').forEach(el => { el.textContent = t(el.dataset.i18n); });
             document.querySelectorAll('[data-i18n-placeholder]').forEach(el => { el.placeholder = t(el.dataset.i18nPlaceholder); });
             document.querySelectorAll('.lang-btn').forEach(b => b.classList.toggle('active', b.dataset.lang === currentLang));
-            decorateTables(document, true);
+            refreshTableLayout(document, true);
         }
 
         async function loadSettings() {
@@ -1372,6 +1535,8 @@ async fn index_html() -> Html<&'static str> {
             if (targetBtn && targetBtn.classList) targetBtn.classList.add('active');
             const targetContent = document.getElementById(tabId);
             if (targetContent) targetContent.classList.add('active');
+            // Cells clipped while the panel was hidden can only be measured now.
+            requestAnimationFrame(() => refreshTableLayout(targetContent));
             if (tabId === 'tab-creds') loadCredentials();
             if (tabId === 'tab-security') loadSecurity();
             if (tabId === 'tab-logs') loadAuditLogs();
@@ -1920,8 +2085,8 @@ async fn index_html() -> Html<&'static str> {
         // Init: resolve the stored language first so the first paint is already localized.
         (async () => {
             await loadSettings();
-            decorateTables();
-            MOBILE_QUERY.addEventListener('change', () => decorateTables());
+            refreshTableLayout();
+            MOBILE_QUERY.addEventListener('change', () => requestAnimationFrame(() => refreshTableLayout()));
             fetchStatus();
             loadCredentials();
         })();
