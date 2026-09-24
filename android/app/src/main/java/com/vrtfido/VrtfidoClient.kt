@@ -1,12 +1,18 @@
 package com.vrtfido
 
 import android.content.Context
+import android.net.Uri
+import okhttp3.MediaType
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
+import okio.BufferedSink
+import okio.source
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.IOException
 import java.util.concurrent.TimeUnit
 
 data class CandidateAccount(
@@ -170,4 +176,77 @@ object VrtfidoClient {
             null
         }
     }
+
+    /**
+     * Writes a full database backup to [target] in the same shape the desktop CLI writes with
+     * `--export`, so the file can be moved between Android and Ubuntu in both directions.
+     */
+    fun exportDatabase(context: Context, target: Uri) {
+        val req = Request.Builder().url("${baseUrl(context)}/api/database/export").get().build()
+        client.newCall(req).execute().use { resp ->
+            val body = resp.body?.string()
+            if (!resp.isSuccessful || body.isNullOrEmpty()) {
+                throw IllegalStateException("HTTP ${resp.code}")
+            }
+            val root = JSONObject(body)
+            if (!root.optBoolean("success", false)) {
+                throw IllegalStateException(root.optString("error", "HTTP ${resp.code}"))
+            }
+            val data = root.optJSONObject("data")
+                ?: throw IllegalStateException("missing export payload")
+
+            val stream = context.contentResolver.openOutputStream(target)
+                ?: throw IllegalStateException("cannot open destination file")
+            stream.bufferedWriter().use { it.write(data.toString(2)) }
+        }
+    }
+
+    /**
+     * Imports a backup file produced either by this screen or by the desktop CLI `--export`.
+     * The payload is streamed straight from [source] so large backups are never buffered twice.
+     */
+    fun importDatabase(context: Context, source: Uri): ImportResult {
+        val request = Request.Builder()
+            .url("${baseUrl(context)}/api/database/import")
+            .post(UriRequestBody(context, source, JSON_MEDIA))
+            .build()
+
+        client.newCall(request).execute().use { resp ->
+            val body = resp.body?.string()
+            if (!resp.isSuccessful || body.isNullOrEmpty()) {
+                throw IllegalStateException("HTTP ${resp.code}")
+            }
+            val root = JSONObject(body)
+            if (!root.optBoolean("success", false)) {
+                throw IllegalStateException(root.optString("error", "HTTP ${resp.code}"))
+            }
+            val data = root.optJSONObject("data") ?: JSONObject()
+            return ImportResult(
+                credentials = data.optInt("credentials_imported"),
+                fingerprints = data.optInt("fingerprints_imported"),
+                authLogs = data.optInt("auth_logs_imported")
+            )
+        }
+    }
+
+    /** Streams a content-provider file as an HTTP request body. */
+    private class UriRequestBody(
+        private val context: Context,
+        private val uri: Uri,
+        private val mediaType: MediaType?
+    ) : RequestBody() {
+        override fun contentType(): MediaType? = mediaType
+        override fun contentLength(): Long = -1L
+        override fun writeTo(sink: BufferedSink) {
+            val input = context.contentResolver.openInputStream(uri)
+                ?: throw IOException("cannot read selected file")
+            input.use { sink.writeAll(it.source()) }
+        }
+    }
 }
+
+data class ImportResult(
+    val credentials: Int,
+    val fingerprints: Int,
+    val authLogs: Int
+)

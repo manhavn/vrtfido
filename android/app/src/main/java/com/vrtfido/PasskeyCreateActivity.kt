@@ -4,43 +4,49 @@ import android.app.Activity
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
-import android.service.credentials.CredentialProviderService
+import android.util.Base64
+import android.util.Log
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
 import androidx.core.content.ContextCompat
+import androidx.credentials.CreatePublicKeyCredentialRequest
+import androidx.credentials.CreatePublicKeyCredentialResponse
+import androidx.credentials.provider.PendingIntentHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 
+/// Completes a Credential Manager passkey creation request after user verification.
 class PasskeyCreateActivity : AppCompatActivity() {
 
     private val activityScope = CoroutineScope(Dispatchers.Main)
 
-    companion object {
-        const val EXTRA_RP_ID = "extra_rp_id"
-        const val EXTRA_RP_NAME = "extra_rp_name"
-        const val EXTRA_USER_ID = "extra_user_id"
-        const val EXTRA_USER_NAME = "extra_user_name"
-        const val EXTRA_USER_DISPLAY_NAME = "extra_user_display_name"
-        const val EXTRA_CHALLENGE = "extra_challenge"
-        const val EXTRA_CLIENT_DATA_JSON = "extra_client_data_json"
-        const val EXTRA_CLIENT_DATA_HASH = "extra_client_data_hash"
-    }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        val rpId = intent.getStringExtra(EXTRA_RP_ID) ?: ""
-        val rpName = intent.getStringExtra(EXTRA_RP_NAME)
-        val userId = intent.getStringExtra(EXTRA_USER_ID) ?: ""
-        val userName = intent.getStringExtra(EXTRA_USER_NAME) ?: ""
-        val userDisplayName = intent.getStringExtra(EXTRA_USER_DISPLAY_NAME)
-        val challenge = intent.getStringExtra(EXTRA_CHALLENGE)
-        val clientDataJson = intent.getStringExtra(EXTRA_CLIENT_DATA_JSON)
-        val clientDataHash = intent.getStringExtra(EXTRA_CLIENT_DATA_HASH)
+        val providerRequest = PendingIntentHandler.retrieveProviderCreateCredentialRequest(intent)
+        val credentialRequest = providerRequest?.callingRequest as? CreatePublicKeyCredentialRequest
+        if (credentialRequest == null) {
+            Log.w(TAG, "Not launched from Credential Manager")
+            setResult(Activity.RESULT_CANCELED)
+            finish()
+            return
+        }
+
+        val requestJson = runCatching { JSONObject(credentialRequest.requestJson) }.getOrNull()
+        val rpId = requestJson?.optJSONObject("rp")?.optString("id").orEmpty()
+        val rpName = requestJson?.optJSONObject("rp")?.optString("name")
+        val userId = requestJson?.optJSONObject("user")?.optString("id").orEmpty()
+        val userName = requestJson?.optJSONObject("user")?.optString("name").orEmpty()
+        val userDisplayName = requestJson?.optJSONObject("user")?.optString("displayName")
+        val challenge = requestJson?.optString("challenge")
+
+        // Browsers pass only the hash so the provider never learns the origin or challenge.
+        val clientDataHash = credentialRequest.clientDataHash?.let { encodeB64Url(it) }
 
         if (rpId.isEmpty() || userName.isEmpty()) {
             setResult(Activity.RESULT_CANCELED)
@@ -49,7 +55,7 @@ class PasskeyCreateActivity : AppCompatActivity() {
         }
 
         promptBiometricOrDeviceCredential(
-            rpId, rpName, userId, userName, userDisplayName, challenge, clientDataJson, clientDataHash
+            rpId, rpName, userId, userName, userDisplayName, challenge, clientDataHash
         )
     }
 
@@ -60,7 +66,6 @@ class PasskeyCreateActivity : AppCompatActivity() {
         userName: String,
         userDisplayName: String?,
         challenge: String?,
-        clientDataJson: String?,
         clientDataHash: String?
     ) {
         val executor = ContextCompat.getMainExecutor(this)
@@ -69,7 +74,7 @@ class PasskeyCreateActivity : AppCompatActivity() {
             override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
                 super.onAuthenticationSucceeded(result)
                 createPasskeyCredential(
-                    rpId, rpName, userId, userName, userDisplayName, challenge, clientDataJson, clientDataHash
+                    rpId, rpName, userId, userName, userDisplayName, challenge, clientDataHash
                 )
             }
 
@@ -88,7 +93,7 @@ class PasskeyCreateActivity : AppCompatActivity() {
 
         val promptInfo = BiometricPrompt.PromptInfo.Builder()
             .setTitle("Tạo Passkey cho $userName")
-            .setSubtitle(rpId)
+            .setSubtitle(rpName?.ifEmpty { rpId } ?: rpId)
             .setDescription("Quét vân tay, khuôn mặt hoặc dùng mã PIN/khóa màn hình để tạo Passkey")
             .setAllowedAuthenticators(
                 BiometricManager.Authenticators.BIOMETRIC_STRONG or
@@ -99,7 +104,7 @@ class PasskeyCreateActivity : AppCompatActivity() {
         try {
             biometricPrompt.authenticate(promptInfo)
         } catch (e: Exception) {
-            e.printStackTrace()
+            Log.e(TAG, "Cannot show biometric prompt", e)
             setResult(Activity.RESULT_CANCELED)
             finish()
         }
@@ -112,7 +117,6 @@ class PasskeyCreateActivity : AppCompatActivity() {
         userName: String,
         userDisplayName: String?,
         challenge: String?,
-        clientDataJson: String?,
         clientDataHash: String?
     ) {
         activityScope.launch {
@@ -125,29 +129,19 @@ class PasskeyCreateActivity : AppCompatActivity() {
                     userName = userName,
                     userDisplayName = userDisplayName,
                     challengeB64 = challenge,
-                    clientDataJsonB64 = clientDataJson,
+                    clientDataJsonB64 = null,
                     clientDataHashB64 = clientDataHash,
                     userVerification = "ANDROID_BIOMETRIC"
                 )
             }
 
             if (passkeyResult != null) {
-                val responseJson = passkeyResult.toString()
-                val resultIntent = Intent()
-
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                    val response = android.credentials.CreateCredentialResponse(
-                        android.os.Bundle().apply {
-                            putString("androidx.credentials.BUNDLE_KEY_REGISTRATION_RESPONSE_JSON", responseJson)
-                        }
-                    )
-                    resultIntent.putExtra(
-                        CredentialProviderService.EXTRA_CREATE_CREDENTIAL_RESPONSE,
-                        response
-                    )
-                }
-
-                setResult(Activity.RESULT_OK, resultIntent)
+                val result = Intent()
+                PendingIntentHandler.setCreateCredentialResponse(
+                    result,
+                    CreatePublicKeyCredentialResponse(passkeyResult.toString())
+                )
+                setResult(Activity.RESULT_OK, result)
                 finish()
             } else {
                 Toast.makeText(this@PasskeyCreateActivity, "Lỗi tạo Passkey mới", Toast.LENGTH_SHORT).show()
@@ -155,5 +149,12 @@ class PasskeyCreateActivity : AppCompatActivity() {
                 finish()
             }
         }
+    }
+
+    private fun encodeB64Url(bytes: ByteArray): String =
+        Base64.encodeToString(bytes, Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP)
+
+    private companion object {
+        const val TAG = "PasskeyCreateActivity"
     }
 }

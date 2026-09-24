@@ -6,179 +6,167 @@ import android.graphics.drawable.Icon
 import android.os.Build
 import android.os.CancellationSignal
 import android.os.OutcomeReceiver
-import android.service.credentials.BeginCreateCredentialRequest
-import android.service.credentials.BeginCreateCredentialResponse
-import android.service.credentials.BeginGetCredentialRequest
-import android.service.credentials.BeginGetCredentialResponse
-import android.service.credentials.ClearCredentialStateRequest
-import android.service.credentials.CreateEntry
-import android.service.credentials.CredentialEntry
-import android.service.credentials.CredentialProviderService
+import android.util.Log
 import androidx.annotation.RequiresApi
+import androidx.credentials.exceptions.ClearCredentialException
+import androidx.credentials.exceptions.CreateCredentialException
+import androidx.credentials.exceptions.CreateCredentialUnknownException
+import androidx.credentials.exceptions.GetCredentialException
+import androidx.credentials.exceptions.GetCredentialUnknownException
+import androidx.credentials.provider.BeginCreateCredentialRequest
+import androidx.credentials.provider.BeginCreateCredentialResponse
+import androidx.credentials.provider.BeginCreatePublicKeyCredentialRequest
+import androidx.credentials.provider.BeginGetCredentialRequest
+import androidx.credentials.provider.BeginGetCredentialResponse
+import androidx.credentials.provider.BeginGetPublicKeyCredentialOption
+import androidx.credentials.provider.CreateEntry
+import androidx.credentials.provider.CredentialProviderService
+import androidx.credentials.provider.ProviderClearCredentialStateRequest
+import androidx.credentials.provider.PublicKeyCredentialEntry
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import org.json.JSONArray
 import org.json.JSONObject
 
+/// Credential Manager provider that serves vrtfido passkeys to Android 14+ browsers and apps.
+///
+/// The platform only accepts entries built through the Jetpack provider library: it parses the
+/// Slice produced by [CreateEntry.toSlice] / [PublicKeyCredentialEntry.toSlice] against fixed
+/// hints. Hand-built Slices (as used previously) are dropped, so this class never constructs
+/// Slices itself.
 @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
 class VrtfidoCredentialProviderService : CredentialProviderService() {
 
     private val serviceScope = CoroutineScope(Dispatchers.IO)
 
-    override fun onBeginGetCredential(
+    override fun onBeginGetCredentialRequest(
         request: BeginGetCredentialRequest,
         cancellationSignal: CancellationSignal,
-        callback: OutcomeReceiver<BeginGetCredentialResponse, android.credentials.GetCredentialException>
+        callback: OutcomeReceiver<BeginGetCredentialResponse, GetCredentialException>
     ) {
         serviceScope.launch {
             try {
                 val responseBuilder = BeginGetCredentialResponse.Builder()
-                val icon = Icon.createWithResource(this@VrtfidoCredentialProviderService, android.R.drawable.ic_lock_lock)
+                val icon = Icon.createWithResource(
+                    this@VrtfidoCredentialProviderService,
+                    android.R.drawable.ic_lock_lock
+                )
 
                 for (option in request.beginGetCredentialOptions) {
-                    if (option.type == "androidx.credentials.TYPE_PUBLIC_KEY_CREDENTIAL") {
-                        val requestJsonStr = option.candidateQueryData.getString("androidx.credentials.BUNDLE_KEY_REQUEST_JSON")
-                            ?: continue
+                    if (option !is BeginGetPublicKeyCredentialOption) continue
 
-                        val requestJson = JSONObject(requestJsonStr)
-                        val rpId = requestJson.optString("rpId", "")
-                        val challenge = requestJson.optString("challenge", "")
-                        val clientDataHash = option.candidateQueryData.getString("androidx.credentials.BUNDLE_KEY_CLIENT_DATA_HASH")
+                    val requestJson = JSONObject(option.requestJson)
+                    val rpId = requestJson.optString("rpId", "")
+                    if (rpId.isEmpty()) continue
 
-                        val allowList = mutableListOf<String>()
-                        val allowArr = requestJson.optJSONArray("allowCredentials")
-                        if (allowArr != null) {
-                            for (i in 0 until allowArr.length()) {
-                                val item = allowArr.getJSONObject(i)
-                                allowList.add(item.optString("id", ""))
-                            }
+                    val allowList = mutableListOf<String>()
+                    requestJson.optJSONArray("allowCredentials")?.let { arr ->
+                        for (i in 0 until arr.length()) {
+                            allowList.add(arr.getJSONObject(i).optString("id", ""))
+                        }
+                    }
+
+                    val candidates =
+                        VrtfidoClient.getCandidates(this@VrtfidoCredentialProviderService, rpId, allowList)
+
+                    candidates.forEachIndexed { index, candidate ->
+                        val intent = Intent(
+                            this@VrtfidoCredentialProviderService,
+                            PasskeyAuthActivity::class.java
+                        ).apply {
+                            putExtra(PasskeyAuthActivity.EXTRA_CREDENTIAL_ID, candidate.idB64Url)
                         }
 
-                        val candidates = VrtfidoClient.getCandidates(this@VrtfidoCredentialProviderService, rpId, allowList)
+                        val pendingIntent = PendingIntent.getActivity(
+                            this@VrtfidoCredentialProviderService,
+                            GET_REQUEST_CODE_BASE + index,
+                            intent,
+                            PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                        )
 
-                        for ((index, cand) in candidates.withIndex()) {
-                            val intent = Intent(this@VrtfidoCredentialProviderService, PasskeyAuthActivity::class.java).apply {
-                                putExtra(PasskeyAuthActivity.EXTRA_RP_ID, rpId)
-                                putExtra(PasskeyAuthActivity.EXTRA_CREDENTIAL_ID, cand.idB64Url)
-                                putExtra(PasskeyAuthActivity.EXTRA_CHALLENGE, challenge)
-                                if (!clientDataHash.isNullOrEmpty()) {
-                                    putExtra(PasskeyAuthActivity.EXTRA_CLIENT_DATA_HASH, clientDataHash)
-                                }
-                            }
-
-                            val pendingIntent = PendingIntent.getActivity(
-                                this@VrtfidoCredentialProviderService,
-                                index,
-                                intent,
-                                PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                        val entry = PublicKeyCredentialEntry.Builder(
+                            applicationContext,
+                            candidate.userName,
+                            pendingIntent,
+                            option
+                        )
+                            .setDisplayName(
+                                candidate.userDisplayName.ifEmpty { candidate.userName }
                             )
+                            .setIcon(icon)
+                            .build()
 
-                            val slice = android.app.slice.Slice.Builder(
-                                android.net.Uri.parse("content://com.vrtfido.provider/get/$index"),
-                                android.app.slice.SliceSpec("CredentialProvider", 1)
-                            )
-                                .addText(cand.userName, null, listOf("title"))
-                                .addText(cand.rpId, null, listOf("subtitle"))
-                                .addIcon(icon, null, listOf("icon"))
-                                .addAction(pendingIntent, android.app.slice.Slice.Builder(
-                                    android.net.Uri.parse("content://com.vrtfido.provider/get/$index/action"),
-                                    android.app.slice.SliceSpec("CredentialProvider", 1)
-                                ).build(), null)
-                                .build()
-
-                            responseBuilder.addCredentialEntry(CredentialEntry(option, slice))
-                        }
+                        responseBuilder.addCredentialEntry(entry)
                     }
                 }
 
                 callback.onResult(responseBuilder.build())
             } catch (e: Exception) {
-                e.printStackTrace()
-                callback.onError(
-                    android.credentials.GetCredentialException(android.credentials.GetCredentialException.TYPE_UNKNOWN, e.message)
-                )
+                Log.e(TAG, "Failed to list passkeys for the requesting app", e)
+                callback.onError(GetCredentialUnknownException(e.message ?: "vrtfido provider error"))
             }
         }
     }
 
-    override fun onBeginCreateCredential(
+    override fun onBeginCreateCredentialRequest(
         request: BeginCreateCredentialRequest,
         cancellationSignal: CancellationSignal,
-        callback: OutcomeReceiver<BeginCreateCredentialResponse, android.credentials.CreateCredentialException>
+        callback: OutcomeReceiver<BeginCreateCredentialResponse, CreateCredentialException>
     ) {
         serviceScope.launch {
             try {
-                val responseBuilder = BeginCreateCredentialResponse.Builder()
-                val icon = Icon.createWithResource(this@VrtfidoCredentialProviderService, android.R.drawable.ic_input_add)
-
-                if (request.type == "androidx.credentials.TYPE_PUBLIC_KEY_CREDENTIAL") {
-                    val requestJsonStr = request.data.getString("androidx.credentials.BUNDLE_KEY_REQUEST_JSON")
-                        ?: throw IllegalArgumentException("Missing passkey creation request JSON")
-
-                    val requestJson = JSONObject(requestJsonStr)
-                    val rpObj = requestJson.getJSONObject("rp")
-                    val rpId = rpObj.getString("id")
-                    val rpName = rpObj.optString("name", rpId)
-
-                    val userObj = requestJson.getJSONObject("user")
-                    val userId = userObj.optString("id", "")
-                    val userName = userObj.getString("name")
-                    val userDisplayName = userObj.optString("displayName", userName)
-
-                    val challenge = requestJson.optString("challenge", "")
-                    val clientDataHash = request.data.getString("androidx.credentials.BUNDLE_KEY_CLIENT_DATA_HASH")
-
-                    val intent = Intent(this@VrtfidoCredentialProviderService, PasskeyCreateActivity::class.java).apply {
-                        putExtra(PasskeyCreateActivity.EXTRA_RP_ID, rpId)
-                        putExtra(PasskeyCreateActivity.EXTRA_RP_NAME, rpName)
-                        putExtra(PasskeyCreateActivity.EXTRA_USER_ID, userId)
-                        putExtra(PasskeyCreateActivity.EXTRA_USER_NAME, userName)
-                        putExtra(PasskeyCreateActivity.EXTRA_USER_DISPLAY_NAME, userDisplayName)
-                        putExtra(PasskeyCreateActivity.EXTRA_CHALLENGE, challenge)
-                        if (!clientDataHash.isNullOrEmpty()) {
-                            putExtra(PasskeyCreateActivity.EXTRA_CLIENT_DATA_HASH, clientDataHash)
-                        }
-                    }
-
-                    val pendingIntent = PendingIntent.getActivity(
-                        this@VrtfidoCredentialProviderService,
-                        100,
-                        intent,
-                        PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-                    )
-
-                    val slice = android.app.slice.Slice.Builder(
-                        android.net.Uri.parse("content://com.vrtfido.provider/create"),
-                        android.app.slice.SliceSpec("CredentialProvider", 1)
-                    )
-                        .addText(userName, null, listOf("title"))
-                        .addText("Lưu Passkey vào vrtfido", null, listOf("subtitle"))
-                        .addIcon(icon, null, listOf("icon"))
-                        .addAction(pendingIntent, android.app.slice.Slice.Builder(
-                            android.net.Uri.parse("content://com.vrtfido.provider/create/action"),
-                            android.app.slice.SliceSpec("CredentialProvider", 1)
-                        ).build(), null)
-                        .build()
-
-                    responseBuilder.addCreateEntry(CreateEntry(slice))
+                if (request !is BeginCreatePublicKeyCredentialRequest) {
+                    callback.onResult(BeginCreateCredentialResponse())
+                    return@launch
                 }
 
-                callback.onResult(responseBuilder.build())
-            } catch (e: Exception) {
-                e.printStackTrace()
-                callback.onError(
-                    android.credentials.CreateCredentialException(android.credentials.CreateCredentialException.TYPE_UNKNOWN, e.message)
+                val accountName = runCatching {
+                    JSONObject(request.requestJson).getJSONObject("user").optString("name")
+                }.getOrNull().orEmpty().ifEmpty { getString(R.string.app_name) }
+
+                val intent = Intent(
+                    this@VrtfidoCredentialProviderService,
+                    PasskeyCreateActivity::class.java
                 )
+
+                val pendingIntent = PendingIntent.getActivity(
+                    this@VrtfidoCredentialProviderService,
+                    CREATE_REQUEST_CODE,
+                    intent,
+                    PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                )
+
+                val entry = CreateEntry.Builder(accountName, pendingIntent)
+                    .setDescription(getString(R.string.create_entry_description, accountName))
+                    .setIcon(
+                        Icon.createWithResource(
+                            this@VrtfidoCredentialProviderService,
+                            android.R.drawable.ic_input_add
+                        )
+                    )
+                    .build()
+
+                callback.onResult(
+                    BeginCreateCredentialResponse.Builder().addCreateEntry(entry).build()
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to offer passkey creation", e)
+                callback.onError(CreateCredentialUnknownException(e.message ?: "vrtfido provider error"))
             }
         }
     }
 
-    override fun onClearCredentialState(
-        request: ClearCredentialStateRequest,
+    override fun onClearCredentialStateRequest(
+        request: ProviderClearCredentialStateRequest,
         cancellationSignal: CancellationSignal,
-        callback: OutcomeReceiver<Void?, android.credentials.ClearCredentialStateException>
+        callback: OutcomeReceiver<Void?, ClearCredentialException>
     ) {
         callback.onResult(null)
+    }
+
+    private companion object {
+        const val TAG = "VrtfidoProvider"
+        const val CREATE_REQUEST_CODE = 100
+        const val GET_REQUEST_CODE_BASE = 200
     }
 }

@@ -68,7 +68,6 @@ pub struct PasskeyCreateRequest {
     #[serde(default)]
     pub client_data_json: Option<String>,
     #[serde(default)]
-    #[allow(dead_code)]
     pub client_data_hash: Option<String>,
     pub user_verification: Option<String>, // e.g. "ANDROID_BIOMETRIC", "DEVICE_CREDENTIAL"
     #[serde(default)]
@@ -312,18 +311,31 @@ pub async fn create_passkey(
     auth_data.extend_from_slice(&cred_id);
     auth_data.extend_from_slice(&cose_bytes);
 
-    // Build attestationObject: {"fmt": "none", "authData": <bytes>, "attStmt": {}}
+    // Build attestationObject: {"fmt": "none", "attStmt": {}, "authData": <bytes>}.
+    // Keys must be emitted in canonical CBOR order (shorter key first, then bytewise) because
+    // strict decoders such as Google Play Services reject maps with unordered keys:
+    // "fmt" (0x63) < "attStmt" (0x67) < "authData" (0x68).
     let attestation_map = Value::Map(vec![
         (Value::Text("fmt".into()), Value::Text("none".into())),
-        (Value::Text("authData".into()), Value::Bytes(auth_data.clone())),
         (Value::Text("attStmt".into()), Value::Map(vec![])),
+        (Value::Text("authData".into()), Value::Bytes(auth_data.clone())),
     ]);
     let mut attestation_object_bytes = Vec::new();
     ciborium::into_writer(&attestation_map, &mut attestation_object_bytes)
         .map_err(|e| format!("Attestation object serialization error: {}", e))?;
 
-    // Determine clientDataJSON
-    let client_data_json_str = if let Some(raw_json) = &req.client_data_json {
+    // Determine clientDataJSON. Browsers pass only the 32-byte clientDataHash so the provider
+    // never learns the origin or challenge; the calling app substitutes its own clientDataJSON,
+    // therefore the response carries an empty placeholder instead of a fabricated document.
+    let client_data_json_str = if let Some(hash_str) = &req.client_data_hash {
+        let hash = b64url_decode(hash_str)
+            .or_else(|_| hex::decode(hash_str).map_err(|e| e.to_string()))
+            .map_err(|e| format!("Invalid clientDataHash: {}", e))?;
+        if hash.len() != 32 {
+            return Err("clientDataHash must be a 32-byte SHA-256 digest".into());
+        }
+        String::new()
+    } else if let Some(raw_json) = &req.client_data_json {
         if let Ok(decoded) = b64url_decode(raw_json) {
             String::from_utf8(decoded).unwrap_or_else(|_| raw_json.clone())
         } else {
@@ -431,6 +443,9 @@ pub async fn get_passkey(
         let h = b64url_decode(hash_str)
             .or_else(|_| hex::decode(hash_str).map_err(|e| e.to_string()))
             .map_err(|e| format!("Invalid clientDataHash: {}", e))?;
+        if h.len() != 32 {
+            return Err("clientDataHash must be a 32-byte SHA-256 digest".into());
+        }
         (Vec::new(), h)
     } else if let Some(json_str) = &req.client_data_json {
         let bytes = if let Ok(decoded) = b64url_decode(json_str) {
@@ -578,5 +593,51 @@ mod tests {
         assert_eq!(logs.len(), 2);
         assert_eq!(logs[0].auth_method, "ANDROID_BIOMETRIC");
         assert_eq!(logs[1].auth_method, "ANDROID_BIOMETRIC");
+    }
+
+    #[tokio::test]
+    async fn attestation_object_uses_canonical_cbor_key_order() {
+        let (db, security) = setup_test_env();
+        let create_res = create_passkey(
+            &db,
+            &security,
+            PasskeyCreateRequest {
+                rp: RpEntity {
+                    id: "example.com".to_string(),
+                    name: None,
+                },
+                user: UserEntity {
+                    id: b64url_encode(b"user_cbor"),
+                    name: "cbor@example.com".to_string(),
+                    display_name: None,
+                },
+                challenge: Some(b64url_encode(b"cbor_challenge")),
+                client_data_json: None,
+                client_data_hash: None,
+                user_verification: Some("ANDROID_BIOMETRIC".to_string()),
+                pin: None,
+            },
+        )
+        .await
+        .expect("create_passkey failed");
+
+        let attestation = b64url_decode(&create_res.response.attestation_object).unwrap();
+
+        // CTAP2 canonical CBOR requires map keys in bytewise ascending order of their encodings.
+        // Google Play Services rejects the attestation object outright otherwise, so the header
+        // and key order here are part of the wire contract: a3 "fmt" "none" "attStmt" {} "authData".
+        let expected_prefix = [
+            0xa3, // map(3)
+            0x63, b'f', b'm', b't', // "fmt"
+            0x64, b'n', b'o', b'n', b'e', // "none"
+            0x67, b'a', b't', b't', b'S', b't', b'm', b't', // "attStmt"
+            0xa0, // {}
+            0x68, b'a', b'u', b't', b'h', b'D', b'a', b't', b'a', // "authData"
+        ];
+        assert_eq!(
+            &attestation[..expected_prefix.len()],
+            expected_prefix.as_slice(),
+            "attestation object must start with canonically ordered top-level keys"
+        );
     }
 }

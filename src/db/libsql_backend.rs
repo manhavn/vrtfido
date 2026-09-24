@@ -339,7 +339,17 @@ impl DbBackend for LibSqlBackend {
                 conn.execute(
                     "INSERT INTO credentials (id, rp_id, user_id, user_name, user_display_name,
                                               private_key_sec1, public_key_cose, sign_count, created_at, last_used_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                     ON CONFLICT(id) DO UPDATE SET
+                         rp_id = excluded.rp_id,
+                         user_id = excluded.user_id,
+                         user_name = excluded.user_name,
+                         user_display_name = excluded.user_display_name,
+                         private_key_sec1 = excluded.private_key_sec1,
+                         public_key_cose = excluded.public_key_cose,
+                         sign_count = excluded.sign_count,
+                         created_at = excluded.created_at,
+                         last_used_at = excluded.last_used_at",
                     libsql::params![
                         id_hex,
                         rp_id,

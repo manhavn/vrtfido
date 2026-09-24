@@ -12,10 +12,12 @@ import android.os.Bundle
 import android.provider.Settings
 import android.widget.EditText
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import com.google.android.material.button.MaterialButton
+import com.google.android.material.checkbox.MaterialCheckBox
 import com.google.android.material.materialswitch.MaterialSwitch
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -24,6 +26,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class MainActivity : AppCompatActivity() {
 
@@ -31,8 +36,23 @@ class MainActivity : AppCompatActivity() {
     private lateinit var switchService: MaterialSwitch
     private lateinit var editHost: EditText
     private lateinit var editPort: EditText
+    private lateinit var editDatabase: EditText
+    private lateinit var editDbType: EditText
+    private lateinit var editAuthToken: EditText
+    private lateinit var checkDebug: MaterialCheckBox
+    private lateinit var checkUnlimitedFps: MaterialCheckBox
     private lateinit var btnOpenWeb: MaterialButton
     private lateinit var btnSettings: MaterialButton
+    private lateinit var btnExport: MaterialButton
+    private lateinit var btnImport: MaterialButton
+
+    private val exportLauncher = registerForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json")
+    ) { uri -> uri?.let { exportDatabase(it) } }
+
+    private val importLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri -> uri?.let { importDatabase(it) } }
 
     private val activityScope = CoroutineScope(Dispatchers.Main)
     private var pollJob: Job? = null
@@ -63,11 +83,23 @@ class MainActivity : AppCompatActivity() {
         switchService = findViewById(R.id.switch_service)
         btnOpenWeb = findViewById(R.id.btn_open_web)
         btnSettings = findViewById(R.id.btn_settings)
+        btnExport = findViewById(R.id.btn_export)
+        btnImport = findViewById(R.id.btn_import)
         editHost = findViewById(R.id.edit_host)
         editPort = findViewById(R.id.edit_port)
+        editDatabase = findViewById(R.id.edit_database)
+        editDbType = findViewById(R.id.edit_db_type)
+        editAuthToken = findViewById(R.id.edit_auth_token)
+        checkDebug = findViewById(R.id.check_debug)
+        checkUnlimitedFps = findViewById(R.id.check_unlimited_fps)
         ServerSettings.load(this).let { binding ->
             editHost.setText(binding.host)
             editPort.setText(binding.port.toString())
+            editDatabase.setText(binding.database)
+            editDbType.setText(binding.dbType)
+            editAuthToken.setText(binding.authToken)
+            checkDebug.isChecked = binding.debugMode
+            checkUnlimitedFps.isChecked = binding.unlimitedFingerprints
         }
 
         switchService.setOnCheckedChangeListener { _, checked -> toggleDaemon(checked) }
@@ -78,6 +110,23 @@ class MainActivity : AppCompatActivity() {
 
         btnSettings.setOnClickListener {
             openCredentialProviderSettings()
+        }
+
+        btnExport.setOnClickListener {
+            if (!VrtfidoService.isRunning) {
+                toast(getString(R.string.daemon_required))
+            } else {
+                val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
+                exportLauncher.launch(getString(R.string.backup_file_name, stamp))
+            }
+        }
+
+        btnImport.setOnClickListener {
+            if (!VrtfidoService.isRunning) {
+                toast(getString(R.string.daemon_required))
+            } else {
+                importLauncher.launch(arrayOf("application/json", "text/plain", "application/octet-stream"))
+            }
         }
     }
 
@@ -106,14 +155,27 @@ class MainActivity : AppCompatActivity() {
         if (checked) {
             val host = editHost.text.toString().trim()
             val port = editPort.text.toString().toIntOrNull() ?: 0
-            if (!ServerSettings.validate(host, port)) {
+            val database = editDatabase.text.toString().trim()
+            if (!ServerSettings.validate(host, port, database)) {
                 editHost.error = getString(R.string.invalid_bind)
+                editDatabase.error = getString(R.string.invalid_database)
                 switchService.setOnCheckedChangeListener(null)
                 switchService.isChecked = false
                 switchService.setOnCheckedChangeListener { _, value -> toggleDaemon(value) }
                 return
             }
-            ServerSettings.save(this, ServerBinding(host, port))
+            ServerSettings.save(
+                this,
+                ServerBinding(
+                    host = host,
+                    port = port,
+                    database = database,
+                    dbType = editDbType.text.toString().trim(),
+                    authToken = editAuthToken.text.toString().trim(),
+                    debugMode = checkDebug.isChecked,
+                    unlimitedFingerprints = checkUnlimitedFps.isChecked
+                )
+            )
             startRequested = true
             permissionError = null
             editHost.isEnabled = false
@@ -163,6 +225,11 @@ class MainActivity : AppCompatActivity() {
         }
         editHost.isEnabled = !checked
         editPort.isEnabled = !checked
+        editDatabase.isEnabled = !checked
+        editDbType.isEnabled = !checked
+        editAuthToken.isEnabled = !checked
+        checkDebug.isEnabled = !checked
+        checkUnlimitedFps.isEnabled = !checked
         val binding = ServerSettings.load(this)
         btnOpenWeb.text = getString(R.string.open_web_ui, binding.localUrl)
         when {
@@ -185,6 +252,45 @@ class MainActivity : AppCompatActivity() {
         }
         btnOpenWeb.isEnabled = running
         btnOpenWeb.alpha = if (running) 1.0f else 0.5f
+        btnExport.isEnabled = running
+        btnImport.isEnabled = running
+        btnExport.alpha = if (running) 1.0f else 0.5f
+        btnImport.alpha = if (running) 1.0f else 0.5f
+    }
+
+    private fun exportDatabase(target: Uri) {
+        activityScope.launch {
+            try {
+                withContext(Dispatchers.IO) { VrtfidoClient.exportDatabase(this@MainActivity, target) }
+                toast(getString(R.string.export_done, target.lastPathSegment ?: "JSON"))
+            } catch (e: Exception) {
+                toast(getString(R.string.export_failed, e.message ?: e.javaClass.simpleName))
+            }
+        }
+    }
+
+    private fun importDatabase(source: Uri) {
+        activityScope.launch {
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    VrtfidoClient.importDatabase(this@MainActivity, source)
+                }
+                toast(
+                    getString(
+                        R.string.import_done,
+                        result.credentials,
+                        result.fingerprints,
+                        result.authLogs
+                    )
+                )
+            } catch (e: Exception) {
+                toast(getString(R.string.import_failed, e.message ?: e.javaClass.simpleName))
+            }
+        }
+    }
+
+    private fun toast(message: String) {
+        Toast.makeText(this, message, Toast.LENGTH_LONG).show()
     }
 
     private fun openCredentialProviderSettings() {

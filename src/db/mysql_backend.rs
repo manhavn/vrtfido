@@ -237,7 +237,17 @@ impl DbBackend for MySqlBackend {
         conn.exec_drop(
             "INSERT INTO credentials (id, rp_id, user_id, user_name, user_display_name,
                                       private_key_sec1, public_key_cose, sign_count, created_at, last_used_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE
+                 rp_id = VALUES(rp_id),
+                 user_id = VALUES(user_id),
+                 user_name = VALUES(user_name),
+                 user_display_name = VALUES(user_display_name),
+                 private_key_sec1 = VALUES(private_key_sec1),
+                 public_key_cose = VALUES(public_key_cose),
+                 sign_count = VALUES(sign_count),
+                 created_at = VALUES(created_at),
+                 last_used_at = VALUES(last_used_at)",
             (
                 id_hex,
                 rp_id,

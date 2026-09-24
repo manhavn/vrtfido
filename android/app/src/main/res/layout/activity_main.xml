@@ -1,123 +1,250 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
     android:background="@color/background_dark"
-    android:gravity="center"
-    android:padding="24dp">
+    android:fillViewport="true">
 
-    <!-- Header / Logo -->
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="vrtfido"
-        android:textColor="@color/text_primary"
-        android:textSize="32sp"
-        android:textStyle="bold"
-        android:letterSpacing="0.05" />
-
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="Virtual Passkey Authenticator"
-        android:textColor="@color/primary"
-        android:textSize="14sp"
-        android:layout_marginTop="4dp"
-        android:layout_marginBottom="36dp" />
-
-    <!-- Card with the single ON / OFF Switch -->
-    <com.google.android.material.card.MaterialCardView
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        app:cardBackgroundColor="@color/surface_dark"
-        app:cardCornerRadius="16dp"
-        app:cardElevation="4dp"
-        app:strokeWidth="1dp"
-        app:strokeColor="#334155"
-        android:padding="20dp"
-        android:layout_marginBottom="24dp">
+        android:orientation="vertical"
+        android:gravity="center"
+        android:padding="24dp">
 
+        <!-- Header / Logo -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="vrtfido"
+            android:textColor="@color/text_primary"
+            android:textSize="32sp"
+            android:textStyle="bold"
+            android:letterSpacing="0.05" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Virtual Passkey Authenticator"
+            android:textColor="@color/primary"
+            android:textSize="14sp"
+            android:layout_marginTop="4dp"
+            android:layout_marginBottom="24dp" />
+
+        <!-- Card with the daemon ON / OFF switch and bind address -->
+        <com.google.android.material.card.MaterialCardView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            app:cardBackgroundColor="@color/surface_dark"
+            app:cardCornerRadius="16dp"
+            app:cardElevation="4dp"
+            app:strokeWidth="1dp"
+            app:strokeColor="#334155"
+            android:layout_marginBottom="16dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="20dp"
+                android:gravity="center">
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/bind_host"
+                    android:textColor="@color/text_secondary" />
+                <EditText
+                    android:id="@+id/edit_host"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:singleLine="true"
+                    android:inputType="textNoSuggestions"
+                    android:textColor="@color/text_primary"
+                    android:layout_marginBottom="12dp" />
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/bind_port"
+                    android:textColor="@color/text_secondary" />
+                <EditText
+                    android:id="@+id/edit_port"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:singleLine="true"
+                    android:inputType="number"
+                    android:textColor="@color/text_primary"
+                    android:layout_marginBottom="20dp" />
+
+                <TextView
+                    android:id="@+id/tv_status"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/service_stopped"
+                    android:textColor="@color/status_red"
+                    android:textSize="16sp"
+                    android:textStyle="bold"
+                    android:layout_marginBottom="16dp" />
+
+                <com.google.android.material.materialswitch.MaterialSwitch
+                    android:id="@+id/switch_service"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/status_label"
+                    android:textColor="@color/text_primary"
+                    android:textSize="18sp"
+                    app:thumbTint="@color/text_primary"
+                    app:trackTint="@color/primary" />
+
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
+        <!-- CLI-equivalent daemon parameters -->
+        <com.google.android.material.card.MaterialCardView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            app:cardBackgroundColor="@color/surface_dark"
+            app:cardCornerRadius="16dp"
+            app:cardElevation="4dp"
+            app:strokeWidth="1dp"
+            app:strokeColor="#334155"
+            android:layout_marginBottom="16dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="20dp">
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/params_title"
+                    android:textColor="@color/primary"
+                    android:textSize="15sp"
+                    android:textStyle="bold"
+                    android:layout_marginBottom="12dp" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/database_label"
+                    android:textColor="@color/text_secondary" />
+                <EditText
+                    android:id="@+id/edit_database"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:singleLine="true"
+                    android:inputType="textNoSuggestions"
+                    android:textColor="@color/text_primary"
+                    android:hint="@string/database_hint"
+                    android:layout_marginBottom="12dp" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/db_type_label"
+                    android:textColor="@color/text_secondary" />
+                <EditText
+                    android:id="@+id/edit_db_type"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:singleLine="true"
+                    android:inputType="textNoSuggestions"
+                    android:textColor="@color/text_primary"
+                    android:hint="@string/db_type_hint"
+                    android:layout_marginBottom="12dp" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/auth_token_label"
+                    android:textColor="@color/text_secondary" />
+                <EditText
+                    android:id="@+id/edit_auth_token"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:singleLine="true"
+                    android:inputType="textNoSuggestions"
+                    android:textColor="@color/text_primary"
+                    android:hint="@string/auth_token_hint"
+                    android:layout_marginBottom="8dp" />
+
+                <com.google.android.material.checkbox.MaterialCheckBox
+                    android:id="@+id/check_debug"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/flag_debug"
+                    android:textColor="@color/text_primary" />
+
+                <com.google.android.material.checkbox.MaterialCheckBox
+                    android:id="@+id/check_unlimited_fps"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/flag_unlimited_fps"
+                    android:textColor="@color/text_primary" />
+
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
+        <!-- Open Web Dashboard Button -->
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btn_open_web"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:text="@string/open_web_ui"
+            android:textColor="@color/text_primary"
+            android:textSize="15sp"
+            app:cornerRadius="12dp"
+            app:backgroundTint="@color/primary"
+            android:layout_marginBottom="12dp" />
+
+        <!-- Open System Passkey Provider Settings Button -->
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btn_settings"
+            style="@style/Widget.Material3.Button.OutlinedButton"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:text="@string/enable_passkey_settings"
+            android:textColor="@color/text_secondary"
+            android:textSize="14sp"
+            app:cornerRadius="12dp"
+            app:strokeColor="#475569"
+            android:layout_marginBottom="12dp" />
+
+        <!-- JSON export / import, compatible with the desktop CLI backup files -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:padding="20dp"
-            android:gravity="center">
+            android:orientation="horizontal">
 
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="@string/bind_host"
-                android:textColor="@color/text_secondary" />
-            <EditText
-                android:id="@+id/edit_host"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:singleLine="true"
-                android:inputType="textNoSuggestions"
-                android:textColor="@color/text_primary"
-                android:layout_marginBottom="12dp" />
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="@string/bind_port"
-                android:textColor="@color/text_secondary" />
-            <EditText
-                android:id="@+id/edit_port"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:singleLine="true"
-                android:inputType="number"
-                android:textColor="@color/text_primary"
-                android:layout_marginBottom="20dp" />
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btn_export"
+                style="@style/Widget.Material3.Button.OutlinedButton"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="56dp"
+                android:text="@string/export_json"
+                android:textColor="@color/text_secondary"
+                android:textSize="14sp"
+                app:cornerRadius="12dp"
+                app:strokeColor="#475569"
+                android:layout_marginEnd="6dp" />
 
-            <TextView
-                android:id="@+id/tv_status"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/service_stopped"
-                android:textColor="@color/status_red"
-                android:textSize="16sp"
-                android:textStyle="bold"
-                android:layout_marginBottom="16dp" />
-
-            <com.google.android.material.materialswitch.MaterialSwitch
-                android:id="@+id/switch_service"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Trạng thái dịch vụ"
-                android:textColor="@color/text_primary"
-                android:textSize="18sp"
-                app:thumbTint="@color/text_primary"
-                app:trackTint="@color/primary" />
-
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btn_import"
+                style="@style/Widget.Material3.Button.OutlinedButton"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="56dp"
+                android:text="@string/import_json"
+                android:textColor="@color/text_secondary"
+                android:textSize="14sp"
+                app:cornerRadius="12dp"
+                app:strokeColor="#475569"
+                android:layout_marginStart="6dp" />
         </LinearLayout>
-    </com.google.android.material.card.MaterialCardView>
 
-    <!-- Open Web Dashboard Button -->
-    <com.google.android.material.button.MaterialButton
-        android:id="@+id/btn_open_web"
-        android:layout_width="match_parent"
-        android:layout_height="56dp"
-        android:text="@string/open_web_ui"
-        android:textColor="@color/text_primary"
-        android:textSize="15sp"
-        app:cornerRadius="12dp"
-        app:backgroundTint="@color/primary"
-        android:layout_marginBottom="12dp" />
-
-    <!-- Open System Passkey Provider Settings Button -->
-    <com.google.android.material.button.MaterialButton
-        android:id="@+id/btn_settings"
-        style="@style/Widget.Material3.Button.OutlinedButton"
-        android:layout_width="match_parent"
-        android:layout_height="56dp"
-        android:text="@string/enable_passkey_settings"
-        android:textColor="@color/text_secondary"
-        android:textSize="14sp"
-        app:cornerRadius="12dp"
-        app:strokeColor="#475569" />
-
-</LinearLayout>
+    </LinearLayout>
+</ScrollView>

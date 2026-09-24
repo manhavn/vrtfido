@@ -66,7 +66,7 @@
                 <action android:name="android.service.credentials.CredentialProviderService" />
             </intent-filter>
             <meta-data
-                android:name="android.service.credentials.CREDENTIAL_PROVIDER"
+                android:name="android.credentials.provider"
                 android:resource="@xml/credential_provider_configuration" />
         </service>
 

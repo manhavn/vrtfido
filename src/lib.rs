@@ -14,17 +14,42 @@ pub use web::AppState;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-fn server_router(db_path: &str, port: u16) -> Result<axum::Router, db::DbError> {
-    let db = Db::open(db_path)?;
+/// Startup parameters for the embedded server, mirroring the desktop CLI flags.
+#[derive(serde::Deserialize, Debug, Clone)]
+pub struct DaemonOptions {
+    /// Database path or URL, same formats as `--database` / `DATABASE_URL`.
+    pub database: String,
+    pub host: String,
+    pub port: u16,
+    /// `--db-type` / `DB_TYPE` override, auto-detected from the spec when absent.
+    #[serde(default)]
+    pub db_type: Option<String>,
+    /// `--auth-token` for LibSQL / Turso.
+    #[serde(default)]
+    pub auth_token: Option<String>,
+    /// `--debug`
+    #[serde(default)]
+    pub debug_mode: bool,
+    /// `--unlimited-fps` / `--unlimited-fingerprints`
+    #[serde(default)]
+    pub unlimited_fingerprints: bool,
+}
+
+fn server_router(options: &DaemonOptions) -> Result<axum::Router, db::DbError> {
+    let db = Db::open_with_options(
+        &options.database,
+        options.db_type.as_deref(),
+        options.auth_token.as_deref(),
+    )?;
     let sensor = sensor::UsbSensor::new();
-    let security = SecurityEngine::new(db.clone(), sensor, false);
+    let security = SecurityEngine::new(db.clone(), sensor, options.unlimited_fingerprints);
     Ok(web::create_router(AppState {
         db,
         security,
-        debug_mode: Arc::new(AtomicBool::new(false)),
+        debug_mode: Arc::new(AtomicBool::new(options.debug_mode)),
         uhid_connected: Arc::new(AtomicBool::new(false)),
-        unlimited_fps: false,
-        port,
+        unlimited_fps: options.unlimited_fingerprints,
+        port: options.port,
     }))
 }
 
@@ -46,11 +71,18 @@ pub mod jni_bridge {
 
     static DAEMON: LazyLock<Mutex<Option<Daemon>>> = LazyLock::new(|| Mutex::new(None));
 
-    fn start(db_path: String, host: String, port: u16) -> Result<(), String> {
-        let ip: std::net::Ipv4Addr = host.parse().map_err(|_| "Host must be an IPv4 address".to_string())?;
-        if port == 0 {
+    fn start(options: DaemonOptions) -> Result<(), String> {
+        let ip: std::net::Ipv4Addr = options
+            .host
+            .parse()
+            .map_err(|_| "Host must be an IPv4 address".to_string())?;
+        if options.port == 0 {
             return Err("Port must be between 1 and 65535".into());
         }
+        if options.database.trim().is_empty() {
+            return Err("Database must not be empty".into());
+        }
+        let port = options.port;
         let mut current = DAEMON.lock();
         if let Some(old) = current.take() {
             if !old.thread.is_finished() {
@@ -64,6 +96,7 @@ pub mod jni_bridge {
         let (stop_tx, stop_rx) = oneshot::channel();
         let panic_report = ready_tx.clone();
         let thread = std::thread::spawn(move || {
+            let options = options;
             let running = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
                     Ok(rt) => rt,
@@ -74,7 +107,7 @@ pub mod jni_bridge {
                 };
                 runtime.block_on(async move {
                     let result = async {
-                        let router = server_router(&db_path, port).map_err(|e| e.to_string())?;
+                        let router = server_router(&options).map_err(|e| e.to_string())?;
                         let listener = tokio::net::TcpListener::bind((ip, port))
                             .await
                             .map_err(|e| format!("Cannot listen on {ip}:{port}: {e}"))?;
@@ -133,19 +166,16 @@ pub mod jni_bridge {
     pub extern "C" fn Java_com_vrtfido_VrtfidoService_startVrtfidoDaemon(
         mut env: JNIEnv,
         _class: JClass,
-        db_path: JString,
-        host: JString,
-        port: jni::sys::jint,
+        options_json: JString,
     ) -> jstring {
         let result = (|| {
-            let path: String = env.get_string(&db_path)
-                .map_err(|e| format!("Invalid database path: {e}"))?.into();
-            let host: String = env.get_string(&host)
-                .map_err(|e| format!("Invalid host: {e}"))?.into();
-            if !(1..=65535).contains(&port) {
-                return Err("Port must be between 1 and 65535".into());
-            }
-            start(path, host, port as u16)
+            let raw: String = env
+                .get_string(&options_json)
+                .map_err(|e| format!("Invalid daemon options: {e}"))?
+                .into();
+            let options: DaemonOptions = serde_json::from_str(&raw)
+                .map_err(|e| format!("Invalid daemon options: {e}"))?;
+            start(options)
         })();
         match result {
             Ok(()) => std::ptr::null_mut(),
@@ -166,13 +196,26 @@ pub mod jni_bridge {
         use super::*;
         use std::io::{Read, Write};
 
+        fn options(database: &str, host: &str, port: u16) -> DaemonOptions {
+            DaemonOptions {
+                database: database.to_string(),
+                host: host.to_string(),
+                port,
+                db_type: None,
+                auth_token: None,
+                debug_mode: false,
+                unlimited_fingerprints: false,
+            }
+        }
+
         #[test]
         fn serves_status_then_releases_port() {
             let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let port = probe.local_addr().unwrap().port();
             drop(probe);
             let path = std::env::temp_dir().join(format!("vrtfido-{}-{port}.db", std::process::id()));
-            start(path.to_str().unwrap().into(), "0.0.0.0".into(), port).unwrap();
+            let db = path.to_str().unwrap().to_string();
+            start(options(&db, "0.0.0.0", port)).unwrap();
             let mut socket = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
             socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
             socket.write_all(b"GET /api/status HTTP/1.0\r\nHost: localhost\r\n\r\n").unwrap();
@@ -184,14 +227,26 @@ pub mod jni_bridge {
             drop(socket);
             stop();
             let listener = std::net::TcpListener::bind(("127.0.0.1", port)).unwrap();
-            assert!(start(path.to_str().unwrap().into(), "0.0.0.0".into(), port).is_err());
+            assert!(start(options(&db, "0.0.0.0", port)).is_err());
             drop(listener);
-            start(path.to_str().unwrap().into(), "127.0.0.1".into(), port).unwrap();
+            start(options(&db, "127.0.0.1", port)).unwrap();
             assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_ok());
             stop();
             let _ = std::fs::remove_file(&path);
             let _ = std::fs::remove_file(path.with_extension("db-wal"));
             let _ = std::fs::remove_file(path.with_extension("db-shm"));
+        }
+
+        #[test]
+        fn startup_rejects_user_visible_option_errors() {
+            assert!(start(options("   ", "127.0.0.1", 12345)).unwrap_err().contains("Database"));
+
+            let good = std::env::temp_dir().join(format!("vrtfido-opt-{}.db", std::process::id()));
+            let db = good.to_str().unwrap().to_string();
+            start(options(&db, "not-an-ip", 0)).unwrap_err();
+            assert!(start(options(&db, "127.0.0.1", 0)).unwrap_err().contains("Port"));
+            assert!(start(options(&db, "not-an-ip", 12345)).unwrap_err().contains("IPv4"));
+            let _ = std::fs::remove_file(&good);
         }
     }
 }

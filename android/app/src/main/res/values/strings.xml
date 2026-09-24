@@ -9,6 +9,7 @@
     <string name="bind_host">Host (IPv4 để lắng nghe)</string>
     <string name="bind_port">Port</string>
     <string name="invalid_bind">Host IPv4 hoặc port không hợp lệ (1–65535)</string>
+    <string name="invalid_database">Database không được để trống</string>
     <string name="notification_running">Đang phục vụ tại %1$s</string>
     <string name="notification_starting">Đang mở cổng %1$s</string>
     <string name="notification_permission_required">Cần cho phép thông báo để hiển thị dịch vụ chạy nền</string>
@@ -19,4 +20,22 @@
     <string name="notification_channel_name">vrtfido Background Service</string>
     <string name="notification_title">vrtfido Authenticator đang hoạt động</string>
     <string name="notification_text">Sẵn sàng nhận yêu cầu Passkey từ hệ thống và Web CMS</string>
+    <string name="create_entry_description">Lưu Passkey vào vrtfido cho %1$s</string>
+    <string name="export_json">Xuất JSON</string>
+    <string name="import_json">Nhập JSON</string>
+    <string name="daemon_required">Bật dịch vụ trước khi xuất hoặc nhập dữ liệu</string>
+    <string name="export_done">Đã xuất %1$s</string>
+    <string name="export_failed">Xuất thất bại: %1$s</string>
+    <string name="import_done">Đã nhập %1$d credential, %2$d fingerprint, %3$d log</string>
+    <string name="import_failed">Nhập thất bại: %1$s</string>
+    <string name="backup_file_name">vrtfido-backup-%1$s.json</string>
+    <string name="params_title">Tham số daemon (tương đương CLI)</string>
+    <string name="database_label">Database (đường dẫn hoặc URL như --database)</string>
+    <string name="database_hint">authenticator.db, postgresql://…, mysql://…, libsql://…</string>
+    <string name="db_type_label">DB type (tùy chọn, --db-type)</string>
+    <string name="db_type_hint">sqlite, postgresql, mysql, libsql (bỏ trống để tự nhận diện)</string>
+    <string name="auth_token_label">Auth token (LibSQL/Turso, --auth-token)</string>
+    <string name="auth_token_hint">bỏ trống nếu không dùng</string>
+    <string name="flag_debug">--debug: ghi log gói tin chi tiết</string>
+    <string name="flag_unlimited_fps">--unlimited-fps: không giới hạn 10 vân tay</string>
 </resources>

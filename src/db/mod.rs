@@ -988,6 +988,23 @@ mod tests {
         assert_eq!(debug_logs[0].component, "TEST");
         assert_eq!(debug_logs[0].message, "Testing export import");
 
+        // 5. Re-importing the same file must overwrite instead of failing on duplicate IDs,
+        //    which is what the Android backup screen and repeated CLI restores rely on.
+        let again = db2
+            .import_from_file(export_path_str)
+            .expect("re-importing the same backup must succeed");
+        assert_eq!(again.credentials_imported, 1);
+        assert_eq!(again.fingerprints_imported, 2);
+        assert_eq!(db2.get_credentials().unwrap().len(), 1);
+        assert_eq!(db2.get_fingerprints().unwrap().len(), 2);
+
+        // Importing into a database that already holds the same rows must also succeed.
+        let same_db = db1
+            .import_from_file(export_path_str)
+            .expect("importing into the source database must succeed");
+        assert_eq!(same_db.credentials_imported, 1);
+        assert_eq!(db1.get_credentials().unwrap().len(), 1);
+
         let _ = std::fs::remove_file(export_path);
     }
 

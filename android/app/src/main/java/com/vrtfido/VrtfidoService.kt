@@ -20,6 +20,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import android.util.Log
+import org.json.JSONObject
 import java.io.File
 
 class VrtfidoService : Service() {
@@ -49,7 +50,7 @@ class VrtfidoService : Service() {
         }
 
         @JvmStatic
-        private external fun startVrtfidoDaemon(dbPath: String, host: String, port: Int): String?
+        private external fun startVrtfidoDaemon(optionsJson: String): String?
         @JvmStatic
         private external fun stopVrtfidoDaemon()
     }
@@ -79,8 +80,7 @@ class VrtfidoService : Service() {
         serviceScope.launch {
             try {
                 check(loadError == null) { "Native library: $loadError" }
-                val dbFile = File(filesDir, "authenticator.db")
-                val error = startVrtfidoDaemon(dbFile.absolutePath, binding.host, binding.port)
+                val error = startVrtfidoDaemon(daemonOptionsJson(binding))
                 check(error == null) { error ?: "Unknown native startup error" }
                 var reachable = false
                 for (attempt in 0 until 20) {
@@ -123,6 +123,31 @@ class VrtfidoService : Service() {
                 }
             }
         }
+    }
+
+    /**
+     * Serializes the configured CLI-equivalent parameters for the native side. Relative file names
+     * resolve inside the app's private directory so a bare `authenticator.db` stays app-scoped.
+     */
+    private fun daemonOptionsJson(binding: ServerBinding): String {
+        val spec = binding.database.trim()
+        val database = if (spec.contains("://") || spec.startsWith("/") ||
+            spec.startsWith("sqlite:") || spec.startsWith("libsql:") || spec.startsWith("file:")
+        ) {
+            spec
+        } else {
+            File(filesDir, spec).absolutePath
+        }
+
+        return JSONObject().apply {
+            put("database", database)
+            put("host", binding.host)
+            put("port", binding.port)
+            if (binding.dbType.isNotBlank()) put("db_type", binding.dbType.trim())
+            if (binding.authToken.isNotBlank()) put("auth_token", binding.authToken.trim())
+            put("debug_mode", binding.debugMode)
+            put("unlimited_fingerprints", binding.unlimitedFingerprints)
+        }.toString()
     }
 
     private fun stopDaemon() {
