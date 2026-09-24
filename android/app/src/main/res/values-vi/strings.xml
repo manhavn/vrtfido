@@ -37,7 +37,6 @@
     <string name="auth_token_label">Auth token (LibSQL/Turso, --auth-token)</string>
     <string name="auth_token_hint">bỏ trống nếu không dùng</string>
     <string name="flag_debug">--debug: ghi log gói tin chi tiết</string>
-    <string name="flag_unlimited_fps">--unlimited-fps: không giới hạn 10 vân tay</string>
 
     <!-- Language switch -->
     <string name="app_tagline">Trình xác thực Passkey ảo</string>

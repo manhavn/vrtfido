@@ -37,7 +37,6 @@
     <string name="auth_token_label">Auth token (LibSQL/Turso, --auth-token)</string>
     <string name="auth_token_hint">leave empty when unused</string>
     <string name="flag_debug">--debug: log packet details</string>
-    <string name="flag_unlimited_fps">--unlimited-fps: no 10-fingerprint limit</string>
 
     <!-- Language switch -->
     <string name="app_tagline">Virtual Passkey Authenticator</string>

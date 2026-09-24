@@ -43,7 +43,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var editDbType: EditText
     private lateinit var editAuthToken: EditText
     private lateinit var checkDebug: MaterialCheckBox
-    private lateinit var checkUnlimitedFps: MaterialCheckBox
     private lateinit var btnLangEn: MaterialButton
     private lateinit var btnLangVi: MaterialButton
     private var currentLanguage: String = ServerSettings.DEFAULT_LANGUAGE
@@ -99,7 +98,6 @@ class MainActivity : AppCompatActivity() {
         editDbType = findViewById(R.id.edit_db_type)
         editAuthToken = findViewById(R.id.edit_auth_token)
         checkDebug = findViewById(R.id.check_debug)
-        checkUnlimitedFps = findViewById(R.id.check_unlimited_fps)
         btnLangEn = findViewById(R.id.btn_lang_en)
         btnLangVi = findViewById(R.id.btn_lang_vi)
         ServerSettings.load(this).let { binding ->
@@ -109,7 +107,6 @@ class MainActivity : AppCompatActivity() {
             editDbType.setText(binding.dbType)
             editAuthToken.setText(binding.authToken)
             checkDebug.isChecked = binding.debugMode
-            checkUnlimitedFps.isChecked = binding.unlimitedFingerprints
             currentLanguage = binding.language
         }
         renderLanguageButtons()
@@ -192,7 +189,9 @@ class MainActivity : AppCompatActivity() {
                 dbType = editDbType.text.toString().trim(),
                 authToken = editAuthToken.text.toString().trim(),
                 debugMode = checkDebug.isChecked,
-                unlimitedFingerprints = checkUnlimitedFps.isChecked,
+                // Kept from the stored configuration: the phone has no USB sensor, so the
+                // fingerprint mode is managed from the Web CMS.
+                unlimitedFingerprints = ServerSettings.load(this).unlimitedFingerprints,
                 language = currentLanguage,
                 daemonRunning = true,
                 configured = true
@@ -256,7 +255,6 @@ class MainActivity : AppCompatActivity() {
         editDbType.isEnabled = !checked
         editAuthToken.isEnabled = !checked
         checkDebug.isEnabled = !checked
-        checkUnlimitedFps.isEnabled = !checked
         val binding = ServerSettings.load(this)
         btnOpenWeb.text = getString(R.string.open_web_ui, binding.localUrl)
         when {
@@ -408,7 +406,6 @@ class MainActivity : AppCompatActivity() {
                 editDbType.setText(adopted.dbType)
                 editAuthToken.setText(adopted.authToken)
                 checkDebug.isChecked = adopted.debugMode
-                checkUnlimitedFps.isChecked = adopted.unlimitedFingerprints
                 toast(getString(R.string.settings_restored))
             }
         }
@@ -427,7 +424,6 @@ class MainActivity : AppCompatActivity() {
                     .put("db_type", binding.dbType)
                     .put("auth_token", binding.authToken)
                     .put("debug", binding.debugMode)
-                    .put("unlimited_fingerprints", binding.unlimitedFingerprints)
                     .put("running", true)
                 VrtfidoClient.updateSettings(
                     this@MainActivity,
