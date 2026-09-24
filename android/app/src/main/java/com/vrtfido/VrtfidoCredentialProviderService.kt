@@ -69,6 +69,19 @@ class VrtfidoCredentialProviderService : CredentialProviderService() {
                     val candidates =
                         VrtfidoClient.getCandidates(this@VrtfidoCredentialProviderService, rpId, allowList)
 
+                    // When the relying party already pinned the account (non-empty allowCredentials)
+                    // and exactly one stored passkey matches, the entry may be used without asking the
+                    // user to pick from a list, provided the caller allows auto-selection.
+                    val callerAllowsAutoSelect = option.candidateQueryData
+                        .getBoolean(BUNDLE_KEY_IS_AUTO_SELECT_ALLOWED, false)
+                    val autoSelect = candidates.size == 1 &&
+                        (callerAllowsAutoSelect || allowList.isNotEmpty())
+                    Log.i(
+                        TAG,
+                        "get request rp=$rpId entries=${candidates.size} pinned=${allowList.isNotEmpty()} " +
+                            "callerAutoSelect=$callerAllowsAutoSelect autoSelect=$autoSelect"
+                    )
+
                     candidates.forEachIndexed { index, candidate ->
                         val intent = Intent(
                             this@VrtfidoCredentialProviderService,
@@ -94,6 +107,7 @@ class VrtfidoCredentialProviderService : CredentialProviderService() {
                                 candidate.userDisplayName.ifEmpty { candidate.userName }
                             )
                             .setIcon(icon)
+                            .setAutoSelectAllowed(autoSelect)
                             .build()
 
                         responseBuilder.addCredentialEntry(entry)
@@ -144,6 +158,10 @@ class VrtfidoCredentialProviderService : CredentialProviderService() {
                             android.R.drawable.ic_input_add
                         )
                     )
+                    .setAutoSelectAllowed(
+                        request.candidateQueryData
+                            .getBoolean(BUNDLE_KEY_IS_AUTO_SELECT_ALLOWED, false)
+                    )
                     .build()
 
                 callback.onResult(
@@ -166,6 +184,12 @@ class VrtfidoCredentialProviderService : CredentialProviderService() {
 
     private companion object {
         const val TAG = "VrtfidoProvider"
+
+        /**
+         * Caller-side flag from [androidx.credentials.CredentialOption]; the Kotlin constant is
+         * internal to the library, so the wire value is mirrored here.
+         */
+        const val BUNDLE_KEY_IS_AUTO_SELECT_ALLOWED = "androidx.credentials.BUNDLE_KEY_IS_AUTO_SELECT_ALLOWED"
         const val CREATE_REQUEST_CODE = 100
         const val GET_REQUEST_CODE_BASE = 200
     }
