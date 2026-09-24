@@ -473,8 +473,16 @@ fn handle_cbor(
                 // hand to the site: Chromium's `make_credential_task.cc` fills
                 // `AuthenticatorMakeCredentialResponse::transports` from `device_info()->transports`,
                 // which is this member, so `AuthenticatorAttestationResponse.getTransports()`
-                // reports "usb" instead of an empty list.
-                (Value::Integer(9.into()), Value::Array(vec![Value::Text("usb".into())])),
+                // returns it verbatim.
+                (
+                    Value::Integer(9.into()),
+                    Value::Array(
+                        ["ble", "hybrid", "internal", "nfc", "usb"]
+                            .into_iter()
+                            .map(|t| Value::Text(t.into()))
+                            .collect(),
+                    ),
+                ),
             ];
 
             let mut out = vec![0x00]; // CTAP2_OK
@@ -1743,6 +1751,14 @@ mod tests {
                 if key == &Value::Integer(9.into()) { Some(value.clone()) } else { None }
             })
             .expect("GetInfo must carry transports (key 9)");
-        assert_eq!(transports, Value::Array(vec![Value::Text("usb".into())]));
+        assert_eq!(
+            transports,
+            Value::Array(
+                ["ble", "hybrid", "internal", "nfc", "usb"]
+                    .into_iter()
+                    .map(|t| Value::Text(t.into()))
+                    .collect::<Vec<_>>()
+            )
+        );
     }
 }
