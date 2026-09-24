@@ -101,8 +101,16 @@ for target in "${BUILD_TARGETS[@]}"; do
   target_dist="$ROOT/dist/$target"
   mkdir -p "$target_dist"
   cp -f "$src" "$target_dist/"
+
+  # Package from a private staging directory and publish atomically: packaging straight out of
+  # dist/<target> raced with the linker rewriting the binary and produced corrupt archives.
   archive="$ROOT/dist/packages/${PROJECT_NAME}-${target}.tar.gz"
-  tar -C "$target_dist" -czf "$archive" .
+  stage_dir="$(mktemp -d)"
+  cp -f "$target_dist/${BIN_NAME}${ext}" "$stage_dir/"
+  tar -C "$stage_dir" -czf "${archive}.tmp" .
+  mv -f "${archive}.tmp" "$archive"
+  rm -rf "$stage_dir"
+  # The checksum is written only after the archive is final.
   (cd "$ROOT/dist/packages" && sha256sum "$(basename "$archive")" > "$(basename "$archive").sha256")
   built+=("$target")
   echo "    [+] Package completed: $archive"
