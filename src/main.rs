@@ -312,12 +312,19 @@ pub fn ensure_uhid_permission() -> bool {
 }
 
 // --- 2. CTAPHID Framing & Reassembly ---
-// Host request opcodes. A device response is the same value with 0x80 set (see frame_response), and
-// the high bit must never be used to classify an *incoming* packet: browsers send INIT as 0x06,
-// CBOR as 0x10 and PING as 0x01, so requiring 0x80 here silently dropped every real request.
+// Host request opcodes, without the packet-type bit. On the wire byte 4 of an *initial* packet is
+// the command with `CTAPHID_INIT_PACKET_BIT` set - browsers set it exactly like devices do
+// (Chrome's `FidoHidInitPacket::GetSerializedData` writes `command | 0x80`, so INIT arrives as
+// 0x86, CBOR as 0x90 and PING as 0x81), and both directions mask the bit off again
+// (`FidoHidInitPacket::CreateFromSerializedData` reads `byte & 0x7f`). Byte 4 must therefore be
+// masked before a command is matched, never compared raw: a raw comparison against 0x06 silently
+// ignored every request Chrome sent on Linux.
 pub const CTAPHID_CMD_PING: u8 = 0x01;
 pub const CTAPHID_CMD_INIT: u8 = 0x06;
 pub const CTAPHID_CMD_CBOR: u8 = 0x10;
+/// Set in byte 4 of an initial packet, clear in continuation packets (which carry a 7-bit sequence
+/// number there instead, starting at 0).
+const CTAPHID_INIT_PACKET_BIT: u8 = 0x80;
 /// Continuation frames carry the sequence number in the command byte, starting at 0.
 const CTAPHID_CMD_CONTINUATION: u8 = 0x00;
 
@@ -342,51 +349,52 @@ impl CtaphidParser {
         let cid = u32::from_be_bytes([pkt[0], pkt[1], pkt[2], pkt[3]]);
         let b4 = pkt[4];
 
-        match self.pending.take() {
-            // The message is still being assembled, so this packet is a continuation frame: byte 4
-            // is the sequence number and the payload starts at byte 5.
-            Some(mut msg) => {
-                if msg.cid == cid && b4 == msg.next_seq {
-                    let needed = msg.total_len - msg.payload.len();
-                    let chunk_len = needed.min(59);
-                    msg.payload.extend_from_slice(&pkt[5..5 + chunk_len]);
-                    msg.next_seq += 1;
+        if let Some(mut msg) = self.pending.take() {
+            // A message is still being assembled, so a packet whose byte 4 is the expected 7-bit
+            // sequence number continues it.
+            if b4 & CTAPHID_INIT_PACKET_BIT == 0 && msg.cid == cid && b4 == msg.next_seq {
+                let needed = msg.total_len - msg.payload.len();
+                let chunk_len = needed.min(59);
+                msg.payload.extend_from_slice(&pkt[5..5 + chunk_len]);
+                msg.next_seq += 1;
 
-                    if msg.payload.len() == msg.total_len {
-                        Some((msg.cid, msg.cmd, msg.payload))
-                    } else {
-                        self.pending = Some(msg);
-                        None
-                    }
-                } else {
-                    // Sequence mismatch or a different channel: the partial message is dropped, as
-                    // the specification requires for a protocol error.
-                    None
+                if msg.payload.len() == msg.total_len {
+                    return Some((msg.cid, msg.cmd, msg.payload));
                 }
+                self.pending = Some(msg);
+                return None;
             }
-            // Nothing outstanding, so this is an initialization packet: cmd | BCNTH | BCNTL | data.
-            None => {
-                let cmd = b4;
-                if cmd == CTAPHID_CMD_CONTINUATION {
-                    return None; // a stray continuation frame without a message to continue
-                }
-                let total_len = u16::from_be_bytes([pkt[5], pkt[6]]) as usize;
-                let chunk_len = total_len.min(57);
-                let payload = pkt[7..7 + chunk_len].to_vec();
+            if b4 & CTAPHID_INIT_PACKET_BIT == 0 {
+                // A continuation frame that does not fit the message being assembled: the partial
+                // message is dropped, as the specification requires for a protocol error, and the
+                // frame itself carries no command to run.
+                return None;
+            }
+            // Otherwise the packet is an initial one, so the host either abandoned the partial
+            // message or another channel started talking: fall through and serve it.
+        }
 
-                if payload.len() == total_len {
-                    Some((cid, cmd, payload))
-                } else {
-                    self.pending = Some(IncomingMessage {
-                        cid,
-                        cmd,
-                        total_len,
-                        payload,
-                        next_seq: 0,
-                    });
-                    None
-                }
-            }
+        // Initial packet: cmd | BCNTH | BCNTL | data. The packet-type bit is masked off before the
+        // command is matched, so a browser's 0x86/0x90/0x81 and a bare 0x06/0x10/0x01 both work.
+        let cmd = b4 & !CTAPHID_INIT_PACKET_BIT;
+        if cmd == CTAPHID_CMD_CONTINUATION {
+            return None; // a stray continuation frame without a message to continue
+        }
+        let total_len = u16::from_be_bytes([pkt[5], pkt[6]]) as usize;
+        let chunk_len = total_len.min(57);
+        let payload = pkt[7..7 + chunk_len].to_vec();
+
+        if payload.len() == total_len {
+            Some((cid, cmd, payload))
+        } else {
+            self.pending = Some(IncomingMessage {
+                cid,
+                cmd,
+                total_len,
+                payload,
+                next_seq: 0,
+            });
+            None
         }
     }
 }
@@ -397,7 +405,7 @@ pub fn frame_response(cid: u32, cmd: u8, payload: &[u8]) -> Vec<[u8; 64]> {
 
     let mut init_pkt = [0u8; 64];
     init_pkt[0..4].copy_from_slice(&cid.to_be_bytes());
-    init_pkt[4] = cmd | 0x80;
+    init_pkt[4] = cmd | CTAPHID_INIT_PACKET_BIT;
     init_pkt[5..7].copy_from_slice(&(total_len as u16).to_be_bytes());
 
     let chunk1_len = total_len.min(57);
@@ -1492,8 +1500,8 @@ mod tests {
 
     #[test]
     fn ctaphid_accepts_a_host_init_request() {
-        // The exact frame a browser/clients sends: broadcast CID, opcode 0x06 (no 0x80 - that bit
-        // only marks device responses), 8-byte nonce.
+        // Broadcast CID, INIT, 8-byte nonce. A host that leaves byte 4 bare is accepted too, so
+        // both the browser form (0x86, see below) and the bare opcode work.
         let nonce = [1u8, 2, 3, 4, 5, 6, 7, 8];
         let frame = initial_packet(0xFFFFFFFF, CTAPHID_CMD_INIT, nonce.len(), &nonce);
         let mut parser = CtaphidParser::new();
@@ -1504,6 +1512,35 @@ mod tests {
 
         let mut stray = [0u8; 64];
         assert_eq!(parser.process_packet(&stray), None, "stray continuation frame");
+    }
+
+    /// Regression: Chrome sends the command byte of every initial packet with 0x80 set, so a real
+    /// browser INIT arrives as 0x86 (CBOR as 0x90, PING as 0x81). Matching the raw byte against the
+    /// bare opcode dropped the INIT, the handshake timed out and no site ever reached the dashboard.
+    #[test]
+    fn ctaphid_accepts_the_browser_initial_packet_bit() {
+        let nonce = [9u8, 8, 7, 6, 5, 4, 3, 2];
+        let frame = initial_packet(
+            0xFFFFFFFF,
+            CTAPHID_CMD_INIT | CTAPHID_INIT_PACKET_BIT,
+            nonce.len(),
+            &nonce,
+        );
+        let mut parser = CtaphidParser::new();
+        assert_eq!(
+            parser.process_packet(&frame),
+            Some((0xFFFFFFFF, CTAPHID_CMD_INIT, nonce.to_vec())),
+            "0x86 must be recognised as authenticatorINIT"
+        );
+    }
+
+    #[test]
+    fn ctaphid_ignores_a_continuation_without_a_message_to_continue() {
+        let mut parser = CtaphidParser::new();
+        let mut stray = [0u8; 64];
+        stray[0..4].copy_from_slice(&0x0A0B0C0Du32.to_be_bytes());
+        stray[4] = 0; // first continuation sequence, but nothing is being reassembled
+        assert_eq!(parser.process_packet(&stray), None);
     }
 
     #[test]
@@ -1526,18 +1563,128 @@ mod tests {
     }
 
     #[test]
+    fn ctaphid_reassembles_a_browser_fragmented_request() {
+        let cid = 0x11223344u32;
+        let payload: Vec<u8> = (0..70u8).collect();
+        let mut parser = CtaphidParser::new();
+
+        // Chrome marks the first packet with the initial-packet bit and sends continuations as
+        // plain sequence numbers.
+        let head = initial_packet(
+            cid,
+            CTAPHID_CMD_CBOR | CTAPHID_INIT_PACKET_BIT,
+            payload.len(),
+            &payload[..57],
+        );
+        assert_eq!(parser.process_packet(&head), None, "70 bytes need a second frame");
+
+        let mut tail = [0u8; 64];
+        tail[0..4].copy_from_slice(&cid.to_be_bytes());
+        tail[4] = 0;
+        tail[5..5 + (payload.len() - 57)].copy_from_slice(&payload[57..]);
+        assert_eq!(
+            parser.process_packet(&tail),
+            Some((cid, CTAPHID_CMD_CBOR, payload))
+        );
+    }
+
+    #[test]
+    fn ctaphid_serves_a_new_initial_packet_over_a_partial_message() {
+        let cid = 0x11223344u32;
+        let mut parser = CtaphidParser::new();
+
+        // Take a fragmented request that stops after its first packet, then hand the parser a fresh
+        // INIT: the abandoned message must not swallow the new channel handshake.
+        let head = initial_packet(
+            cid,
+            CTAPHID_CMD_CBOR | CTAPHID_INIT_PACKET_BIT,
+            70,
+            &[0u8; 57],
+        );
+        assert_eq!(parser.process_packet(&head), None);
+
+        let nonce = [4u8, 3, 2, 1, 0, 1, 2, 3];
+        let init = initial_packet(
+            0xFFFFFFFF,
+            CTAPHID_CMD_INIT | CTAPHID_INIT_PACKET_BIT,
+            nonce.len(),
+            &nonce,
+        );
+        assert_eq!(
+            parser.process_packet(&init),
+            Some((0xFFFFFFFF, CTAPHID_CMD_INIT, nonce.to_vec()))
+        );
+    }
+
+    #[test]
     fn ctaphid_response_frames_are_marked_and_sequenced() {
         let cid = 0x0A0B0C0Du32;
         let payload: Vec<u8> = (0..70u8).collect();
         let frames = frame_response(cid, CTAPHID_CMD_CBOR, &payload);
 
-        assert_eq!(frames[0][4], CTAPHID_CMD_CBOR | 0x80);
+        assert_eq!(frames[0][4], CTAPHID_CMD_CBOR | CTAPHID_INIT_PACKET_BIT);
         assert_eq!(&frames[0][0..4], &cid.to_be_bytes());
         assert_eq!(u16::from_be_bytes([frames[0][5], frames[0][6]]), 70);
         assert_eq!(&frames[0][7..], &payload[..57]);
         assert_eq!(frames[1][4], 0, "continuation carries the sequence number");
         assert_eq!(&frames[1][5..5 + 13], &payload[57..]);
         assert_eq!(frame_response(cid, CTAPHID_CMD_INIT, &[0])[0][4], 0x86);
+    }
+
+    /// End-to-end regression for the browser handshake: feed the exact INIT frame Chrome writes
+    /// (opcode 0x86) into the request handler and check the report that goes back to the kernel.
+    #[tokio::test]
+    async fn a_browser_init_request_is_answered_on_the_wire() {
+        use std::io::{Seek, SeekFrom};
+
+        let path = std::env::temp_dir().join(format!("vrtfido-uhid-test-{}.bin", std::process::id()));
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)
+            .expect("temp report sink");
+        let mut dev = UhidDevice { file };
+
+        let db = Db::open(":memory:").expect("in-memory db");
+        let security = SecurityEngine::new(db.clone(), sensor::UsbSensor::new(), false);
+        let mut parser = CtaphidParser::new();
+        let nonce = [9u8, 8, 7, 6, 5, 4, 3, 2];
+        let frame = initial_packet(
+            0xFFFFFFFF,
+            CTAPHID_CMD_INIT | CTAPHID_INIT_PACKET_BIT,
+            nonce.len(),
+            &nonce,
+        );
+
+        handle_frame(
+            &mut dev,
+            &mut parser,
+            &db,
+            &security,
+            &tokio::runtime::Handle::current(),
+            false,
+            &frame,
+        )
+        .expect("an INIT request must be answered");
+
+        dev.file.seek(SeekFrom::Start(0)).expect("rewind sink");
+        let mut written = Vec::new();
+        dev.file.read_to_end(&mut written).expect("read back sink");
+        let _ = std::fs::remove_file(&path);
+
+        // uhid_input2_req: size (u16) then 64-byte report data.
+        assert_eq!(u16::from_le_bytes([written[4], written[5]]), 64);
+        let report = &written[6..70];
+        assert_eq!(&report[0..4], &0xFFFFFFFFu32.to_be_bytes(), "broadcast channel");
+        assert_eq!(report[4], 0x86, "INIT response");
+        assert_eq!(u16::from_be_bytes([report[5], report[6]]), 17);
+        assert_eq!(&report[7..15], &nonce, "nonce is echoed");
+        let allocated = u32::from_be_bytes([report[15], report[16], report[17], report[18]]);
+        assert_ne!(allocated, 0xFFFFFFFF, "a real channel id is allocated");
+        assert_eq!(report[19], 2, "CTAPHID protocol version 2");
+        assert_eq!(report[23], 0x04, "CBOR capability flag");
     }
 
     #[test]
