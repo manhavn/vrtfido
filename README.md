@@ -163,13 +163,31 @@ On Linux x86_64, build a **signed release APK** with one command (internet requi
 
 Output: `android/app/build/outputs/apk/release/app-release.apk`. For a debug build, run `./build-android.sh debug`.
 
+Install it on a connected phone with:
+
+```bash
+./install-android.sh             # picks release, then debug, APK
+./install-android.sh --reinstall # uninstall first (deletes app settings and passkeys)
+```
+
+The script locates `adb` (PATH, `./.android-build/sdk`, `~/Android/Sdk`, `ANDROID_HOME`, or `ADB=/path/to/adb`), refuses to guess when several devices are attached unless `ANDROID_SERIAL` is set, and turns the usual `adb install` failures into instructions: no device (`USB debugging`, plus vivo/iQOO's `USB debugging (Security settings)` and `Install via USB`), `unauthorized`, missing udev permission, and `INSTALL_FAILED_UPDATE_INCOMPATIBLE`. That last one is expected here because the debug APK is signed with the Android debug key and the release APK with the local release key, so **switching between `./build-android.sh` and `./build-android.sh debug` requires `--reinstall`**, which removes the existing app and its `authenticator.db`. Success is verified with `pm path`, not with the installer's exit code alone.
+
+On vivo/iQOO (OriginOS) the package chooser runs a `Chăm sóc bảo mật — Đang thực hiện quét sâu` scan before it renders the install button. That scan service can wedge, after which the dialog never gets a button and the install either hangs or times out as `INSTALL_FAILED_ABORTED: User rejected permissions`. Each attempt is bounded by `VRTFIDO_INSTALL_TIMEOUT` (default 180s); on a hang or that abort the script force-stops `com.android.packageinstaller` and `com.vivo.safecenter` — which clears the wedged state without a reboot — and retries once, with `adb reboot` left as the fallback. Two further vivo quirks: the ROM's own package record can survive an uninstall (`installed=false`, `ceDataInode=-1`, empty `pm path`) and still block a new signature until the record is removed, which `--reinstall` does; and the on-device toggles are `USB debugging`, `USB debugging (Security settings)` and `Install via USB`.
+
+On a host whose udev rules grant no access to an ADB interface (`ff/42/01`; Ubuntu's `70-uaccess.rules` only tags cameras), `adb devices` lists the phone as `no permissions` and the install aborts. Allow the phone's USB vendor ID — for vivo/iQOO that is `2d95`:
+
+```bash
+echo 'SUBSYSTEM=="usb", ATTR{idVendor}=="2d95", GROUP="plugdev", MODE="0660"' | sudo tee /etc/udev/rules.d/51-android.rules
+sudo udevadm control --reload-rules && sudo udevadm trigger
+```
+
 The script installs missing host utilities with apt/dnf/pacman, bootstraps Rust if needed, downloads JDK 17, Android SDK/NDK, Gradle and `cargo-ndk`, accepts SDK licenses, builds both native ABIs and verifies the release APK signature. Downloads and a generated local signing key live under `.android-build/` (override with `VRTFIDO_ANDROID_CACHE`); existing `ANDROID_HOME`/`ANDROID_NDK_HOME` are respected. **Back up `.android-build/signing/vrtfido-release.p12` and `.android-build/signing/password` securely**: without both files, a later build cannot update an installed release. For production, set all four variables `VRTFIDO_KEYSTORE`, `VRTFIDO_KEYSTORE_PASSWORD`, `VRTFIDO_KEY_ALIAS`, `VRTFIDO_KEY_PASSWORD` to sign with your own keystore. No key or password is committed. Native, Gradle or signature failures stop the build.
 
 **Android 14+ usage:**
    - Install the generated APK, configure **Host (IPv4)** and **Port** before switching ON. Defaults: `0.0.0.0:10209`; settings persist across app restarts. Use `127.0.0.1` if access must stay on the phone.
    - **Daemon parameters (CLI parity):** the main screen also exposes the desktop CLI options — **Database** (`--database` / `DATABASE_URL`: a file name, `sqlite:…`, or a `postgresql://`, `mysql://`, `mariadb://`, `libsql://` URL), **DB type** (`--db-type`, optional; auto-detected when empty), **Auth token** (`--auth-token` for LibSQL/Turso), plus the boolean flags **--debug** and **--unlimited-fps** as checkboxes. A relative file name resolves inside the app's private storage; the default is `authenticator.db`. Parameters are applied at daemon start and persisted with the rest of the settings.
    - ON turns green only after the native HTTP server responds. On failure the app displays the startup error instead of claiming it is running. OFF stops the server.
-   - While ON, an ongoing foreground notification displays the bound address. Tapping the notification returns to the app; closing the app UI or swiping its task away does not intentionally stop the service. Android may still stop foreground services via system controls or battery policies.
+   - While ON, an ongoing foreground notification displays the bound address. Tapping the notification returns to the app; closing the app UI or swiping its task away does not intentionally stop the service. Android may still stop foreground services via system controls or battery policies. The notification is optional: denying `POST_NOTIFICATIONS` (Android 13+) or turning the app's notifications off only hides that ongoing notice — the daemon still starts and runs, and the status line then says so while keeping the switch ON.
    - Open the Web Dashboard at the shown local URL; when bound to `0.0.0.0`, other devices on the same network can connect using the phone's LAN IP and configured port.
    - **Security:** The current Web CMS/API has no LAN authentication; database export exposes private keys. Binding to `0.0.0.0` makes this data accessible to other devices that can reach the phone. Use `127.0.0.1` unless the network is trusted and access is restricted externally.
    - Enable **VrtFido Passkey Provider** in Android settings (**Settings → Passwords & accounts → VrtFido**), turn the daemon ON, and keep it ON while using passkeys. System biometrics / screen unlock is used for credential operations.

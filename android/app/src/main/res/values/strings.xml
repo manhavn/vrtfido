@@ -3,6 +3,7 @@
     <string name="app_name">VrtFido</string>
     <string name="credential_provider_label">VrtFido Passkey Provider</string>
     <string name="service_running">VrtFido is running at %1$s</string>
+    <string name="service_running_silent">VrtFido is running at %1$s — notifications are off, so the ongoing notice is hidden</string>
     <string name="service_stopped">VrtFido daemon stopped</string>
     <string name="service_starting">Opening server at %1$s…</string>
     <string name="service_failed">Could not start the Web Dashboard: %1$s</string>
@@ -12,7 +13,6 @@
     <string name="invalid_database">Database must not be empty</string>
     <string name="notification_running">Serving at %1$s</string>
     <string name="notification_starting">Opening port %1$s</string>
-    <string name="notification_permission_required">Notification permission is required to show the background service</string>
     <string name="open_web_ui">Open Web Dashboard (%1$s)</string>
     <string name="enable_passkey_settings">Android passkey provider settings</string>
     <string name="status_label">Service status</string>

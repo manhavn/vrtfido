@@ -16,6 +16,7 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatDelegate
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.os.LocaleListCompat
 import androidx.core.content.ContextCompat
 import com.google.android.material.button.MaterialButton
@@ -64,16 +65,12 @@ class MainActivity : AppCompatActivity() {
     private val activityScope = CoroutineScope(Dispatchers.Main)
     private var pollJob: Job? = null
     private var startRequested = false
-    private var permissionError: String? = null
     private val requestNotificationPermission =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            if (granted && startRequested) {
-                startServiceInForeground()
-            } else {
-                startRequested = false
-                permissionError = getString(R.string.notification_permission_required)
-                updateUI(false, false, permissionError)
-            }
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { _ ->
+            if (!startRequested) return@registerForActivityResult
+            // A denied POST_NOTIFICATIONS only hides the ongoing notification; the foreground
+            // service is still allowed to run, so the daemon starts either way.
+            startServiceInForeground()
         }
 
     private val statusReceiver = object : BroadcastReceiver() {
@@ -198,7 +195,6 @@ class MainActivity : AppCompatActivity() {
             )
             ServerSettings.save(this, binding)
             startRequested = true
-            permissionError = null
             editHost.isEnabled = false
             editPort.isEnabled = false
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
@@ -230,11 +226,15 @@ class MainActivity : AppCompatActivity() {
                 val running = withContext(Dispatchers.IO) {
                     VrtfidoService.isRunning && VrtfidoClient.isRunning(this@MainActivity)
                 }
-                updateUI(running, VrtfidoService.isStarting, VrtfidoService.lastError ?: permissionError)
+                updateUI(running, VrtfidoService.isStarting, VrtfidoService.lastError)
                 delay(2000)
             }
         }
     }
+
+    /** False when the app may not post notifications; the daemon still runs, only silently. */
+    private fun notificationsEnabled(): Boolean =
+        NotificationManagerCompat.from(this).areNotificationsEnabled()
 
     private fun updateUI(running: Boolean, starting: Boolean, error: String?) {
         if (running || error != null) startRequested = false
@@ -259,7 +259,11 @@ class MainActivity : AppCompatActivity() {
         btnOpenWeb.text = getString(R.string.open_web_ui, binding.localUrl)
         when {
             running -> {
-                tvStatus.text = getString(R.string.service_running, binding.localUrl)
+                tvStatus.text = if (notificationsEnabled()) {
+                    getString(R.string.service_running, binding.localUrl)
+                } else {
+                    getString(R.string.service_running_silent, binding.localUrl)
+                }
                 tvStatus.setTextColor(ContextCompat.getColor(this, R.color.status_green))
             }
             pending -> {

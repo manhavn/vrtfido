@@ -11,8 +11,8 @@ android {
         applicationId = "com.vrtfido"
         minSdk = 28
         targetSdk = 35
-        versionCode = 6
-        versionName = "0.2.4"
+        versionCode = 7
+        versionName = "0.2.5"
 
         ndk {
             abiFilters += listOf("arm64-v8a", "x86_64")
