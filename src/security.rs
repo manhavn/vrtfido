@@ -144,6 +144,22 @@ impl SecurityEngine {
         }
     }
 
+    /// Pre-flight check for the Web CMS: rejects the request up front instead of showing a
+    /// modal that can only wait, so the dashboard reports why enrollment cannot start.
+    pub fn can_enroll_fingerprint(&self) -> Result<(), String> {
+        let fps = self.db.get_fingerprints().map_err(|e| e.to_string())?;
+        if !self.unlimited_fps && fps.len() >= 10 {
+            return Err("Maximum 10 fingerprints reached (Use --unlimited-fps to remove limit)".into());
+        }
+        if !UsbSensor::is_hardware_plugged() {
+            return Err("USB fingerprint sensor (3274:8012) is not connected — plug it in and retry".into());
+        }
+        if self.sensor.busy_mode() != SensorBusyMode::Idle {
+            return Err("USB fingerprint sensor is busy with another operation".into());
+        }
+        Ok(())
+    }
+
     /// Enroll fingerprint: Scan 6 times via USB Microarray MAFP sensor
     pub fn enroll_fingerprint(&self, name: &str) -> Result<crate::db::FingerprintRow, String> {
         let fps = self.db.get_fingerprints().map_err(|e| e.to_string())?;
@@ -161,13 +177,15 @@ impl SecurityEngine {
             }
         }
 
-        // Scan 6 stages on physical hardware
-        let actual_fid = if UsbSensor::is_hardware_plugged() {
-            println!("[SECURITY] Starting 6-stage USB fingerprint enrollment...");
-            self.sensor.enroll_fingerprint_pipeline(target_slot)?
-        } else {
-            target_slot as u16
-        };
+        // Scan 6 stages on physical hardware. Without the sensor there is no template to store,
+        // and recording a slot anyway used to produce a fingerprint that never matched.
+        if !UsbSensor::is_hardware_plugged() {
+            return Err(
+                "USB fingerprint sensor (3274:8012) is not connected — plug it in and retry".into(),
+            );
+        }
+        println!("[SECURITY] Starting 6-stage USB fingerprint enrollment...");
+        let actual_fid = self.sensor.enroll_fingerprint_pipeline(target_slot)?;
 
         let row = self.db.add_fingerprint(actual_fid as u32, name).map_err(|e| e.to_string())?;
         self.db.log_auth(
@@ -420,20 +438,25 @@ impl SecurityEngine {
                         return Err("No fingerprints enrolled in the system".into());
                     }
 
-                    if UsbSensor::is_hardware_plugged() {
-                        println!("[SECURITY] Waiting for finger press on USB sensor...");
-                        match self.sensor.verify_fingerprint(&enrolled_slots, 15) {
-                            Ok(true) => {
-                                println!("[SECURITY] Fingerprint verified successfully!");
-                            }
-                            Ok(false) => {
-                                *guard = Some(active);
-                                return Err("Fingerprint DOES NOT MATCH any enrolled template! Request rejected.".into());
-                            }
-                            Err(e) => {
-                                *guard = Some(active);
-                                return Err(format!("Fingerprint sensor error: {}", e));
-                            }
+                    if !UsbSensor::is_hardware_plugged() {
+                        *guard = Some(active);
+                        return Err(
+                            "USB fingerprint sensor (3274:8012) is not connected — use the PIN or plug the sensor in".into(),
+                        );
+                    }
+
+                    println!("[SECURITY] Waiting for finger press on USB sensor...");
+                    match self.sensor.verify_fingerprint(&enrolled_slots, 15) {
+                        Ok(true) => {
+                            println!("[SECURITY] Fingerprint verified successfully!");
+                        }
+                        Ok(false) => {
+                            *guard = Some(active);
+                            return Err("Fingerprint DOES NOT MATCH any enrolled template! Request rejected.".into());
+                        }
+                        Err(e) => {
+                            *guard = Some(active);
+                            return Err(format!("Fingerprint sensor error: {}", e));
                         }
                     }
 

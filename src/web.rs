@@ -324,9 +324,18 @@ async fn start_enroll_fingerprint(
     if name.is_empty() {
         return Json(ApiResponse::err("Fingerprint label cannot be empty"));
     }
+    // Answer with the real reason (sensor unplugged, slot limit, busy) so the modal cannot sit
+    // on "connecting" forever while a background task waits for a sensor that is not there.
+    if let Err(e) = state.security.can_enroll_fingerprint() {
+        return Json(ApiResponse::err(e));
+    }
     let sec = state.security.clone();
     tokio::task::spawn_blocking(move || {
-        let _ = sec.enroll_fingerprint(&name);
+        if let Err(e) = sec.enroll_fingerprint(&name) {
+            // The 6-stage scan reports its own failure through the enroll progress the modal
+            // polls; this line keeps the daemon log complete for a failed attempt.
+            eprintln!("[CMS] Fingerprint enrollment failed: {}", e);
+        }
     });
     Json(ApiResponse::ok(true))
 }
@@ -2469,5 +2478,78 @@ mod tests {
         assert!(get_res.0.success);
         let get_data = get_res.0.data.unwrap();
         assert_eq!(get_data.id, cred_data.id);
+    }
+
+    /// Enrolling without the 3274:8012 sensor used to answer `success: true` and still write a
+    /// slot row, so the dashboard listed a "fingerprint" that could never match — the chip holds
+    /// no template for it. The pre-flight check must refuse and record nothing.
+    #[tokio::test]
+    async fn test_enrollment_without_sensor_is_refused_and_records_no_slot() {
+        if crate::sensor::UsbSensor::is_hardware_plugged() {
+            // Only reproducible where the dongle is absent; on a machine that has it attached the
+            // enrollment would really run against the hardware.
+            return;
+        }
+
+        let state = create_test_state();
+        let res = start_enroll_fingerprint(
+            State(state.clone()),
+            Json(AddFingerprintRequest { name: "ghost".into() }),
+        )
+        .await
+        .0;
+
+        assert!(!res.success, "enrolling without the sensor must fail");
+        assert!(res.error.unwrap_or_default().contains("not connected"));
+        assert!(
+            state.db.get_fingerprints().unwrap().is_empty(),
+            "no image was captured, so no slot may be recorded"
+        );
+    }
+
+    /// Approving a request with the FINGERPRINT method while the sensor is unplugged must not
+    /// fall through to success: the old code skipped the biometric check entirely, so clicking
+    /// "Fingerprint" on the dashboard approved the WebAuthn request without any verification.
+    #[tokio::test]
+    async fn test_fingerprint_approval_requires_the_sensor() {
+        if crate::sensor::UsbSensor::is_hardware_plugged() {
+            return;
+        }
+
+        let state = create_test_state();
+        state.db.add_fingerprint(0, "T1").unwrap();
+
+        let sec = state.security.clone();
+        let verify_task = tokio::spawn(async move {
+            sec.request_user_verification("example.com", "GetAssertion", "alice").await
+        });
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        let prompt = get_pending_verify(State(state.clone()))
+            .await
+            .0
+            .data
+            .unwrap()
+            .expect("a verification request must be pending");
+
+        let approved = approve_verify(
+            State(state.clone()),
+            Json(ApproveVerifyRequest {
+                request_id: prompt.request_id,
+                method: "FINGERPRINT".into(),
+                pin: None,
+                credential_id: None,
+            }),
+        )
+        .await
+        .0;
+
+        assert!(!approved.success, "fingerprint approval must fail without the sensor");
+        assert!(approved.error.unwrap_or_default().contains("not connected"));
+        assert!(
+            get_pending_verify(State(state.clone())).await.0.data.unwrap().is_some(),
+            "the request must stay pending so the user can fall back to the PIN"
+        );
+        verify_task.abort();
     }
 }

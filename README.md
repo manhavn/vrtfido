@@ -21,6 +21,9 @@ The application includes an embedded **Web CMS Dashboard** on port **10209**, su
 3. **Security & Biometrics Policies:**
    - **6-Digit PIN (Passkey Password):** Enforces 6 numeric digits, hashed with SHA-256 and salt. Supports setup, changing (requires old PIN), and removal.
    - **Fingerprint Management:** Enrolls up to 10 fingerprints (or unlimited with `--unlimited-fps`), with customizable labels and slot deletion.
+   - **6-stage enrollment (USB sensor):** The MAFP chip builds one template from six independent captures, so every stage needs its own press: touch the sensor, lift the finger when the modal says so, then touch again. Holding the finger down does not advance the enrollment — the modal keeps asking for a lift and the attempt is abandoned after 60s rather than storing a template built from a single press.
+   - **Sensor re-enumeration:** The 3274:8012 dongle regularly drops off the USB bus and comes back on its own. The daemon notices the dead handle, re-opens the device and re-arms the chip on the next command, so a replug resumes an in-flight enrollment without restarting the app; while the sensor is away the modal says so, and after two fruitless wait windows the attempt ends with "replug the sensor" instead of waiting forever.
+   - **Nothing is recorded without a scan:** Enrolling with no sensor attached is refused up front (no dashboard slot is written that could never match), and approving a WebAuthn request with the **Fingerprint** button requires the sensor — without it the request stays pending so the PIN can still be used.
    - **Future Biometrics:** Modular architecture ready for Face ID, Iris, and Voiceprint extensions.
 
 4. **Web Management CMS (Port 10209):**
