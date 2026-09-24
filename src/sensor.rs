@@ -171,6 +171,23 @@ impl UsbSensor {
     }
 
     fn send_command(&self, cmd: &[u8], timeout: Duration) -> Result<Vec<u8>, String> {
+        let trace = std::env::var_os("VRTFIDO_SENSOR_TRACE").is_some();
+        let t0 = Instant::now();
+        let result = self.send_command_inner(cmd, timeout, trace);
+        if trace {
+            let ms = t0.elapsed().as_millis();
+            match &result {
+                Ok(data) => println!(
+                    "[TRACE] usb cmd={:02X?} -> ok in {}ms data={:02X?}",
+                    cmd, ms, data
+                ),
+                Err(e) => println!("[TRACE] usb cmd={:02X?} -> ERR in {}ms: {}", cmd, ms, e),
+            }
+        }
+        result
+    }
+
+    fn send_command_inner(&self, cmd: &[u8], timeout: Duration, trace: bool) -> Result<Vec<u8>, String> {
         let mut guard = self.inner.lock();
         if guard.is_none() {
             drop(guard);
@@ -189,6 +206,14 @@ impl UsbSensor {
         let bytes_read = handle
             .read_bulk(EP_IN, &mut resp_buf, timeout)
             .map_err(|e| format!("USB read error: {}", e))?;
+
+        if trace {
+            println!(
+                "[TRACE] usb raw bytes_read={} resp={:02X?}",
+                bytes_read,
+                &resp_buf[..bytes_read.min(64)]
+            );
+        }
 
         if bytes_read < 11 {
             return Err("Response packet too short".into());
