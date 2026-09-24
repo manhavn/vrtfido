@@ -4,6 +4,7 @@ mod security;
 mod sensor;
 mod tray;
 mod web;
+mod passkey;
 use ciborium::Value;
 use db::Db;
 use p256::ecdsa::signature::Signer;

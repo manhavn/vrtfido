@@ -79,6 +79,13 @@ impl SecurityEngine {
         &self.sensor
     }
 
+    pub fn is_pin_configured(&self) -> bool {
+        self.db
+            .get_security_settings(self.unlimited_fps)
+            .map(|s| s.pin_enabled)
+            .unwrap_or(false)
+    }
+
     pub fn validate_pin_format(pin: &str) -> Result<(), &'static str> {
         if pin.len() != 6 {
             return Err("Passkey PIN must be exactly 6 digits");

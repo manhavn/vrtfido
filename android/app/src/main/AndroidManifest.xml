@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Network permissions for local Axum server -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- Foreground Service permissions -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- Biometrics & Device Credential Authentication -->
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+
+    <application
+        android:allowBackup="true"
+        android:icon="@android:drawable/ic_lock_lock"
+        android:label="@string/app_name"
+        android:roundIcon="@android:drawable/ic_lock_lock"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Vrtfido"
+        android:usesCleartextTraffic="true">
+
+        <!-- Minimal Main Launcher Activity -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Passkey Authentication Activity (BiometricPrompt) -->
+        <activity
+            android:name=".PasskeyAuthActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Vrtfido.Transparent" />
+
+        <!-- Passkey Creation Activity (BiometricPrompt) -->
+        <activity
+            android:name=".PasskeyCreateActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Vrtfido.Transparent" />
+
+        <!-- vrtfido Daemon Background Service -->
+        <service
+            android:name=".VrtfidoService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Virtual FIDO2 Passkey Authenticator background daemon" />
+        </service>
+
+        <!-- System Credential Provider Service (Android 14+) -->
+        <service
+            android:name=".VrtfidoCredentialProviderService"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.BIND_CREDENTIAL_PROVIDER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.credentials.CredentialProviderService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.service.credentials.CREDENTIAL_PROVIDER"
+                android:resource="@xml/credential_provider_configuration" />
+        </service>
+
+    </application>
+
+</manifest>

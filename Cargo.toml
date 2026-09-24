@@ -3,6 +3,15 @@ name = "vrtfido"
 version = "0.1.9"
 edition = "2021"
 
+[lib]
+name = "vrtfido"
+path = "src/lib.rs"
+crate-type = ["lib", "cdylib"]
+
+[[bin]]
+name = "vrtfido"
+path = "src/main.rs"
+
 [dependencies]
 ciborium = "0.2"
 p256 = { version = "0.14", features = ["ecdsa"] }
@@ -24,3 +33,9 @@ chrono = "0.4.45"
 libc = "0.2.189"
 ksni = "0.3.6"
 open = "5.4.4"
+base64 = "0.22"
+jni = { version = "0.21", optional = true }
+
+[features]
+default = []
+jni-bridge = ["dep:jni"]

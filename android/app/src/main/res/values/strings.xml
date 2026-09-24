@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">vrtfido</string>
+    <string name="credential_provider_label">vrtfido Passkey Provider</string>
+    <string name="service_running">vrtfido daemon đang chạy (Cổng 10209)</string>
+    <string name="service_stopped">vrtfido daemon đã dừng</string>
+    <string name="open_web_ui">Mở Web Dashboard (localhost:10209)</string>
+    <string name="enable_passkey_settings">Cài đặt Passkey hệ thống Android</string>
+    <string name="status_label">Trạng thái dịch vụ</string>
+    <string name="power_switch">Bật / Tắt dịch vụ</string>
+    <string name="notification_channel_name">vrtfido Background Service</string>
+    <string name="notification_title">vrtfido Authenticator đang hoạt động</string>
+    <string name="notification_text">Sẵn sàng nhận yêu cầu Passkey từ hệ thống và Web CMS</string>
+</resources>

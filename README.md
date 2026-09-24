@@ -46,6 +46,12 @@ The application includes an embedded **Web CMS Dashboard** on port **10209**, su
    - Click the tray icon or select **Dashboard** from the tray menu to open your default browser.
    - Toggle **Start with the system** directly in the tray menu (with checkmark status) to enable or disable automatic startup upon system login (`~/.config/autostart/vrtfido.desktop`).
    - Option `--no-tray` to disable system tray on headless/server systems.
+
+8. **Android System Passkey Provider (Android 14+):**
+   - Acts as a system-level Passkey / Credential Provider via Android Credential Manager API.
+   - Minimal Android UI: single ON / OFF switch to run the background service daemon.
+   - 100% full feature parity with Web CMS at `http://localhost:10209` accessible directly on mobile browser.
+   - Uses **Android BiometricPrompt** (Fingerprint, Face Unlock, or Lock Screen PIN/Pattern) for instant native verification instead of the desktop PIN modal.
 ---
 
 ## 🚀 Installation & Usage
@@ -145,6 +151,25 @@ Release packages (`.tar.gz`) and checksums (`.sha256`) are generated in `dist/pa
 3. Enter any username $\rightarrow$ Click **Register** or **Authenticate**.
 4. The popup window on Web CMS will appear for you to enter your 6-digit PIN or touch the fingerprint sensor.
 
+
+### 6. Android Passkey Provider Build & Deployment
+
+On Linux x86_64, build a **signed release APK** with one command (internet required; sudo may prompt if host utilities are missing):
+
+```bash
+./build-android.sh
+```
+
+Output: `android/app/build/outputs/apk/release/app-release.apk`. For a debug build, run `./build-android.sh debug`.
+
+The script installs missing host utilities with apt/dnf/pacman, bootstraps Rust if needed, downloads JDK 17, Android SDK/NDK, Gradle and `cargo-ndk`, accepts SDK licenses, builds both native ABIs and verifies the release APK signature. Downloads and a generated local signing key live under `.android-build/` (override with `VRTFIDO_ANDROID_CACHE`); existing `ANDROID_HOME`/`ANDROID_NDK_HOME` are respected. **Back up `.android-build/signing/vrtfido-release.p12` and `.android-build/signing/password` securely**: without both files, a later build cannot update an installed release. For production, set all four variables `VRTFIDO_KEYSTORE`, `VRTFIDO_KEYSTORE_PASSWORD`, `VRTFIDO_KEY_ALIAS`, `VRTFIDO_KEY_PASSWORD` to sign with your own keystore. No key or password is committed. Native, Gradle or signature failures stop the build.
+
+**Android 14+ usage:**
+   - Install the generated APK on your Android 14+ device.
+   - Open the app and toggle the **ON / OFF** switch to start the background daemon.
+   - Tap **"Cài đặt Passkey hệ thống Android"** and enable **vrtfido Passkey Provider**.
+   - Tap **"Mở Web Dashboard"** to manage credentials or export/import database on mobile browser.
+   - When websites or apps ask for Passkey, Android prompts system **Biometrics / Screen Lock** directly!
 ---
 
 ## 📂 Database & Data Migration

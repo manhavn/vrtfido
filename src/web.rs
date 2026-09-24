@@ -129,6 +129,9 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/verify/reject", post(reject_verify))
         .route("/api/database/export", get(export_database))
         .route("/api/database/import", post(import_database))
+        .route("/api/passkey/candidates", post(passkey_candidates))
+        .route("/api/passkey/create", post(passkey_create))
+        .route("/api/passkey/get", post(passkey_get))
         .with_state(state)
 }
 
@@ -438,6 +441,34 @@ async fn import_database(
             Json(ApiResponse::ok(stats))
         }
         Err(e) => Json(ApiResponse::err(e.to_string())),
+    }
+}
+
+async fn passkey_candidates(
+    State(state): State<AppState>,
+    Json(payload): Json<crate::passkey::CandidatesRequest>,
+) -> Json<ApiResponse<Vec<crate::passkey::CandidateItem>>> {
+    let items = crate::passkey::get_candidates(&state.db, &payload);
+    Json(ApiResponse::ok(items))
+}
+
+async fn passkey_create(
+    State(state): State<AppState>,
+    Json(payload): Json<crate::passkey::PasskeyCreateRequest>,
+) -> Json<ApiResponse<crate::passkey::PasskeyCreateResponseData>> {
+    match crate::passkey::create_passkey(&state.db, &state.security, payload).await {
+        Ok(res) => Json(ApiResponse::ok(res)),
+        Err(err) => Json(ApiResponse::err(err)),
+    }
+}
+
+async fn passkey_get(
+    State(state): State<AppState>,
+    Json(payload): Json<crate::passkey::PasskeyGetRequest>,
+) -> Json<ApiResponse<crate::passkey::PasskeyGetResponseData>> {
+    match crate::passkey::get_passkey(&state.db, &state.security, payload).await {
+        Ok(res) => Json(ApiResponse::ok(res)),
+        Err(err) => Json(ApiResponse::err(err)),
     }
 }
 
@@ -1580,5 +1611,59 @@ mod tests {
         let result = verify_task.await.unwrap().unwrap();
         assert_eq!(result.method, "PIN");
         assert_eq!(result.selected_credential_id, Some("cred_2".into()));
+    }
+
+    #[tokio::test]
+    async fn test_web_passkey_endpoints() {
+        let state = create_test_state();
+
+        // 1. Create passkey via API
+        let create_req = crate::passkey::PasskeyCreateRequest {
+            rp: crate::passkey::RpEntity {
+                id: "github.com".to_string(),
+                name: Some("GitHub".to_string()),
+            },
+            user: crate::passkey::UserEntity {
+                id: crate::passkey::b64url_encode(b"gh_user_42"),
+                name: "dev@github.com".to_string(),
+                display_name: Some("Dev User".to_string()),
+            },
+            challenge: Some(crate::passkey::b64url_encode(b"random_challenge")),
+            client_data_json: None,
+            client_data_hash: None,
+            user_verification: Some("ANDROID_BIOMETRIC".to_string()),
+            pin: None,
+        };
+
+        let create_res = passkey_create(State(state.clone()), axum::Json(create_req)).await;
+        assert!(create_res.0.success);
+        let cred_data = create_res.0.data.unwrap();
+        assert_eq!(cred_data.cred_type, "public-key");
+
+        // 2. Query candidates via API
+        let cand_req = crate::passkey::CandidatesRequest {
+            rp_id: "github.com".to_string(),
+            allow_credentials: vec![],
+        };
+        let cand_res = passkey_candidates(State(state.clone()), axum::Json(cand_req)).await;
+        assert!(cand_res.0.success);
+        let cands = cand_res.0.data.unwrap();
+        assert_eq!(cands.len(), 1);
+        assert_eq!(cands[0].user_name, "dev@github.com");
+
+        // 3. Get assertion via API
+        let get_req = crate::passkey::PasskeyGetRequest {
+            rp_id: "github.com".to_string(),
+            credential_id: Some(cred_data.id.clone()),
+            challenge: Some(crate::passkey::b64url_encode(b"gh_login_challenge")),
+            client_data_json: None,
+            client_data_hash: None,
+            user_verification: Some("ANDROID_BIOMETRIC".to_string()),
+            pin: None,
+        };
+        let get_res = passkey_get(State(state.clone()), axum::Json(get_req)).await;
+        assert!(get_res.0.success);
+        let get_data = get_res.0.data.unwrap();
+        assert_eq!(get_data.id, cred_data.id);
     }
 }
