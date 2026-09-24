@@ -1256,20 +1256,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let debug_mode_arc = Arc::new(AtomicBool::new(debug_mode));
     let uhid_connected = Arc::new(AtomicBool::new(false));
 
+    let port = get_opt("--port", Some("-p"))
+        .or_else(|| std::env::var("PORT").ok())
+        .and_then(|p| p.parse::<u16>().ok())
+        .unwrap_or(10209);
     let app_state = AppState {
         db: db.clone(),
         security: security.clone(),
         debug_mode: debug_mode_arc.clone(),
         uhid_connected: uhid_connected.clone(),
         unlimited_fps,
+        port,
     };
 
     // 5. Start Web CMS Server on port
     let app = web::create_router(app_state);
-    let port = get_opt("--port", Some("-p"))
-        .or_else(|| std::env::var("PORT").ok())
-        .and_then(|p| p.parse::<u16>().ok())
-        .unwrap_or(10209);
     let addr = format!("0.0.0.0:{}", port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     println!("[CMS] Web Management CMS is running at: http://localhost:{}", port);

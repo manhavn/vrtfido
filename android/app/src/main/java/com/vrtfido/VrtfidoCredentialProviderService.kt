@@ -55,7 +55,7 @@ class VrtfidoCredentialProviderService : CredentialProviderService() {
                             }
                         }
 
-                        val candidates = VrtfidoClient.getCandidates(rpId, allowList)
+                        val candidates = VrtfidoClient.getCandidates(this@VrtfidoCredentialProviderService, rpId, allowList)
 
                         for ((index, cand) in candidates.withIndex()) {
                             val intent = Intent(this@VrtfidoCredentialProviderService, PasskeyAuthActivity::class.java).apply {

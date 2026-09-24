@@ -76,21 +76,27 @@ impl UsbSensor {
             cancel_requested: Arc::new(AtomicBool::new(false)),
             enroll_progress: Arc::new(Mutex::new(EnrollProgress::default())),
         };
+        #[cfg(not(target_os = "android"))]
         let _ = sensor.try_connect();
         sensor
     }
 
     pub fn is_hardware_plugged() -> bool {
-        if let Ok(devices) = rusb::devices() {
-            for dev in devices.iter() {
-                if let Ok(desc) = dev.device_descriptor() {
-                    if desc.vendor_id() == VENDOR_ID && desc.product_id() == PRODUCT_ID {
-                        return true;
+        #[cfg(target_os = "android")]
+        return false;
+        #[cfg(not(target_os = "android"))]
+        {
+            if let Ok(devices) = rusb::devices() {
+                for dev in devices.iter() {
+                    if let Ok(desc) = dev.device_descriptor() {
+                        if desc.vendor_id() == VENDOR_ID && desc.product_id() == PRODUCT_ID {
+                            return true;
+                        }
                     }
                 }
             }
+            false
         }
-        false
     }
 
     pub fn busy_mode(&self) -> SensorBusyMode {

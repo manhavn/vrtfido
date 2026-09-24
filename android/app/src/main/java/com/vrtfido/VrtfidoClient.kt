@@ -1,5 +1,6 @@
 package com.vrtfido
 
+import android.content.Context
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -18,7 +19,7 @@ data class CandidateAccount(
 )
 
 object VrtfidoClient {
-    private const val BASE_URL = "http://127.0.0.1:10209"
+    private fun baseUrl(context: Context) = ServerSettings.load(context).localUrl
     private val JSON_MEDIA = "application/json; charset=utf-8".toMediaType()
 
     private val client = OkHttpClient.Builder()
@@ -26,9 +27,9 @@ object VrtfidoClient {
         .readTimeout(5, TimeUnit.SECONDS)
         .build()
 
-    fun isRunning(): Boolean {
+    fun isRunning(context: Context): Boolean {
         return try {
-            val req = Request.Builder().url("$BASE_URL/api/status").get().build()
+            val req = Request.Builder().url("${baseUrl(context)}/api/status").get().build()
             client.newCall(req).execute().use { resp ->
                 resp.isSuccessful
             }
@@ -37,7 +38,7 @@ object VrtfidoClient {
         }
     }
 
-    fun getCandidates(rpId: String, allowCredentials: List<String> = emptyList()): List<CandidateAccount> {
+    fun getCandidates(context: Context, rpId: String, allowCredentials: List<String> = emptyList()): List<CandidateAccount> {
         val json = JSONObject().apply {
             put("rp_id", rpId)
             val arr = JSONArray()
@@ -46,7 +47,7 @@ object VrtfidoClient {
         }
 
         val req = Request.Builder()
-            .url("$BASE_URL/api/passkey/candidates")
+            .url("${baseUrl(context)}/api/passkey/candidates")
             .post(json.toString().toRequestBody(JSON_MEDIA))
             .build()
 
@@ -81,6 +82,7 @@ object VrtfidoClient {
     }
 
     fun createPasskey(
+        context: Context,
         rpId: String,
         rpName: String?,
         userIdB64: String,
@@ -108,7 +110,7 @@ object VrtfidoClient {
         }
 
         val req = Request.Builder()
-            .url("$BASE_URL/api/passkey/create")
+            .url("${baseUrl(context)}/api/passkey/create")
             .post(root.toString().toRequestBody(JSON_MEDIA))
             .build()
 
@@ -130,6 +132,7 @@ object VrtfidoClient {
     }
 
     fun getPasskey(
+        context: Context,
         rpId: String,
         credentialId: String?,
         challengeB64: String?,
@@ -147,7 +150,7 @@ object VrtfidoClient {
         }
 
         val req = Request.Builder()
-            .url("$BASE_URL/api/passkey/get")
+            .url("${baseUrl(context)}/api/passkey/get")
             .post(root.toString().toRequestBody(JSON_MEDIA))
             .build()
 

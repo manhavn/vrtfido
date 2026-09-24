@@ -2,9 +2,17 @@
 <resources>
     <string name="app_name">vrtfido</string>
     <string name="credential_provider_label">vrtfido Passkey Provider</string>
-    <string name="service_running">vrtfido daemon đang chạy (Cổng 10209)</string>
+    <string name="service_running">vrtfido đang chạy tại %1$s</string>
     <string name="service_stopped">vrtfido daemon đã dừng</string>
-    <string name="open_web_ui">Mở Web Dashboard (localhost:10209)</string>
+    <string name="service_starting">Đang mở máy chủ tại %1$s…</string>
+    <string name="service_failed">Không thể mở Web Dashboard: %1$s</string>
+    <string name="bind_host">Host (IPv4 để lắng nghe)</string>
+    <string name="bind_port">Port</string>
+    <string name="invalid_bind">Host IPv4 hoặc port không hợp lệ (1–65535)</string>
+    <string name="notification_running">Đang phục vụ tại %1$s</string>
+    <string name="notification_starting">Đang mở cổng %1$s</string>
+    <string name="notification_permission_required">Cần cho phép thông báo để hiển thị dịch vụ chạy nền</string>
+    <string name="open_web_ui">Mở Web Dashboard (%1$s)</string>
     <string name="enable_passkey_settings">Cài đặt Passkey hệ thống Android</string>
     <string name="status_label">Trạng thái dịch vụ</string>
     <string name="power_switch">Bật / Tắt dịch vụ</string>

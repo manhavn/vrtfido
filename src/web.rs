@@ -18,6 +18,7 @@ pub struct AppState {
     pub debug_mode: Arc<AtomicBool>,
     pub uhid_connected: Arc<AtomicBool>,
     pub unlimited_fps: bool,
+    pub port: u16,
 }
 #[derive(Serialize)]
 pub struct SystemStatus {
@@ -149,7 +150,7 @@ async fn get_status(State(state): State<AppState>) -> Json<ApiResponse<SystemSta
     Json(ApiResponse::ok(SystemStatus {
         app_name: "vrtfido",
         version: env!("CARGO_PKG_VERSION"),
-        port: 10209,
+        port: state.port,
         uhid_connected: state.uhid_connected.load(Ordering::SeqCst),
         usb_sensor_connected: crate::sensor::UsbSensor::is_hardware_plugged(),
         debug_mode: state.debug_mode.load(Ordering::SeqCst),
@@ -1414,6 +1415,7 @@ mod tests {
             debug_mode: Arc::new(AtomicBool::new(false)),
             uhid_connected: Arc::new(AtomicBool::new(false)),
             unlimited_fps: false,
+            port: 10209,
         }
     }
 

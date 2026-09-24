@@ -118,6 +118,7 @@ class PasskeyCreateActivity : AppCompatActivity() {
         activityScope.launch {
             val passkeyResult = withContext(Dispatchers.IO) {
                 VrtfidoClient.createPasskey(
+                    context = this@PasskeyCreateActivity,
                     rpId = rpId,
                     rpName = rpName,
                     userIdB64 = userId,

@@ -165,11 +165,12 @@ Output: `android/app/build/outputs/apk/release/app-release.apk`. For a debug bui
 The script installs missing host utilities with apt/dnf/pacman, bootstraps Rust if needed, downloads JDK 17, Android SDK/NDK, Gradle and `cargo-ndk`, accepts SDK licenses, builds both native ABIs and verifies the release APK signature. Downloads and a generated local signing key live under `.android-build/` (override with `VRTFIDO_ANDROID_CACHE`); existing `ANDROID_HOME`/`ANDROID_NDK_HOME` are respected. **Back up `.android-build/signing/vrtfido-release.p12` and `.android-build/signing/password` securely**: without both files, a later build cannot update an installed release. For production, set all four variables `VRTFIDO_KEYSTORE`, `VRTFIDO_KEYSTORE_PASSWORD`, `VRTFIDO_KEY_ALIAS`, `VRTFIDO_KEY_PASSWORD` to sign with your own keystore. No key or password is committed. Native, Gradle or signature failures stop the build.
 
 **Android 14+ usage:**
-   - Install the generated APK on your Android 14+ device.
-   - Open the app and toggle the **ON / OFF** switch to start the background daemon.
-   - Tap **"Cài đặt Passkey hệ thống Android"** and enable **vrtfido Passkey Provider**.
-   - Tap **"Mở Web Dashboard"** to manage credentials or export/import database on mobile browser.
-   - When websites or apps ask for Passkey, Android prompts system **Biometrics / Screen Lock** directly!
+   - Install the generated APK, configure **Host (IPv4)** and **Port** before switching ON. Defaults: `0.0.0.0:10209`; settings persist across app restarts. Use `127.0.0.1` if access must stay on the phone.
+   - ON turns green only after the native HTTP server responds. On failure the app displays the startup error instead of claiming it is running. OFF stops the server.
+   - While ON, an ongoing foreground notification displays the bound address. Tapping the notification returns to the app; closing the app UI or swiping its task away does not intentionally stop the service. Android may still stop foreground services via system controls or battery policies.
+   - Open the Web Dashboard at the shown local URL; when bound to `0.0.0.0`, other devices on the same network can connect using the phone's LAN IP and configured port.
+   - **Security:** The current Web CMS/API has no LAN authentication; database export exposes private keys. Binding to `0.0.0.0` makes this data accessible to other devices that can reach the phone. Use `127.0.0.1` unless the network is trusted and access is restricted externally.
+   - Enable **vrtfido Passkey Provider** in Android settings. System biometrics / screen unlock is used for credential operations.
 ---
 
 ## 📂 Database & Data Migration

@@ -11,11 +11,15 @@ import android.net.Uri
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import android.util.Log
 import java.io.File
 
 class VrtfidoService : Service() {
@@ -30,20 +34,24 @@ class VrtfidoService : Service() {
         const val BROADCAST_STATUS = "com.vrtfido.broadcast.STATUS"
         const val EXTRA_IS_RUNNING = "is_running"
 
-        var isRunning: Boolean = false
+        @Volatile var isRunning: Boolean = false
+            private set
+        @Volatile var isStarting: Boolean = false
+            private set
+        @Volatile var lastError: String? = null
             private set
 
-        init {
-            try {
-                System.loadLibrary("vrtfido")
-            } catch (e: UnsatisfiedLinkError) {
-                // If running standalone or during unit tests
-                e.printStackTrace()
-            }
+        private val loadError: String? = try {
+            System.loadLibrary("vrtfido")
+            null
+        } catch (e: UnsatisfiedLinkError) {
+            e.message ?: "Could not load native library"
         }
 
         @JvmStatic
-        private external fun startVrtfidoDaemon(dbPath: String, port: Int)
+        private external fun startVrtfidoDaemon(dbPath: String, host: String, port: Int): String?
+        @JvmStatic
+        private external fun stopVrtfidoDaemon()
     }
 
     override fun onCreate() {
@@ -52,40 +60,83 @@ class VrtfidoService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
-            ACTION_STOP -> {
-                stopDaemon()
-                stopSelf()
-                return START_NOT_STICKY
-            }
-            else -> {
-                startForeground(NOTIFICATION_ID, buildNotification())
-                startDaemon()
-                return START_STICKY
-            }
+        if (intent?.action == ACTION_STOP) {
+            stopSelf()
+            return START_NOT_STICKY
         }
+        val binding = ServerSettings.load(this)
+        startForeground(NOTIFICATION_ID, buildNotification(binding, starting = !isRunning))
+        startDaemon(binding)
+        return START_STICKY
     }
 
-    private fun startDaemon() {
-        if (isRunning) return
-        isRunning = true
-        broadcastStatus(true)
+    private fun startDaemon(binding: ServerBinding) {
+        if (isRunning || isStarting) return
+        isStarting = true
+        lastError = null
+        broadcastStatus(false)
 
         serviceScope.launch {
-            val dbFile = File(filesDir, "authenticator.db")
             try {
-                // Call native JNI method
-                startVrtfidoDaemon(dbFile.absolutePath, 10209)
-            } catch (e: Throwable) {
-                e.printStackTrace()
+                check(loadError == null) { "Native library: $loadError" }
+                val dbFile = File(filesDir, "authenticator.db")
+                val error = startVrtfidoDaemon(dbFile.absolutePath, binding.host, binding.port)
+                check(error == null) { error ?: "Unknown native startup error" }
+                var reachable = false
+                for (attempt in 0 until 20) {
+                    if (!isActive) return@launch
+                    if (VrtfidoClient.isRunning(this@VrtfidoService)) {
+                        reachable = true
+                        break
+                    }
+                    delay(250)
+                }
+                check(reachable) { "Server started but ${binding.localUrl}/api/status is unreachable" }
+                if (!isActive) return@launch
+                isRunning = true
+                (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
+                    .notify(NOTIFICATION_ID, buildNotification(binding, starting = false))
+            } catch (_: CancellationException) {
+                return@launch
+            } catch (e: Exception) {
+                lastError = e.message ?: e.javaClass.simpleName
+                Log.e("VrtfidoService", "Failed to start dashboard", e)
+                stopSelf()
+            } catch (e: LinkageError) {
+                lastError = e.message ?: "Native library error"
+                Log.e("VrtfidoService", "Failed to load dashboard", e)
+                stopSelf()
+            } finally {
+                isStarting = false
+                broadcastStatus(isRunning)
+            }
+            if (isRunning) {
+                while (isActive) {
+                    delay(2000)
+                    if (!VrtfidoClient.isRunning(this@VrtfidoService)) {
+                        lastError = "Máy chủ tại ${binding.localUrl} đã dừng"
+                        isRunning = false
+                        broadcastStatus(false)
+                        stopSelf()
+                        break
+                    }
+                }
             }
         }
     }
 
     private fun stopDaemon() {
         isRunning = false
-        broadcastStatus(false)
+        isStarting = false
         serviceScope.cancel()
+        if (loadError == null) {
+            try {
+                stopVrtfidoDaemon()
+            } catch (e: LinkageError) {
+                Log.e("VrtfidoService", "Failed to stop native server", e)
+            }
+        }
+        broadcastStatus(false)
     }
 
     private fun broadcastStatus(running: Boolean) {
@@ -110,30 +161,32 @@ class VrtfidoService : Service() {
         }
     }
 
-    private fun buildNotification(): Notification {
-        val openWebIntent = Intent(Intent.ACTION_VIEW, Uri.parse("http://127.0.0.1:10209"))
+    private fun buildNotification(binding: ServerBinding, starting: Boolean): Notification {
+        val openWebIntent = Intent(Intent.ACTION_VIEW, Uri.parse(binding.localUrl))
         val openWebPendingIntent = PendingIntent.getActivity(
-            this,
-            0,
-            openWebIntent,
-            PendingIntent.FLAG_IMMUTABLE
+            this, 0, openWebIntent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
         val mainIntent = Intent(this, MainActivity::class.java)
         val mainPendingIntent = PendingIntent.getActivity(
-            this,
-            1,
-            mainIntent,
-            PendingIntent.FLAG_IMMUTABLE
+            this, 1, mainIntent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
-
+        val address = "http://${binding.host}:${binding.port}"
+        val message = getString(
+            if (starting) R.string.notification_starting else R.string.notification_running,
+            address
+        )
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.notification_title))
-            .setContentText(getString(R.string.notification_text))
+            .setContentText(message)
+            .setStyle(NotificationCompat.BigTextStyle().bigText("$message • ${binding.localUrl}"))
             .setSmallIcon(android.R.drawable.ic_lock_lock)
             .setContentIntent(mainPendingIntent)
-            .addAction(android.R.drawable.ic_menu_view, getString(R.string.open_web_ui), openWebPendingIntent)
+            .addAction(android.R.drawable.ic_menu_view,
+                getString(R.string.open_web_ui, binding.localUrl), openWebPendingIntent)
             .setOngoing(true)
+            .setAutoCancel(false)
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .build()
     }
 
@@ -141,6 +194,7 @@ class VrtfidoService : Service() {
 
     override fun onDestroy() {
         stopDaemon()
+        stopForeground(STOP_FOREGROUND_REMOVE)
         super.onDestroy()
     }
 }

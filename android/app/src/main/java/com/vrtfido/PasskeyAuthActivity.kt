@@ -105,6 +105,7 @@ class PasskeyAuthActivity : AppCompatActivity() {
         activityScope.launch {
             val passkeyResult = withContext(Dispatchers.IO) {
                 VrtfidoClient.getPasskey(
+                    context = this@PasskeyAuthActivity,
                     rpId = rpId,
                     credentialId = credentialId,
                     challengeB64 = challenge,
