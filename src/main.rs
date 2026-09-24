@@ -469,6 +469,12 @@ fn handle_cbor(
                 (Value::Integer(3.into()), Value::Bytes(passkey::AAGUID.to_vec())), // AAGUID
                 (Value::Integer(4.into()), Value::Map(options)),
                 (Value::Integer(5.into()), Value::Integer(1200.into())), // maxMsgSize
+                // CTAP 2.1 transports (key 9). Clients copy this list into the credential they
+                // hand to the site: Chromium's `make_credential_task.cc` fills
+                // `AuthenticatorMakeCredentialResponse::transports` from `device_info()->transports`,
+                // which is this member, so `AuthenticatorAttestationResponse.getTransports()`
+                // reports "usb" instead of an empty list.
+                (Value::Integer(9.into()), Value::Array(vec![Value::Text("usb".into())])),
             ];
 
             let mut out = vec![0x00]; // CTAP2_OK
@@ -1728,5 +1734,15 @@ mod tests {
 
         assert_ne!(passkey::AAGUID, [0u8; 16], "AAGUID must identify VrtFido");
         assert_eq!(bytes, passkey::AAGUID.to_vec());
+
+        // Without key 9 a browser reports an empty transport list for every credential it creates
+        // with this authenticator.
+        let transports = entries
+            .iter()
+            .find_map(|(key, value)| {
+                if key == &Value::Integer(9.into()) { Some(value.clone()) } else { None }
+            })
+            .expect("GetInfo must carry transports (key 9)");
+        assert_eq!(transports, Value::Array(vec![Value::Text("usb".into())]));
     }
 }
