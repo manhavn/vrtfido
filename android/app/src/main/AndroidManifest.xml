@@ -67,10 +67,15 @@
         </service>
 
         <!-- System Credential Provider Service (Android 14+) -->
+        <!-- The label/icon here are what the system shows as this provider's name next to a
+             passkey (the same slot where "Google Password Manager" appears), so it must not be
+             left to the application label to imply it. -->
         <service
             android:name=".VrtfidoCredentialProviderService"
             android:enabled="true"
             android:exported="true"
+            android:label="@string/credential_provider_label"
+            android:icon="@android:drawable/ic_lock_lock"
             android:permission="android.permission.BIND_CREDENTIAL_PROVIDER_SERVICE">
             <intent-filter>
                 <action android:name="android.service.credentials.CredentialProviderService" />

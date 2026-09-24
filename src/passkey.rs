@@ -13,6 +13,18 @@ pub fn b64url_encode(data: &[u8]) -> String {
     URL_SAFE_NO_PAD.encode(data)
 }
 
+/// Authenticator Attestation GUID that every VrtFido surface reports - the CTAP2 GetInfo response
+/// and the authData of every credential it creates.
+///
+/// Derivation: `uuid5(NAMESPACE_URL, "https://vrtfido.local/webauthn-cms")`, so the value is stable
+/// across releases but still globally unique. Regenerate it with your own domain if you fork this
+/// project. Emitting 16 zero bytes (the previous behaviour) leaves clients unable to attribute the
+/// credential - they render "AAGUID: 00000000-0000-0000-0000-000000000000" with no provider name -
+/// and relying parties cannot allow-list the authenticator.
+pub const AAGUID: [u8; 16] = [
+    0xe6, 0x72, 0xfb, 0xec, 0xba, 0xdd, 0x58, 0xf1, 0xa9, 0x51, 0xdc, 0xfa, 0x1a, 0x7f, 0x2b, 0x43,
+];
+
 pub fn b64url_decode(s: &str) -> Result<Vec<u8>, String> {
     let clean = s.trim().trim_end_matches('=');
     if let Ok(bytes) = URL_SAFE_NO_PAD.decode(clean) {
@@ -306,7 +318,7 @@ pub async fn create_passkey(
     auth_data.extend_from_slice(&rp_id_hash);
     auth_data.push(flags);
     auth_data.extend_from_slice(&sign_count.to_be_bytes());
-    auth_data.extend_from_slice(&[0u8; 16]); // AAGUID
+    auth_data.extend_from_slice(&AAGUID);
     auth_data.extend_from_slice(&(cred_id.len() as u16).to_be_bytes());
     auth_data.extend_from_slice(&cred_id);
     auth_data.extend_from_slice(&cose_bytes);
@@ -593,6 +605,49 @@ mod tests {
         assert_eq!(logs.len(), 2);
         assert_eq!(logs[0].auth_method, "ANDROID_BIOMETRIC");
         assert_eq!(logs[1].auth_method, "ANDROID_BIOMETRIC");
+    }
+
+    #[tokio::test]
+    async fn attestation_reports_project_aaguid() {
+        let (db, security) = setup_test_env();
+        let create_res = create_passkey(
+            &db,
+            &security,
+            PasskeyCreateRequest {
+                rp: RpEntity {
+                    id: "example.com".to_string(),
+                    name: None,
+                },
+                user: UserEntity {
+                    id: b64url_encode(b"user_aaguid"),
+                    name: "aaguid@example.com".to_string(),
+                    display_name: None,
+                },
+                challenge: Some(b64url_encode(b"aaguid_challenge")),
+                client_data_json: None,
+                client_data_hash: None,
+                user_verification: Some("ANDROID_BIOMETRIC".to_string()),
+                pin: None,
+            },
+        )
+        .await
+        .expect("create_passkey failed");
+
+        assert_ne!(AAGUID, [0u8; 16], "AAGUID must identify VrtFido");
+
+        // authenticatorData layout: rpIdHash(32) | flags(1) | signCount(4) | AAGUID(16)
+        let auth_data = b64url_decode(&create_res.response.authenticator_data).unwrap();
+        assert!(auth_data.len() > 53, "authData must contain the attested credential data");
+        assert_eq!(auth_data[32], 0x01 | 0x04 | 0x40, "UP | UV | AT");
+        assert_eq!(&auth_data[37..53], &AAGUID, "authData must report the project AAGUID");
+
+        // The attestation object embeds the very same authData, so clients deriving the provider
+        // from the attestation see the same identifier.
+        let attestation = b64url_decode(&create_res.response.attestation_object).unwrap();
+        assert!(
+            attestation.windows(AAGUID.len()).any(|w| w == AAGUID),
+            "attestation object must embed the project AAGUID"
+        );
     }
 
     #[tokio::test]

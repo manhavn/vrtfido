@@ -36,6 +36,18 @@ pub const UHID_SET_REPORT_REPLY: u32 = 14;
 
 pub const BUS_USB: u16 = 3;
 
+/// USB ids announced by the virtual FIDO2 device. `uhid` devices have no USB descriptor, so the
+/// kernel simply republishes these two numbers as `HID_ID=<bus>:<vendor>:<product>` in sysfs and
+/// `udevadm` output - nothing on the authentication path reads them (clients discover the device by
+/// the FIDO usage page in the report descriptor and identify it through CTAP2 `authenticatorGetInfo`
+/// / the AAGUID).
+///
+/// They stay project-specific on purpose: reusing a real vendor's ids could make the kernel apply
+/// that vendor's HID quirks, and a distinct pair keeps VrtFido recognisable next to a physical
+/// authenticator. 0x5652 is "VR" in ASCII, 0xF1D0 is the FIDO usage page.
+pub const VIRTUAL_HID_VENDOR_ID: u32 = 0x5652;
+pub const VIRTUAL_HID_PRODUCT_ID: u32 = 0xF1D0;
+
 #[repr(C, packed)]
 pub struct UhidCreate2Req {
     pub name: [u8; 128],
@@ -156,8 +168,8 @@ impl UhidDevice {
             let name = b"VrtFido - Virtual FIDO2 Authenticator";
             req.name[..name.len()].copy_from_slice(name);
             req.bus = BUS_USB;
-            req.vendor = 0x1234;
-            req.product = 0x5678;
+            req.vendor = VIRTUAL_HID_VENDOR_ID;
+            req.product = VIRTUAL_HID_PRODUCT_ID;
             req.version = 1;
             req.rd_size = FIDO_REPORT_DESC.len() as u16;
             req.rd_data[..FIDO_REPORT_DESC.len()].copy_from_slice(FIDO_REPORT_DESC);
@@ -300,9 +312,14 @@ pub fn ensure_uhid_permission() -> bool {
 }
 
 // --- 2. CTAPHID Framing & Reassembly ---
-pub const CTAPHID_CMD_PING: u8 = 0x81;
-pub const CTAPHID_CMD_INIT: u8 = 0x86;
-pub const CTAPHID_CMD_CBOR: u8 = 0x90;
+// Host request opcodes. A device response is the same value with 0x80 set (see frame_response), and
+// the high bit must never be used to classify an *incoming* packet: browsers send INIT as 0x06,
+// CBOR as 0x10 and PING as 0x01, so requiring 0x80 here silently dropped every real request.
+pub const CTAPHID_CMD_PING: u8 = 0x01;
+pub const CTAPHID_CMD_INIT: u8 = 0x06;
+pub const CTAPHID_CMD_CBOR: u8 = 0x10;
+/// Continuation frames carry the sequence number in the command byte, starting at 0.
+const CTAPHID_CMD_CONTINUATION: u8 = 0x00;
 
 struct IncomingMessage {
     cid: u32,
@@ -325,29 +342,11 @@ impl CtaphidParser {
         let cid = u32::from_be_bytes([pkt[0], pkt[1], pkt[2], pkt[3]]);
         let b4 = pkt[4];
 
-        if b4 & 0x80 != 0 {
-            let cmd = b4;
-            let total_len = u16::from_be_bytes([pkt[5], pkt[6]]) as usize;
-            let chunk_len = total_len.min(57);
-            let payload = pkt[7..7 + chunk_len].to_vec();
-
-            if payload.len() == total_len {
-                self.pending = None;
-                Some((cid, cmd, payload))
-            } else {
-                self.pending = Some(IncomingMessage {
-                    cid,
-                    cmd,
-                    total_len,
-                    payload,
-                    next_seq: 0,
-                });
-                None
-            }
-        } else {
-            let seq = b4;
-            if let Some(mut msg) = self.pending.take() {
-                if msg.cid == cid && seq == msg.next_seq {
+        match self.pending.take() {
+            // The message is still being assembled, so this packet is a continuation frame: byte 4
+            // is the sequence number and the payload starts at byte 5.
+            Some(mut msg) => {
+                if msg.cid == cid && b4 == msg.next_seq {
                     let needed = msg.total_len - msg.payload.len();
                     let chunk_len = needed.min(59);
                     msg.payload.extend_from_slice(&pkt[5..5 + chunk_len]);
@@ -360,10 +359,33 @@ impl CtaphidParser {
                         None
                     }
                 } else {
+                    // Sequence mismatch or a different channel: the partial message is dropped, as
+                    // the specification requires for a protocol error.
                     None
                 }
-            } else {
-                None
+            }
+            // Nothing outstanding, so this is an initialization packet: cmd | BCNTH | BCNTL | data.
+            None => {
+                let cmd = b4;
+                if cmd == CTAPHID_CMD_CONTINUATION {
+                    return None; // a stray continuation frame without a message to continue
+                }
+                let total_len = u16::from_be_bytes([pkt[5], pkt[6]]) as usize;
+                let chunk_len = total_len.min(57);
+                let payload = pkt[7..7 + chunk_len].to_vec();
+
+                if payload.len() == total_len {
+                    Some((cid, cmd, payload))
+                } else {
+                    self.pending = Some(IncomingMessage {
+                        cid,
+                        cmd,
+                        total_len,
+                        payload,
+                        next_seq: 0,
+                    });
+                    None
+                }
             }
         }
     }
@@ -436,7 +458,7 @@ fn handle_cbor(
                         Value::Text("FIDO_2_1".into()),
                     ]),
                 ),
-                (Value::Integer(3.into()), Value::Bytes(vec![0u8; 16])), // AAGUID
+                (Value::Integer(3.into()), Value::Bytes(passkey::AAGUID.to_vec())), // AAGUID
                 (Value::Integer(4.into()), Value::Map(options)),
                 (Value::Integer(5.into()), Value::Integer(1200.into())), // maxMsgSize
             ];
@@ -607,7 +629,7 @@ fn handle_cbor(
             auth_data.extend_from_slice(&rp_id_hash);
             auth_data.push(flags);
             auth_data.extend_from_slice(&sign_count.to_be_bytes());
-            auth_data.extend_from_slice(&[0u8; 16]); // AAGUID
+            auth_data.extend_from_slice(&passkey::AAGUID); // AAGUID
             auth_data.extend_from_slice(&(cred_id.len() as u16).to_be_bytes());
             auth_data.extend_from_slice(&cred_id);
             auth_data.extend_from_slice(&cose_bytes);
@@ -1450,4 +1472,114 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let _ = std::fs::remove_file(&pid_file);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Builds the initial frame of a CTAPHID message: `total` is the length of the whole message,
+    /// `data` is the part carried by this frame (at most 57 bytes).
+    fn initial_packet(cid: u32, cmd: u8, total: usize, data: &[u8]) -> [u8; 64] {
+        assert!(data.len() <= 57);
+        let mut pkt = [0u8; 64];
+        pkt[0..4].copy_from_slice(&cid.to_be_bytes());
+        pkt[4] = cmd;
+        pkt[5..7].copy_from_slice(&(total as u16).to_be_bytes());
+        pkt[7..7 + data.len()].copy_from_slice(data);
+        pkt
+    }
+
+    #[test]
+    fn ctaphid_accepts_a_host_init_request() {
+        // The exact frame a browser/clients sends: broadcast CID, opcode 0x06 (no 0x80 - that bit
+        // only marks device responses), 8-byte nonce.
+        let nonce = [1u8, 2, 3, 4, 5, 6, 7, 8];
+        let frame = initial_packet(0xFFFFFFFF, CTAPHID_CMD_INIT, nonce.len(), &nonce);
+        let mut parser = CtaphidParser::new();
+        assert_eq!(
+            parser.process_packet(&frame),
+            Some((0xFFFFFFFF, CTAPHID_CMD_INIT, nonce.to_vec()))
+        );
+
+        let mut stray = [0u8; 64];
+        assert_eq!(parser.process_packet(&stray), None, "stray continuation frame");
+    }
+
+    #[test]
+    fn ctaphid_reassembles_a_fragmented_request() {
+        let cid = 0x11223344u32;
+        let payload: Vec<u8> = (0..70u8).collect();
+        let mut parser = CtaphidParser::new();
+
+        let head = initial_packet(cid, CTAPHID_CMD_CBOR, payload.len(), &payload[..57]);
+        assert_eq!(parser.process_packet(&head), None, "70 bytes need a second frame");
+
+        let mut tail = [0u8; 64];
+        tail[0..4].copy_from_slice(&cid.to_be_bytes());
+        tail[4] = 0; // sequence number of the first continuation
+        tail[5..5 + (payload.len() - 57)].copy_from_slice(&payload[57..]);
+        assert_eq!(
+            parser.process_packet(&tail),
+            Some((cid, CTAPHID_CMD_CBOR, payload))
+        );
+    }
+
+    #[test]
+    fn ctaphid_response_frames_are_marked_and_sequenced() {
+        let cid = 0x0A0B0C0Du32;
+        let payload: Vec<u8> = (0..70u8).collect();
+        let frames = frame_response(cid, CTAPHID_CMD_CBOR, &payload);
+
+        assert_eq!(frames[0][4], CTAPHID_CMD_CBOR | 0x80);
+        assert_eq!(&frames[0][0..4], &cid.to_be_bytes());
+        assert_eq!(u16::from_be_bytes([frames[0][5], frames[0][6]]), 70);
+        assert_eq!(&frames[0][7..], &payload[..57]);
+        assert_eq!(frames[1][4], 0, "continuation carries the sequence number");
+        assert_eq!(&frames[1][5..5 + 13], &payload[57..]);
+        assert_eq!(frame_response(cid, CTAPHID_CMD_INIT, &[0])[0][4], 0x86);
+    }
+
+    #[test]
+    fn virtual_authenticator_ids_are_project_specific() {
+        assert_ne!(VIRTUAL_HID_VENDOR_ID, 0);
+        assert_ne!(VIRTUAL_HID_PRODUCT_ID, 0);
+        assert_ne!(
+            (VIRTUAL_HID_VENDOR_ID as u16, VIRTUAL_HID_PRODUCT_ID as u16),
+            (sensor::VENDOR_ID, sensor::PRODUCT_ID),
+            "the virtual FIDO device must not reuse the fingerprint sensor's USB ids"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_info_reports_project_aaguid() {
+        let db = Db::open(":memory:").expect("in-memory db");
+        let security = SecurityEngine::new(db.clone(), sensor::UsbSensor::new(), false);
+        let response = handle_cbor(
+            &db,
+            &security,
+            &tokio::runtime::Handle::current(),
+            false,
+            &[0x04], // authenticatorGetInfo
+        );
+
+        assert_eq!(response[0], 0x00, "CTAP2_OK status byte");
+        let Value::Map(entries) =
+            ciborium::from_reader(&response[1..]).expect("GetInfo payload must be CBOR")
+        else {
+            panic!("GetInfo payload must be a CBOR map");
+        };
+        let aaguid = entries
+            .iter()
+            .find_map(|(key, value)| {
+                if key == &Value::Integer(3.into()) { Some(value.clone()) } else { None }
+            })
+            .expect("GetInfo must carry an AAGUID (key 3)");
+        let Value::Bytes(bytes) = aaguid else {
+            panic!("GetInfo AAGUID must be a byte string");
+        };
+
+        assert_ne!(passkey::AAGUID, [0u8; 16], "AAGUID must identify VrtFido");
+        assert_eq!(bytes, passkey::AAGUID.to_vec());
+    }
 }
