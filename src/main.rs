@@ -153,7 +153,7 @@ impl UhidDevice {
         ev.event_type = UHID_CREATE2;
         unsafe {
             let req = &mut *ev.u.create2;
-            let name = b"vrtfido - Virtual FIDO2 Authenticator";
+            let name = b"VrtFido - Virtual FIDO2 Authenticator";
             req.name[..name.len()].copy_from_slice(name);
             req.bus = BUS_USB;
             req.vendor = 0x1234;
@@ -246,7 +246,7 @@ pub fn ensure_permanent_uhid_permission() -> bool {
         // Try zenity password dialog if pkexec failed or not available
         if !success && Command::new("which").arg("zenity").output().map(|o| o.status.success()).unwrap_or(false) {
             let zenity_cmd = format!(
-                "zenity --password --title=\"vrtfido - Cấp quyền /dev/uhid vĩnh viễn\" | sudo -S sh -c '{}'",
+                "zenity --password --title=\"VrtFido - Cấp quyền /dev/uhid vĩnh viễn\" | sudo -S sh -c '{}'",
                 cmd_str
             );
             if let Ok(z_status) = Command::new("sh").args(["-c", &zenity_cmd]).status() {
@@ -969,7 +969,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
 
         if let Some(pid) = target_pid {
-            println!("[DAEMON] Sending stop signal to vrtfido process (PID: {})...", pid);
+            println!("[DAEMON] Sending stop signal to VrtFido process (PID: {})...", pid);
             unsafe { libc::kill(pid, libc::SIGTERM) };
 
             let mut stopped = false;
@@ -988,11 +988,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             let _ = std::fs::remove_file(&pid_file);
-            println!("[DAEMON] [+] Stopped vrtfido process (PID: {}) successfully.", pid);
+            println!("[DAEMON] [+] Stopped VrtFido process (PID: {}) successfully.", pid);
             return Ok(());
         } else {
             let _ = std::fs::remove_file(&pid_file);
-            println!("[DAEMON] [-] No running vrtfido process found.");
+            println!("[DAEMON] [-] No running VrtFido process found.");
             return Ok(());
         }
     }
@@ -1002,7 +1002,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Ok(content) = std::fs::read_to_string(&pid_file) {
             if let Ok(existing_pid) = content.trim().parse::<i32>() {
                 if unsafe { libc::kill(existing_pid, 0) == 0 } {
-                    eprintln!("[DAEMON] [!] vrtfido is already running with PID: {}. Use 'vrtfido --quit' to stop first.", existing_pid);
+                    eprintln!("[DAEMON] [!] VrtFido is already running with PID: {}. Use 'vrtfido --quit' to stop first.", existing_pid);
                     std::process::exit(1);
                 }
             }
@@ -1044,9 +1044,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         println!("============================================================");
-        println!("             vrtfido - Virtual FIDO2 / WebAuthn CMS         ");
+        println!("             VrtFido - Virtual FIDO2 / WebAuthn CMS         ");
         println!("============================================================");
-        println!("[DAEMON] [+] Started vrtfido daemon successfully!");
+        println!("[DAEMON] [+] Started VrtFido daemon successfully!");
         println!("[DAEMON]     - Process (PID): {}", child_pid);
         println!("[DAEMON]     - Log file: {}", log_file_path.display());
         println!("[DAEMON]     - Web CMS: http://localhost:10209");
@@ -1056,7 +1056,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if show_help {
         println!("============================================================");
-        println!("             vrtfido - Virtual FIDO2 / WebAuthn CMS         ");
+        println!("             VrtFido - Virtual FIDO2 / WebAuthn CMS         ");
         println!("============================================================");
         println!("Usage: vrtfido [OPTIONS]\n");
         println!("Options:");
@@ -1131,7 +1131,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     println!("============================================================");
-    println!("             vrtfido - Virtual FIDO2 / WebAuthn CMS         ");
+    println!("             VrtFido - Virtual FIDO2 / WebAuthn CMS         ");
     println!("============================================================");
     if debug_mode {
         println!("[CLI] DEBUG mode: ON (--debug)");

@@ -89,9 +89,9 @@ class PasskeyAuthActivity : AppCompatActivity() {
         val biometricPrompt = BiometricPrompt(this, executor, callback)
 
         val promptInfo = BiometricPrompt.PromptInfo.Builder()
-            .setTitle("Đăng nhập Passkey")
+            .setTitle(getString(R.string.auth_title))
             .setSubtitle(rpId)
-            .setDescription("Quét vân tay, khuôn mặt hoặc dùng mã PIN/khóa màn hình để xác thực")
+            .setDescription(getString(R.string.auth_description))
             .setAllowedAuthenticators(
                 BiometricManager.Authenticators.BIOMETRIC_STRONG or
                 BiometricManager.Authenticators.DEVICE_CREDENTIAL
@@ -135,7 +135,7 @@ class PasskeyAuthActivity : AppCompatActivity() {
                 setResult(Activity.RESULT_OK, result)
                 finish()
             } else {
-                Toast.makeText(this@PasskeyAuthActivity, "Lỗi tạo chữ ký Passkey", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this@PasskeyAuthActivity, getString(R.string.auth_error), Toast.LENGTH_SHORT).show()
                 setResult(Activity.RESULT_CANCELED)
                 finish()
             }

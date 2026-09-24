@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">VrtFido</string>
+    <string name="credential_provider_label">VrtFido Passkey Provider</string>
+    <string name="service_running">VrtFido đang chạy tại %1$s</string>
+    <string name="service_stopped">VrtFido daemon đã dừng</string>
+    <string name="service_starting">Đang mở máy chủ tại %1$s…</string>
+    <string name="service_failed">Không thể mở Web Dashboard: %1$s</string>
+    <string name="bind_host">Host (IPv4 để lắng nghe)</string>
+    <string name="bind_port">Port</string>
+    <string name="invalid_bind">Host IPv4 hoặc port không hợp lệ (1–65535)</string>
+    <string name="invalid_database">Database không được để trống</string>
+    <string name="notification_running">Đang phục vụ tại %1$s</string>
+    <string name="notification_starting">Đang mở cổng %1$s</string>
+    <string name="notification_permission_required">Cần cho phép thông báo để hiển thị dịch vụ chạy nền</string>
+    <string name="open_web_ui">Mở Web Dashboard (%1$s)</string>
+    <string name="enable_passkey_settings">Cài đặt Passkey hệ thống Android</string>
+    <string name="status_label">Trạng thái dịch vụ</string>
+    <string name="power_switch">Bật / Tắt dịch vụ</string>
+    <string name="notification_channel_name">VrtFido Background Service</string>
+    <string name="notification_title">VrtFido Authenticator đang hoạt động</string>
+    <string name="notification_text">Sẵn sàng nhận yêu cầu Passkey từ hệ thống và Web CMS</string>
+    <string name="create_entry_description">Lưu Passkey vào VrtFido cho %1$s</string>
+    <string name="export_json">Xuất JSON</string>
+    <string name="import_json">Nhập JSON</string>
+    <string name="daemon_required">Bật dịch vụ trước khi xuất hoặc nhập dữ liệu</string>
+    <string name="export_done">Đã xuất %1$s</string>
+    <string name="export_failed">Xuất thất bại: %1$s</string>
+    <string name="import_done">Đã nhập %1$d credential, %2$d fingerprint, %3$d log</string>
+    <string name="import_failed">Nhập thất bại: %1$s</string>
+    <string name="backup_file_name">VrtFido-backup-%1$s.json</string>
+    <string name="params_title">Tham số daemon (tương đương CLI)</string>
+    <string name="database_label">Database (đường dẫn hoặc URL như --database)</string>
+    <string name="database_hint">authenticator.db, postgresql://…, mysql://…, libsql://…</string>
+    <string name="db_type_label">DB type (tùy chọn, --db-type)</string>
+    <string name="db_type_hint">sqlite, postgresql, mysql, libsql (bỏ trống để tự nhận diện)</string>
+    <string name="auth_token_label">Auth token (LibSQL/Turso, --auth-token)</string>
+    <string name="auth_token_hint">bỏ trống nếu không dùng</string>
+    <string name="flag_debug">--debug: ghi log gói tin chi tiết</string>
+    <string name="flag_unlimited_fps">--unlimited-fps: không giới hạn 10 vân tay</string>
+
+    <!-- Language switch -->
+    <string name="app_tagline">Trình xác thực Passkey ảo</string>
+    <string name="language_en">EN</string>
+    <string name="language_vi">VI</string>
+    <string name="language_label">Ngôn ngữ</string>
+    <string name="settings_restored">Đã khôi phục cấu hình từ database</string>
+    <string name="language_saved">Đã lưu ngôn ngữ</string>
+
+    <!-- Passkey prompts -->
+    <string name="auth_title">Đăng nhập Passkey</string>
+    <string name="auth_description">Quét vân tay, khuôn mặt hoặc dùng mã PIN/khóa màn hình để xác thực</string>
+    <string name="auth_error">Lỗi tạo chữ ký Passkey</string>
+    <string name="create_title">Tạo Passkey cho %1$s</string>
+    <string name="create_description">Quét vân tay, khuôn mặt hoặc dùng mã PIN/khóa màn hình để tạo Passkey</string>
+    <string name="create_error">Lỗi tạo Passkey mới</string>
+</resources>

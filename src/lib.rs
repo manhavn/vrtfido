@@ -87,7 +87,7 @@ pub mod jni_bridge {
         if let Some(old) = current.take() {
             if !old.thread.is_finished() {
                 *current = Some(old);
-                return Err("vrtfido is already running".into());
+                return Err("VrtFido is already running".into());
             }
             let _ = old.thread.join();
         }
@@ -120,7 +120,7 @@ pub mod jni_bridge {
                             tokio::select! {
                                 result = axum::serve(listener, router) => {
                                     if let Err(err) = result {
-                                        eprintln!("[HTTP] vrtfido server stopped: {err}");
+                                        eprintln!("[HTTP] VrtFido server stopped: {err}");
                                     }
                                 }
                                 _ = stop_rx => {}
@@ -222,7 +222,7 @@ pub mod jni_bridge {
             let mut response = String::new();
             socket.read_to_string(&mut response).unwrap();
             assert!(response.starts_with("HTTP/1.0 200") || response.starts_with("HTTP/1.1 200"), "{response}");
-            assert!(response.contains("\"app_name\":\"vrtfido\""), "{response}");
+            assert!(response.contains("\"app_name\":\"VrtFido\""), "{response}");
             assert!(response.contains(&format!("\"port\":{port}")), "{response}");
             drop(socket);
             stop();

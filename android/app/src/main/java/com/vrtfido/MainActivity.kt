@@ -15,9 +15,12 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AppCompatDelegate
+import androidx.core.os.LocaleListCompat
 import androidx.core.content.ContextCompat
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.checkbox.MaterialCheckBox
+import org.json.JSONObject
 import com.google.android.material.materialswitch.MaterialSwitch
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -41,6 +44,11 @@ class MainActivity : AppCompatActivity() {
     private lateinit var editAuthToken: EditText
     private lateinit var checkDebug: MaterialCheckBox
     private lateinit var checkUnlimitedFps: MaterialCheckBox
+    private lateinit var btnLangEn: MaterialButton
+    private lateinit var btnLangVi: MaterialButton
+    private var currentLanguage: String = ServerSettings.DEFAULT_LANGUAGE
+    private var autoStartAttempted = false
+    private var settingsPushed = false
     private lateinit var btnOpenWeb: MaterialButton
     private lateinit var btnSettings: MaterialButton
     private lateinit var btnExport: MaterialButton
@@ -92,6 +100,8 @@ class MainActivity : AppCompatActivity() {
         editAuthToken = findViewById(R.id.edit_auth_token)
         checkDebug = findViewById(R.id.check_debug)
         checkUnlimitedFps = findViewById(R.id.check_unlimited_fps)
+        btnLangEn = findViewById(R.id.btn_lang_en)
+        btnLangVi = findViewById(R.id.btn_lang_vi)
         ServerSettings.load(this).let { binding ->
             editHost.setText(binding.host)
             editPort.setText(binding.port.toString())
@@ -100,7 +110,17 @@ class MainActivity : AppCompatActivity() {
             editAuthToken.setText(binding.authToken)
             checkDebug.isChecked = binding.debugMode
             checkUnlimitedFps.isChecked = binding.unlimitedFingerprints
+            currentLanguage = binding.language
         }
+        renderLanguageButtons()
+        // Apply the saved language before the first frame (no-op when it already matches).
+        val savedLocale = LocaleListCompat.forLanguageTags(currentLanguage)
+        if (AppCompatDelegate.getApplicationLocales() != savedLocale) {
+            AppCompatDelegate.setApplicationLocales(savedLocale)
+        }
+
+        btnLangEn.setOnClickListener { changeLanguage("en") }
+        btnLangVi.setOnClickListener { changeLanguage("vi") }
 
         switchService.setOnCheckedChangeListener { _, checked -> toggleDaemon(checked) }
 
@@ -132,6 +152,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        restoreDaemonState()
         val filter = IntentFilter(VrtfidoService.BROADCAST_STATUS)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(statusReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
@@ -164,18 +185,19 @@ class MainActivity : AppCompatActivity() {
                 switchService.setOnCheckedChangeListener { _, value -> toggleDaemon(value) }
                 return
             }
-            ServerSettings.save(
-                this,
-                ServerBinding(
-                    host = host,
-                    port = port,
-                    database = database,
-                    dbType = editDbType.text.toString().trim(),
-                    authToken = editAuthToken.text.toString().trim(),
-                    debugMode = checkDebug.isChecked,
-                    unlimitedFingerprints = checkUnlimitedFps.isChecked
-                )
+            val binding = ServerBinding(
+                host = host,
+                port = port,
+                database = database,
+                dbType = editDbType.text.toString().trim(),
+                authToken = editAuthToken.text.toString().trim(),
+                debugMode = checkDebug.isChecked,
+                unlimitedFingerprints = checkUnlimitedFps.isChecked,
+                language = currentLanguage,
+                daemonRunning = true,
+                configured = true
             )
+            ServerSettings.save(this, binding)
             startRequested = true
             permissionError = null
             editHost.isEnabled = false
@@ -188,6 +210,7 @@ class MainActivity : AppCompatActivity() {
             startServiceInForeground()
         } else {
             startRequested = false
+            ServerSettings.saveDaemonRunning(this, false)
             stopService(intent)
         }
     }
@@ -216,6 +239,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateUI(running: Boolean, starting: Boolean, error: String?) {
         if (running || error != null) startRequested = false
+        if (!running && !starting && !startRequested) {
+            // The daemon is down (stopped or failed): a later app launch must not auto-start it.
+            ServerSettings.saveDaemonRunning(this, false)
+        }
         val pending = starting || startRequested
         val checked = running || pending
         if (switchService.isChecked != checked) {
@@ -252,6 +279,11 @@ class MainActivity : AppCompatActivity() {
         }
         btnOpenWeb.isEnabled = running
         btnOpenWeb.alpha = if (running) 1.0f else 0.5f
+        if (running && !settingsPushed) {
+            settingsPushed = true
+            pushSettingsToServer()
+        }
+        if (!running) settingsPushed = false
         btnExport.isEnabled = running
         btnImport.isEnabled = running
         btnExport.alpha = if (running) 1.0f else 0.5f
@@ -285,6 +317,122 @@ class MainActivity : AppCompatActivity() {
                 )
             } catch (e: Exception) {
                 toast(getString(R.string.import_failed, e.message ?: e.javaClass.simpleName))
+            }
+        }
+    }
+
+    private fun renderLanguageButtons() {
+        val viActive = currentLanguage == "vi"
+        btnLangEn.alpha = if (viActive) 0.55f else 1.0f
+        btnLangVi.alpha = if (viActive) 1.0f else 0.55f
+        btnLangEn.strokeWidth = if (viActive) 1 else 3
+        btnLangVi.strokeWidth = if (viActive) 3 else 1
+    }
+
+    private fun changeLanguage(language: String) {
+        if (!ServerSettings.SUPPORTED_LANGUAGES.contains(language)) return
+        val binding = ServerSettings.load(this)
+        if (binding.language == language) {
+            renderLanguageButtons()
+            return
+        }
+        currentLanguage = language
+        ServerSettings.saveLanguage(this, language)
+        renderLanguageButtons()
+        // Mirror the choice into the database so the Web CMS follows the same language.
+        activityScope.launch {
+            withContext(Dispatchers.IO) {
+                VrtfidoClient.updateSettings(
+                    this@MainActivity,
+                    JSONObject().put("language", language)
+                )
+            }
+        }
+        AppCompatDelegate.setApplicationLocales(LocaleListCompat.forLanguageTags(language))
+    }
+
+    /**
+     * Restores the daemon exactly as the user left it: if it was ON when the app was closed, it is
+     * started again here without asking for the parameters a second time.
+     */
+    private fun restoreDaemonState() {
+        val binding = ServerSettings.load(this)
+        currentLanguage = binding.language
+        if (binding.daemonRunning && !VrtfidoService.isRunning && !VrtfidoService.isStarting && !autoStartAttempted) {
+            autoStartAttempted = true
+            startServiceInForeground()
+            activityScope.launch {
+                delay(4000)
+                syncSettingsWithServer(ServerSettings.load(this@MainActivity))
+            }
+            return
+        }
+        syncSettingsWithServer(binding)
+    }
+
+    /** Pulls parameters/language from the database the first time this device opens the app. */
+    private fun syncSettingsWithServer(binding: ServerBinding) {
+        if (!VrtfidoService.isRunning) return
+        activityScope.launch {
+            val remote = withContext(Dispatchers.IO) {
+                VrtfidoClient.getSettings(this@MainActivity)
+            } ?: return@launch
+
+            val remoteLanguage = remote.optString("language", ServerSettings.DEFAULT_LANGUAGE)
+            if (remoteLanguage != binding.language && ServerSettings.SUPPORTED_LANGUAGES.contains(remoteLanguage)) {
+                currentLanguage = remoteLanguage
+                ServerSettings.saveLanguage(this@MainActivity, remoteLanguage)
+                renderLanguageButtons()
+                AppCompatDelegate.setApplicationLocales(LocaleListCompat.forLanguageTags(remoteLanguage))
+                return@launch
+            }
+
+            // Only a device that never confirmed its parameters adopts the stored ones.
+            if (!binding.configured && remote.has("daemon.host")) {
+                val adopted = binding.copy(
+                    host = remote.optString("daemon.host", binding.host),
+                    port = remote.optInt("daemon.port", binding.port),
+                    database = remote.optString("daemon.database", binding.database),
+                    dbType = remote.optString("daemon.db_type", binding.dbType),
+                    authToken = remote.optString("daemon.auth_token", binding.authToken),
+                    debugMode = remote.optString("daemon.debug", "false").toBoolean(),
+                    unlimitedFingerprints = remote
+                        .optString("daemon.unlimited_fingerprints", "false").toBoolean(),
+                    configured = true
+                )
+                if (!ServerSettings.validate(adopted.host, adopted.port, adopted.database)) return@launch
+                ServerSettings.save(this@MainActivity, adopted)
+                editHost.setText(adopted.host)
+                editPort.setText(adopted.port.toString())
+                editDatabase.setText(adopted.database)
+                editDbType.setText(adopted.dbType)
+                editAuthToken.setText(adopted.authToken)
+                checkDebug.isChecked = adopted.debugMode
+                checkUnlimitedFps.isChecked = adopted.unlimitedFingerprints
+                toast(getString(R.string.settings_restored))
+            }
+        }
+    }
+
+    /** Mirrors the confirmed parameters into the database so a reinstall can restore them. */
+    private fun pushSettingsToServer() {
+        val binding = ServerSettings.load(this)
+        if (!binding.configured) return
+        activityScope.launch {
+            withContext(Dispatchers.IO) {
+                val daemon = JSONObject()
+                    .put("host", binding.host)
+                    .put("port", binding.port)
+                    .put("database", binding.database)
+                    .put("db_type", binding.dbType)
+                    .put("auth_token", binding.authToken)
+                    .put("debug", binding.debugMode)
+                    .put("unlimited_fingerprints", binding.unlimitedFingerprints)
+                    .put("running", true)
+                VrtfidoClient.updateSettings(
+                    this@MainActivity,
+                    JSONObject().put("language", binding.language).put("daemon", daemon)
+                )
             }
         }
     }

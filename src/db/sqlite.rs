@@ -64,7 +64,12 @@ impl SqliteBackend {
                  enrolled_at TEXT NOT NULL
              );
 
-             CREATE TABLE IF NOT EXISTS debug_logs (
+             CREATE TABLE IF NOT EXISTS app_settings (
+                setting_key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS debug_logs (
                  id INTEGER PRIMARY KEY AUTOINCREMENT,
                  level TEXT NOT NULL,
                  component TEXT NOT NULL,
@@ -141,6 +146,30 @@ impl DbBackend for SqliteBackend {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![credential_id, rp_id, operation, status, auth_method, details, now],
         );
+        Ok(())
+    }
+
+    fn get_app_settings(&self) -> Result<Vec<(String, String)>, DbError> {
+        let conn = self.conn.lock();
+        let mut stmt = conn
+            .prepare("SELECT setting_key, value FROM app_settings ORDER BY setting_key")
+            .map_err(DbError::Sqlite)?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(DbError::Sqlite)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(DbError::Sqlite)
+    }
+
+    fn set_app_setting(&self, key: &str, value: &str) -> Result<(), DbError> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO app_settings (setting_key, value) VALUES (?1, ?2)
+             ON CONFLICT(setting_key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )
+        .map_err(DbError::Sqlite)?;
         Ok(())
     }
 

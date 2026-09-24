@@ -74,6 +74,12 @@ impl MySqlBackend {
         ).map_err(|e| DbError::MySql(e.to_string()))?;
 
         conn.query_drop(
+            "CREATE TABLE IF NOT EXISTS app_settings (
+                setting_key VARCHAR(128) PRIMARY KEY,
+                value TEXT NOT NULL
+            )",
+        ).map_err(|e| DbError::MySql(e.to_string()))?;
+        conn.query_drop(
             "CREATE TABLE IF NOT EXISTS debug_logs (
                  id BIGINT AUTO_INCREMENT PRIMARY KEY,
                  level VARCHAR(32) NOT NULL,
@@ -124,6 +130,25 @@ impl DbBackend for MySqlBackend {
              VALUES (?, ?, ?, ?, ?, ?, ?)",
             (credential_id, rp_id, operation, status, auth_method, details, now),
         );
+        Ok(())
+    }
+
+    fn get_app_settings(&self) -> Result<Vec<(String, String)>, DbError> {
+        let mut conn = self.pool.get_conn().map_err(|e| DbError::MySql(e.to_string()))?;
+        let rows: Vec<(String, String)> = conn
+            .query("SELECT setting_key, value FROM app_settings ORDER BY setting_key")
+            .map_err(|e| DbError::MySql(e.to_string()))?;
+        Ok(rows)
+    }
+
+    fn set_app_setting(&self, key: &str, value: &str) -> Result<(), DbError> {
+        let mut conn = self.pool.get_conn().map_err(|e| DbError::MySql(e.to_string()))?;
+        conn.exec_drop(
+            "INSERT INTO app_settings (setting_key, value) VALUES (?, ?)
+             ON DUPLICATE KEY UPDATE value = VALUES(value)",
+            (key, value),
+        )
+        .map_err(|e| DbError::MySql(e.to_string()))?;
         Ok(())
     }
 

@@ -35,7 +35,7 @@ impl Tray for VrtfidoTray {
     }
 
     fn title(&self) -> String {
-        "vrtfido".into()
+        "VrtFido".into()
     }
 
     fn category(&self) -> ksni::Category {
@@ -56,7 +56,7 @@ impl Tray for VrtfidoTray {
 
     fn tool_tip(&self) -> ksni::ToolTip {
         ksni::ToolTip {
-            title: "vrtfido - Virtual FIDO2 / WebAuthn".into(),
+            title: "VrtFido - Virtual FIDO2 / WebAuthn".into(),
             description: format!("Web CMS: http://localhost:{}", self.port),
             ..Default::default()
         }
@@ -216,7 +216,7 @@ mod tests {
         let tray = VrtfidoTray::new(10209);
         assert_eq!(tray.dashboard_url(), "http://localhost:10209");
         assert_eq!(tray.id(), "vrtfido");
-        assert_eq!(tray.title(), "vrtfido");
+        assert_eq!(tray.title(), "VrtFido");
         assert_eq!(tray.icon_name(), "security-high");
     }
 

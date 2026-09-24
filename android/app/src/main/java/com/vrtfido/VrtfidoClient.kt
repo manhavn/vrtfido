@@ -177,6 +177,38 @@ object VrtfidoClient {
         }
     }
 
+    /** Reads the persisted UI / daemon settings, or null when the daemon is unreachable. */
+    fun getSettings(context: Context): JSONObject? {
+        val req = Request.Builder().url("${baseUrl(context)}/api/settings").get().build()
+        return try {
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return null
+                val body = resp.body?.string() ?: return null
+                val root = JSONObject(body)
+                if (root.optBoolean("success", false)) root.optJSONObject("data") else null
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /** Persists the given settings; returns true when the daemon accepted them. */
+    fun updateSettings(context: Context, payload: JSONObject): Boolean {
+        val req = Request.Builder()
+            .url("${baseUrl(context)}/api/settings")
+            .post(payload.toString().toRequestBody(JSON_MEDIA))
+            .build()
+        return try {
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return false
+                val body = resp.body?.string() ?: return false
+                JSONObject(body).optBoolean("success", false)
+            }
+        } catch (e: Exception) {
+            false
+        }
+    }
+
     /**
      * Writes a full database backup to [target] in the same shape the desktop CLI writes with
      * `--export`, so the file can be moved between Android and Ubuntu in both directions.

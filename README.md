@@ -1,6 +1,6 @@
-# vrtfido
+# VrtFido
 
-**vrtfido** is a **Virtual FIDO2 / WebAuthn Authenticator** hardware emulator running on Linux through the kernel character device `/dev/uhid`.
+**VrtFido** is a **Virtual FIDO2 / WebAuthn Authenticator** hardware emulator running on Linux through the kernel character device `/dev/uhid`.
 
 The application includes an embedded **Web CMS Dashboard** on port **10209**, supports multiple database backends (**SQLite**, **PostgreSQL**, **LibSQL/Turso**, **MySQL**, **MariaDB**), features **100% Data Export / Import to JSON** for migration, and supports multi-factor authentication policies (6-digit passkey PIN, hardware USB fingerprint sensor management, and future biometric modalities).
 
@@ -80,7 +80,7 @@ Or add to your `mise.toml`:
 
 ### 2. Granting `/dev/uhid` Access Permissions
 
-`vrtfido` automatically checks and requests permission via `sudo`/`pkexec` upon startup if `/dev/uhid` is not accessible.
+**VrtFido** automatically checks and requests permission via `sudo`/`pkexec` upon startup if `/dev/uhid` is not accessible.
 
 To configure a permanent udev rule (avoiding password prompts):
 
@@ -171,10 +171,12 @@ The script installs missing host utilities with apt/dnf/pacman, bootstraps Rust 
    - While ON, an ongoing foreground notification displays the bound address. Tapping the notification returns to the app; closing the app UI or swiping its task away does not intentionally stop the service. Android may still stop foreground services via system controls or battery policies.
    - Open the Web Dashboard at the shown local URL; when bound to `0.0.0.0`, other devices on the same network can connect using the phone's LAN IP and configured port.
    - **Security:** The current Web CMS/API has no LAN authentication; database export exposes private keys. Binding to `0.0.0.0` makes this data accessible to other devices that can reach the phone. Use `127.0.0.1` unless the network is trusted and access is restricted externally.
-   - Enable **vrtfido Passkey Provider** in Android settings (**Settings → Passwords & accounts → vrtfido**), turn the daemon ON, and keep it ON while using passkeys. System biometrics / screen unlock is used for credential operations.
-   - **Browsers (Chrome on Android 14+)** route WebAuthn through Android Credential Manager, which only lists providers that declare the passkey capability. With the provider enabled and the daemon ON, `vrtfido` appears as an entry when a site (for example webauthn.io) asks to register or sign in with a passkey. Browsers send only a client-data hash, so the created credential is bound to the site's own origin and challenge; the app never sees the visited domain.
-   - **Account already known → no list.** When the site pins the account (`allowCredentials` names a credential), vrtfido returns only that single matching passkey and marks it auto-selectable; Android Credential Manager then goes straight to the biometric / screen-lock prompt, like a desktop authenticator, instead of asking you to choose an account. When the site sends no account at all (usernameless / conditional UI), the system lists the matching passkeys for that site so you can pick one.
-   - If `vrtfido` is missing from the browser's passkey prompt, re-check that the provider is enabled: the capability declaration is read when the service is registered, so an app update can require re-enabling it.
+   - Enable **VrtFido Passkey Provider** in Android settings (**Settings → Passwords & accounts → VrtFido**), turn the daemon ON, and keep it ON while using passkeys. System biometrics / screen unlock is used for credential operations.
+   - **Browsers (Chrome on Android 14+)** route WebAuthn through Android Credential Manager, which only lists providers that declare the passkey capability. With the provider enabled and the daemon ON, `VrtFido` appears as an entry when a site (for example webauthn.io) asks to register or sign in with a passkey. Browsers send only a client-data hash, so the created credential is bound to the site's own origin and challenge; the app never sees the visited domain.
+   - **Account already known → no list.** When the site pins the account (`allowCredentials` names a credential), VrtFido returns only that single matching passkey and marks it auto-selectable; Android Credential Manager then goes straight to the biometric / screen-lock prompt, like a desktop authenticator, instead of asking you to choose an account. When the site sends no account at all (usernameless / conditional UI), the system lists the matching passkeys for that site so you can pick one.
+   - If `VrtFido` is missing from the browser's passkey prompt, re-check that the provider is enabled: the capability declaration is read when the service is registered, so an app update can require re-enabling it.
+   - **Language (EN / VI):** the main screen carries an **EN / VI** switch and the Web CMS has the same control in its header. English is the default; the choice is written to the database (`POST /api/settings`) and shared by both surfaces, so the app, the dashboard and a later restore all follow the same language.
+   - **Nothing has to be re-entered:** host, port, database spec, DB type, auth token and the `--debug` / `--unlimited-fps` flags are cached on the device and mirrored into the database. If the daemon was ON when you closed the app, the next launch starts it again automatically with the same parameters.
    - **JSON backup / restore:** with the daemon ON, **Xuất JSON** writes a full backup through the system file picker and **Nhập JSON** imports one. Both use exactly the same file format as the desktop CLI (`--export` / `--import`), so a backup can be moved between the phone and Ubuntu in either direction and restored on either side. Importing merges the file into the current database (credentials, audit logs, debug logs, fingerprint slots and PIN settings), overwriting entries that share an ID, so the same backup can be imported repeatedly.
 ---
 
@@ -217,6 +219,10 @@ export DATABASE_URL="postgresql://postgres:vrtfido@127.0.0.1:5435/postgres"
 # 3. Import and continue running:
 ./vrtfido --database "postgresql://postgres:vrtfido@127.0.0.1:5435/postgres" --import backup.json
 ```
+
+UI settings API:
+- `GET /api/settings`: current language and daemon parameters.
+- `POST /api/settings`: updates them, for example `{"language":"vi"}`. Supported languages are `en` and `vi`; the value is stored in the database and included in database exports.
 
 Web CMS API endpoints:
 - `GET /api/database/export`: Download all database data as JSON.

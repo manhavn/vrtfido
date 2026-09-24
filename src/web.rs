@@ -128,6 +128,8 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/verify/select", post(select_verify_account))
         .route("/api/verify/approve", post(approve_verify))
         .route("/api/verify/reject", post(reject_verify))
+        .route("/api/settings", get(get_settings))
+        .route("/api/settings", post(update_settings))
         .route("/api/database/export", get(export_database))
         .route("/api/database/import", post(import_database))
         .route("/api/passkey/candidates", post(passkey_candidates))
@@ -148,7 +150,7 @@ async fn get_status(State(state): State<AppState>) -> Json<ApiResponse<SystemSta
     });
 
     Json(ApiResponse::ok(SystemStatus {
-        app_name: "vrtfido",
+        app_name: "VrtFido",
         version: env!("CARGO_PKG_VERSION"),
         port: state.port,
         uhid_connected: state.uhid_connected.load(Ordering::SeqCst),
@@ -413,6 +415,129 @@ async fn reject_verify(
     }
 }
 
+/// Supported UI languages; anything else is rejected so a bad client cannot brick the UI.
+const SUPPORTED_LANGUAGES: [&str; 2] = ["en", "vi"];
+const DEFAULT_LANGUAGE: &str = "en";
+/// Port used when the app has no stored daemon configuration yet.
+const DEFAULT_DAEMON_PORT: u16 = 10209;
+
+#[derive(Deserialize, Default)]
+pub struct DaemonSettingsUpdate {
+    #[serde(default)]
+    pub host: Option<String>,
+    #[serde(default)]
+    pub port: Option<u16>,
+    #[serde(default)]
+    pub database: Option<String>,
+    #[serde(default)]
+    pub db_type: Option<String>,
+    #[serde(default)]
+    pub auth_token: Option<String>,
+    #[serde(default)]
+    pub debug: Option<bool>,
+    #[serde(default)]
+    pub unlimited_fingerprints: Option<bool>,
+    #[serde(default)]
+    pub running: Option<bool>,
+}
+
+#[derive(Deserialize, Default)]
+pub struct SettingsUpdate {
+    #[serde(default)]
+    pub language: Option<String>,
+    #[serde(default)]
+    pub daemon: Option<DaemonSettingsUpdate>,
+}
+
+fn settings_map(db: &crate::db::Db) -> std::collections::BTreeMap<String, String> {
+    let mut map = std::collections::BTreeMap::new();
+    map.insert("language".to_string(), DEFAULT_LANGUAGE.to_string());
+    map.insert("daemon.port".to_string(), DEFAULT_DAEMON_PORT.to_string());
+    map.insert("daemon.debug".to_string(), "false".to_string());
+    map.insert("daemon.unlimited_fingerprints".to_string(), "false".to_string());
+    map.insert("daemon.running".to_string(), "false".to_string());
+    for (key, value) in db.get_app_settings().unwrap_or_default() {
+        map.insert(key, value);
+    }
+    map
+}
+
+async fn get_settings(State(state): State<AppState>) -> Json<ApiResponse<std::collections::BTreeMap<String, String>>> {
+    let stored = match state.db.get_app_settings() {
+        Ok(values) => values,
+        Err(e) => return Json(ApiResponse::err(e.to_string())),
+    };
+    let mut map = settings_map(&state.db);
+    map.extend(stored);
+    Json(ApiResponse::ok(map))
+}
+
+async fn update_settings(
+    State(state): State<AppState>,
+    Json(payload): Json<SettingsUpdate>,
+) -> Json<ApiResponse<std::collections::BTreeMap<String, String>>> {
+    let mut writes: Vec<(&str, String)> = Vec::new();
+
+    if let Some(language) = payload.language.as_deref() {
+        let language = language.trim().to_lowercase();
+        if !SUPPORTED_LANGUAGES.contains(&language.as_str()) {
+            return Json(ApiResponse::err(format!(
+                "Unsupported language '{language}', expected one of: {}",
+                SUPPORTED_LANGUAGES.join(", ")
+            )));
+        }
+        writes.push(("language", language));
+    }
+
+    if let Some(daemon) = payload.daemon.as_ref() {
+        if let Some(host) = daemon.host.as_deref() {
+            let host = host.trim();
+            if host.is_empty() {
+                return Json(ApiResponse::err("Daemon host must not be empty"));
+            }
+            writes.push(("daemon.host", host.to_string()));
+        }
+        if let Some(port) = daemon.port {
+            if port == 0 {
+                return Json(ApiResponse::err("Daemon port must be between 1 and 65535"));
+            }
+            writes.push(("daemon.port", port.to_string()));
+        }
+        if let Some(database) = daemon.database.as_deref() {
+            let database = database.trim();
+            if database.is_empty() {
+                return Json(ApiResponse::err("Daemon database must not be empty"));
+            }
+            writes.push(("daemon.database", database.to_string()));
+        }
+        if let Some(db_type) = daemon.db_type.as_deref() {
+            writes.push(("daemon.db_type", db_type.trim().to_string()));
+        }
+        if let Some(auth_token) = daemon.auth_token.as_deref() {
+            writes.push(("daemon.auth_token", auth_token.trim().to_string()));
+        }
+        if let Some(debug) = daemon.debug {
+            writes.push(("daemon.debug", debug.to_string()));
+        }
+        if let Some(unlimited) = daemon.unlimited_fingerprints {
+            writes.push(("daemon.unlimited_fingerprints", unlimited.to_string()));
+        }
+        if let Some(running) = daemon.running {
+            writes.push(("daemon.running", running.to_string()));
+        }
+    }
+
+    for (key, value) in writes {
+        if let Err(e) = state.db.set_app_setting(key, &value) {
+            return Json(ApiResponse::err(e.to_string()));
+        }
+    }
+
+    let mut map = settings_map(&state.db);
+    map.extend(state.db.get_app_settings().unwrap_or_default());
+    Json(ApiResponse::ok(map))
+}
+
 async fn export_database(
     State(state): State<AppState>,
 ) -> Json<ApiResponse<crate::db::DatabaseExport>> {
@@ -479,7 +604,7 @@ async fn index_html() -> Html<&'static str> {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>vrtfido - Virtual FIDO2 & Passkey Manager</title>
+    <title>VrtFido - Virtual FIDO2 & Passkey Manager</title>
     <link rel="icon" type="image/x-icon" href="/favicon.ico">
     <style>
         :root {
@@ -497,58 +622,93 @@ async fn index_html() -> Html<&'static str> {
             --danger: #ef4444;
             --border: #334155;
             --radius: 10px;
+            --gap: 1rem;
         }
 
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
-        body { background-color: var(--bg-primary); color: var(--text-main); min-height: 100vh; display: flex; flex-direction: column; }
-        
-        header { background: var(--bg-secondary); border-bottom: 1px solid var(--border); padding: 1rem 2rem; display: flex; justify-content: space-between; align-items: center; position: sticky; top: 0; z-index: 50; }
-        .logo { display: flex; align-items: center; gap: 0.75rem; font-size: 1.25rem; font-weight: 700; color: var(--accent); }
-        .badge-status { display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.3rem 0.75rem; border-radius: 9999px; font-size: 0.8rem; font-weight: 600; }
+        html { -webkit-text-size-adjust: 100%; }
+        body { background-color: var(--bg-primary); color: var(--text-main); min-height: 100vh; display: flex; flex-direction: column; overflow-x: hidden; }
+        img, svg, table { max-width: 100%; }
+
+        /* ---------- Header ---------- */
+        header { background: var(--bg-secondary); border-bottom: 1px solid var(--border); padding: 0.85rem 1.5rem; display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap; position: sticky; top: 0; z-index: 50; }
+        .logo { display: flex; align-items: center; gap: 0.75rem; font-size: 1.2rem; font-weight: 700; color: var(--accent); min-width: 0; }
+        .logo span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .status-group { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; justify-content: flex-end; }
+        .badge-status { display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.3rem 0.75rem; border-radius: 9999px; font-size: 0.8rem; font-weight: 600; white-space: nowrap; }
         .badge-online { background: rgba(16, 185, 129, 0.15); color: var(--success); border: 1px solid rgba(16, 185, 129, 0.3); }
         .badge-offline { background: rgba(239, 68, 68, 0.15); color: var(--danger); border: 1px solid rgba(239, 68, 68, 0.3); }
-        .badge-debug { background: rgba(245, 158, 11, 0.15); color: var(--warning); border: 1px solid rgba(245, 158, 11, 0.3); margin-left: 0.5rem; }
-        .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+        .badge-debug { background: rgba(245, 158, 11, 0.15); color: var(--warning); border: 1px solid rgba(245, 158, 11, 0.3); }
 
-        .container { max-width: 1200px; width: 100%; margin: 0 auto; padding: 2rem; flex: 1; }
+        .lang-toggle { display: inline-flex; align-items: center; background: var(--bg-primary); border: 1px solid var(--border); border-radius: 9999px; padding: 2px; }
+        .lang-btn { background: none; border: none; color: var(--text-muted); font-size: 0.75rem; font-weight: 700; letter-spacing: 0.05em; padding: 0.25rem 0.7rem; border-radius: 9999px; cursor: pointer; transition: background-color 0.15s, color 0.15s; min-height: 28px; }
+        .lang-btn:hover { color: var(--text-main); }
+        .lang-btn.active { background: var(--accent); color: #020617; }
+        .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; flex: 0 0 auto; }
 
-        .tabs { display: flex; gap: 0.5rem; border-bottom: 1px solid var(--border); margin-bottom: 2rem; }
-        .tab-btn { background: none; border: none; color: var(--text-muted); padding: 0.75rem 1.25rem; font-size: 0.95rem; font-weight: 600; cursor: pointer; border-bottom: 2px solid transparent; transition: all 0.2s; display: flex; align-items: center; gap: 0.5rem; }
+        .container { max-width: 1280px; width: 100%; margin: 0 auto; padding: 1.75rem 1.5rem 3rem; flex: 1; }
+
+        /* ---------- Tabs ---------- */
+        .tabs { display: flex; gap: 0.5rem; border-bottom: 1px solid var(--border); margin-bottom: 1.75rem; overflow-x: auto; scrollbar-width: none; }
+        .tabs::-webkit-scrollbar { display: none; }
+        .tab-btn { background: none; border: none; color: var(--text-muted); padding: 0.75rem 1.25rem; font-size: 0.95rem; font-weight: 600; cursor: pointer; border-bottom: 2px solid transparent; transition: color 0.2s, border-color 0.2s; display: flex; align-items: center; gap: 0.5rem; white-space: nowrap; flex: 0 0 auto; }
         .tab-btn:hover { color: var(--text-main); }
         .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
 
         .tab-content { display: none; }
         .tab-content.active { display: block; }
 
+        /* ---------- Cards ---------- */
         .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.5rem; margin-bottom: 1.5rem; }
-        .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
-        .card-title { font-size: 1.15rem; font-weight: 600; display: flex; align-items: center; gap: 0.5rem; }
+        .card-header { display: flex; justify-content: space-between; align-items: center; gap: 0.75rem; margin-bottom: 1rem; flex-wrap: wrap; }
+        .card-title { font-size: 1.1rem; font-weight: 600; display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
+        .card-subtitle { font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem; }
 
+        /* ---------- Action bars ---------- */
+        .action-bar, .form-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }
+        .input-row { display: flex; gap: 0.5rem; align-items: stretch; flex-wrap: wrap; }
+        .input-row .form-control { flex: 1 1 12rem; min-width: 0; }
+
+        /* ---------- Tables ---------- */
+        .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+        .table-wrap.scroll-y { max-height: 400px; overflow-y: auto; }
         table { width: 100%; border-collapse: collapse; text-align: left; font-size: 0.9rem; }
-        th { padding: 0.75rem 1rem; color: var(--text-muted); font-weight: 600; border-bottom: 1px solid var(--border); background: var(--bg-secondary); }
-        td { padding: 0.85rem 1rem; border-bottom: 1px solid rgba(51, 65, 85, 0.5); }
+        th { padding: 0.75rem 1rem; color: var(--text-muted); font-weight: 600; border-bottom: 1px solid var(--border); background: var(--bg-secondary); white-space: nowrap; position: sticky; top: 0; z-index: 1; }
+        td { padding: 0.85rem 1rem; border-bottom: 1px solid rgba(51, 65, 85, 0.5); vertical-align: middle; }
+        tbody tr:last-child td { border-bottom: none; }
         tr:hover td { background: rgba(51, 65, 85, 0.2); }
+        .actions-cell { white-space: nowrap; }
+        .actions-cell .btn + .btn { margin-left: 0.4rem; }
+        .empty-row td { text-align: center; color: var(--text-muted); padding: 2rem 1rem; }
 
-        .btn { padding: 0.5rem 1rem; border-radius: 6px; font-weight: 600; font-size: 0.85rem; cursor: pointer; border: 1px solid transparent; transition: all 0.15s; display: inline-flex; align-items: center; gap: 0.4rem; }
+        /* ---------- Buttons ---------- */
+        .btn { padding: 0.55rem 1rem; border-radius: 8px; font-weight: 600; font-size: 0.85rem; cursor: pointer; border: 1px solid transparent; transition: background-color 0.15s, color 0.15s, border-color 0.15s; display: inline-flex; align-items: center; justify-content: center; gap: 0.4rem; min-height: 40px; line-height: 1.1; }
         .btn-primary { background: var(--accent); color: #020617; }
         .btn-primary:hover { background: var(--accent-hover); }
         .btn-danger { background: rgba(239, 68, 68, 0.15); color: var(--danger); border-color: rgba(239, 68, 68, 0.3); }
         .btn-danger:hover { background: var(--danger); color: white; }
         .btn-secondary { background: var(--bg-hover); color: var(--text-main); }
         .btn-secondary:hover { background: #475569; }
-        .btn-sm { padding: 0.3rem 0.6rem; font-size: 0.8rem; }
+        .btn-sm { padding: 0.4rem 0.7rem; font-size: 0.8rem; min-height: 34px; }
 
+        /* ---------- Forms ---------- */
         .form-group { margin-bottom: 1rem; }
         .form-label { display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 0.35rem; color: var(--text-muted); }
-        .form-control { width: 100%; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 6px; padding: 0.6rem 0.85rem; color: var(--text-main); font-size: 0.9rem; outline: none; }
+        .form-control { width: 100%; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; padding: 0.6rem 0.85rem; color: var(--text-main); font-size: 0.9rem; outline: none; min-height: 40px; }
         .form-control:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-glow); }
-        .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
+        .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr)); gap: 1.5rem; }
+        .future-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: 1rem; }
+        .future-item { background: var(--bg-secondary); padding: 1rem; border-radius: 8px; border: 1px dashed var(--border); }
+        .future-item .ico { font-size: 1.5rem; margin-bottom: 0.5rem; }
+        .future-item .name { font-weight: 600; }
+        .future-item .meta { font-size: 0.75rem; color: var(--accent); margin-top: 0.25rem; }
 
-        .modal-overlay { position: fixed; inset: 0; background: rgba(2, 6, 23, 0.85); backdrop-filter: blur(8px); display: none; justify-content: center; align-items: center; z-index: 100; animation: fadeIn 0.2s; }
-        .modal-box { background: var(--bg-card); border: 2px solid var(--accent); border-radius: 12px; width: 90%; max-width: 500px; padding: 2rem; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 0 50px var(--accent-glow); text-align: center; }
+        /* ---------- Modals ---------- */
+        .modal-overlay { position: fixed; inset: 0; background: rgba(2, 6, 23, 0.85); backdrop-filter: blur(8px); display: none; justify-content: center; align-items: center; z-index: 100; padding: 1rem; animation: fadeIn 0.2s; }
+        .modal-box { background: var(--bg-card); border: 2px solid var(--accent); border-radius: 12px; width: 100%; max-width: 500px; max-height: 90vh; overflow-y: auto; padding: 1.75rem; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 0 50px var(--accent-glow); text-align: center; }
         .modal-icon { font-size: 3rem; margin-bottom: 1rem; }
-        .modal-title { font-size: 1.35rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--accent); }
-        .modal-rp { font-size: 1.1rem; font-weight: 600; color: var(--text-main); background: var(--bg-secondary); padding: 0.5rem 1rem; border-radius: 6px; display: inline-block; margin: 0.75rem 0; }
+        .modal-title { font-size: 1.3rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--accent); }
+        .modal-rp { font-size: 1.05rem; font-weight: 600; color: var(--text-main); background: var(--bg-secondary); padding: 0.5rem 1rem; border-radius: 8px; display: inline-block; margin: 0.75rem 0; word-break: break-word; }
 
         .tag-op { display: inline-block; padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.75rem; font-weight: 700; text-transform: uppercase; }
         .tag-make { background: rgba(56, 189, 248, 0.15); color: var(--accent); }
@@ -557,6 +717,51 @@ async fn index_html() -> Html<&'static str> {
         .tag-status-rejected { color: var(--danger); font-weight: 600; }
 
         @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+        /* ---------- Desktop / mobile split ----------
+           Layout is chosen from the viewport width, never from the user agent, so resizing a
+           window, rotating a phone or using a tablet all behave consistently. */
+        @media (min-width: 861px) {
+            .mobile-only { display: none !important; }
+        }
+
+        @media (max-width: 860px) {
+            .desktop-only { display: none !important; }
+
+            header { padding: 0.75rem 1rem; }
+            .logo { font-size: 1.05rem; }
+            .container { padding: 1rem 0.85rem 2.5rem; }
+            .card { padding: 1.1rem 1rem; margin-bottom: 1rem; border-radius: 12px; }
+            .card-header { align-items: flex-start; }
+            .card-title { font-size: 1rem; }
+            .grid-2 { grid-template-columns: 1fr; gap: 1rem; }
+            .tabs { margin-bottom: 1.25rem; }
+
+            /* Full-width actions read better than a cramped inline row on a phone. */
+            .action-bar { width: 100%; }
+            .action-bar .btn { flex: 1 1 auto; }
+            .form-actions .btn, .input-row .btn { flex: 1 1 100%; }
+            .modal-box { padding: 1.25rem 1rem; }
+
+            /* Tables become stacked cards; labels come from data-label, set by decorateTables(). */
+            .table-wrap, .table-wrap.scroll-y { overflow: visible; max-height: none; }
+            table { display: block; font-size: 0.88rem; }
+            table thead { display: none; }
+            table tbody { display: block; }
+            table tr { display: block; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 10px; margin-bottom: 0.75rem; padding: 0.25rem 0.25rem; }
+            table tr:hover td { background: transparent; }
+            table td { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.85rem; border-bottom: 1px dashed rgba(51, 65, 85, 0.6); padding: 0.55rem 0.7rem; text-align: right; }
+            table tr td:last-child { border-bottom: none; }
+            table td::before { content: attr(data-label); color: var(--text-muted); font-size: 0.72rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; text-align: left; flex: 0 0 40%; }
+            table td:not([data-label])::before, table td[colspan]::before { content: none; }
+            table td[colspan] { display: block; text-align: center; }
+            table td.empty-row-cell { display: block; }
+            .actions-cell { white-space: normal; }
+            .actions-cell .btn { flex: 1 1 auto; }
+            .actions-cell .btn + .btn { margin-left: 0; }
+            .actions-cell .btn:first-of-type { margin-left: auto; }
+        }
+    </style>
     </style>
 </head>
 <body>
@@ -564,22 +769,26 @@ async fn index_html() -> Html<&'static str> {
     <header>
         <div class="logo">
             <span>🛡️</span>
-            <span>vrtfido - WebAuthn CMS</span>
+            <span>VrtFido - WebAuthn CMS</span>
         </div>
-        <div style="display: flex; align-items: center;">
-            <div id="uhidStatus" class="badge-status badge-offline">
+        <div class="status-group">
+            <div id="uhidStatus" class="badge-status badge-offline desktop-only">
                 <span class="dot"></span>
                 <span id="uhidText">UHID Connecting...</span>
             </div>
-            <div id="usbSensorStatus" class="badge-status badge-offline" style="margin-left: 0.5rem;">
+            <div id="usbSensorStatus" class="badge-status badge-offline desktop-only">
                 <span class="dot"></span>
                 <span id="usbSensorText">USB Sensor 3274:8012</span>
             </div>
-            <div id="unlimitedFpStatus" class="badge-status" style="background: rgba(168, 85, 247, 0.15); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.3); margin-left: 0.5rem; display: none;">
+            <div id="unlimitedFpStatus" class="badge-status" style="background: rgba(168, 85, 247, 0.15); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.3); display: none;">
                 ♾️ Fingerprints: Unlimited
             </div>
-            <div id="debugStatus" class="badge-status badge-debug" style="display: none; margin-left: 0.5rem;">
+            <div id="debugStatus" class="badge-status badge-debug" style="display: none;" data-i18n="status.debug">
                 CLI DEBUG ACTIVE
+            </div>
+            <div class="lang-toggle" role="group" aria-label="Language / Ngôn ngữ">
+                <button class="lang-btn" data-lang="en" onclick="setLanguage('en')">EN</button>
+                <button class="lang-btn" data-lang="vi" onclick="setLanguage('vi')">VI</button>
             </div>
         </div>
     </header>
@@ -587,34 +796,36 @@ async fn index_html() -> Html<&'static str> {
     <div class="container">
         <!-- Navigation -->
         <div class="tabs">
-            <button class="tab-btn active" onclick="switchTab('tab-creds')">🔑 Passkey Credentials (<span id="credCount">0</span>)</button>
-            <button class="tab-btn" onclick="switchTab('tab-security')">🛡️ Security & Biometrics</button>
-            <button class="tab-btn" onclick="switchTab('tab-logs')">📜 Audit Trail</button>
-            <button class="tab-btn" onclick="switchTab('tab-debug')">🐞 Debug Logs</button>
+            <button class="tab-btn active" onclick="switchTab('tab-creds')"><span data-i18n="tab.creds">🔑 Passkey Credentials</span> (<span id="credCount">0</span>)</button>
+            <button class="tab-btn desktop-only" onclick="switchTab('tab-security')"><span data-i18n="tab.security">🛡️ Security & Biometrics</span></button>
+            <button class="tab-btn" onclick="switchTab('tab-logs')"><span data-i18n="tab.logs">📜 Audit Trail</span></button>
+            <button class="tab-btn" onclick="switchTab('tab-debug')"><span data-i18n="tab.debug">🐞 Debug Logs</span></button>
         </div>
 
         <!-- TAB 1: CREDENTIALS -->
         <div id="tab-creds" class="tab-content active">
             <div class="card">
                 <div class="card-header">
-                    <div class="card-title">Registered WebAuthn Credentials</div>
-                    <button class="btn btn-secondary btn-sm" onclick="loadCredentials()">🔄 Refresh</button>
+                    <div class="card-title" data-i18n="creds.title">Registered WebAuthn Credentials</div>
+                    <div class="action-bar">
+                        <button class="btn btn-secondary btn-sm" onclick="loadCredentials()" data-i18n="btn.refresh">🔄 Refresh</button>
+                    </div>
                 </div>
-                <div style="overflow-x: auto;">
+                <div class="table-wrap">
                     <table>
                         <thead>
                             <tr>
-                                <th>Relying Party (Domain)</th>
-                                <th>Username</th>
-                                <th>Display Name</th>
-                                <th>Sign Count</th>
-                                <th>Created At</th>
-                                <th>Last Used</th>
-                                <th>Actions</th>
+                                <th data-i18n="creds.h.rp">Relying Party (Domain)</th>
+                                <th data-i18n="creds.h.user">Username</th>
+                                <th data-i18n="creds.h.display">Display Name</th>
+                                <th data-i18n="creds.h.signCount">Sign Count</th>
+                                <th data-i18n="creds.h.created">Created At</th>
+                                <th data-i18n="creds.h.lastUsed">Last Used</th>
+                                <th data-i18n="creds.h.actions">Actions</th>
                             </tr>
                         </thead>
                         <tbody id="credTableBody">
-                            <tr><td colspan="7" style="text-align: center; color: var(--text-muted);">Loading data...</td></tr>
+                            <tr><td colspan="7" class="empty-row-cell" style="text-align: center; color: var(--text-muted);" data-i18n="common.loading">Loading data...</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -622,29 +833,29 @@ async fn index_html() -> Html<&'static str> {
         </div>
 
         <!-- TAB 2: SECURITY & BIOMETRICS -->
-        <div id="tab-security" class="tab-content">
+        <div id="tab-security" class="tab-content desktop-only">
             <div class="grid-2">
                 <!-- 6-Digit PIN -->
                 <div class="card">
                     <div class="card-header">
-                        <div class="card-title">🔢 Passkey PIN (6 Digits)</div>
-                        <span id="pinBadge" class="badge-status badge-offline">Not Configured</span>
+                        <div class="card-title" data-i18n="sec.pin.title">🔢 Passkey PIN (6 Digits)</div>
+                        <span id="pinBadge" class="badge-status badge-offline" data-i18n="sec.pin.notConfigured">Not Configured</span>
                     </div>
-                    <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem;">
+                    <p class="card-subtitle" data-i18n="sec.pin.desc">
                         A single 6-digit numeric PIN (0-9) used for rapid user verification when accessing websites.
                     </p>
                     <div id="pinFormArea">
                         <div class="form-group" id="oldPinGroup" style="display: none;">
-                            <label class="form-label">Current PIN:</label>
-                            <input type="password" maxlength="6" id="oldPinInput" class="form-control" placeholder="Current 6 digits">
+                            <label class="form-label" data-i18n="sec.pin.current">Current PIN:</label>
+                            <input type="password" maxlength="6" id="oldPinInput" class="form-control" placeholder="Current 6 digits" data-i18n-placeholder="sec.pin.currentPh">
                         </div>
                         <div class="form-group">
-                            <label class="form-label" id="newPinLabel">Enter New 6-Digit PIN:</label>
-                            <input type="password" maxlength="6" id="newPinInput" class="form-control" placeholder="6 digits (e.g. 123456)">
+                            <label class="form-label" id="newPinLabel" data-i18n="sec.pin.new">Enter New 6-Digit PIN:</label>
+                            <input type="password" maxlength="6" id="newPinInput" class="form-control" placeholder="6 digits (e.g. 123456)" data-i18n-placeholder="sec.pin.newPh">
                         </div>
-                        <div style="display: flex; gap: 0.5rem;">
-                            <button class="btn btn-primary" onclick="submitPin()">💾 Save PIN</button>
-                            <button class="btn btn-danger" id="removePinBtn" style="display: none;" onclick="removePin()">🗑️ Remove PIN</button>
+                        <div class="form-actions">
+                            <button class="btn btn-primary" onclick="submitPin()" data-i18n="sec.pin.save">💾 Save PIN</button>
+                            <button class="btn btn-danger" id="removePinBtn" style="display: none;" onclick="removePin()" data-i18n="sec.pin.remove">🗑️ Remove PIN</button>
                         </div>
                     </div>
                 </div>
@@ -652,23 +863,23 @@ async fn index_html() -> Html<&'static str> {
                 <!-- Fingerprint Biometrics (Max 10) -->
                 <div class="card">
                     <div class="card-header">
-                        <div class="card-title">🖐️ Fingerprint Management (<span id="fpCount">0</span><span id="fpLimitText">/10</span>)</div>
+                        <div class="card-title"><span data-i18n="sec.fp.title">🖐️ Fingerprint Management</span> (<span id="fpCount">0</span><span id="fpLimitText">/10</span>)</div>
                     </div>
-                    <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem;">
+                    <p class="card-subtitle" data-i18n="sec.fp.desc">
                         Enroll up to 10 fingerprints. Click add and touch the USB sensor 6 times when prompted.
                     </p>
-                    <div class="form-group" style="display: flex; gap: 0.5rem;">
-                        <input type="text" id="fpNameInput" class="form-control" placeholder="Label (e.g. Right Index, Left Thumb...)">
-                        <button class="btn btn-primary" id="addFpBtn" onclick="addFingerprint()">➕ Add Fingerprint</button>
+                    <div class="form-group input-row">
+                        <input type="text" id="fpNameInput" class="form-control" placeholder="Label (e.g. Right Index, Left Thumb...)" data-i18n-placeholder="sec.fp.labelPh">
+                        <button class="btn btn-primary" id="addFpBtn" onclick="addFingerprint()" data-i18n="sec.fp.add">➕ Add Fingerprint</button>
                     </div>
-                    <div style="max-height: 250px; overflow-y: auto;">
+                    <div class="table-wrap scroll-y">
                         <table>
                             <thead>
                                 <tr>
-                                    <th>Slot</th>
-                                    <th>Fingerprint Name</th>
-                                    <th>Enrolled At</th>
-                                    <th>Action</th>
+                                    <th data-i18n="sec.fp.h.slot">Slot</th>
+                                    <th data-i18n="sec.fp.h.name">Fingerprint Name</th>
+                                    <th data-i18n="sec.fp.h.enrolled">Enrolled At</th>
+                                    <th data-i18n="sec.fp.h.action">Action</th>
                                 </tr>
                             </thead>
                             <tbody id="fpTableBody"></tbody>
@@ -679,23 +890,23 @@ async fn index_html() -> Html<&'static str> {
 
             <div class="card">
                 <div class="card-header">
-                    <div class="card-title">🚀 Extended Biometrics (Future Technologies)</div>
+                    <div class="card-title" data-i18n="sec.future.title">🚀 Extended Biometrics (Future Technologies)</div>
                 </div>
-                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem;">
-                    <div style="background: var(--bg-secondary); padding: 1rem; border-radius: 8px; border: 1px dashed var(--border);">
-                        <div style="font-size: 1.5rem; margin-bottom: 0.5rem;">👤</div>
-                        <div style="font-weight: 600;">Facial Recognition (Face ID)</div>
-                        <div style="font-size: 0.75rem; color: var(--accent); margin-top: 0.25rem;">[Module Ready]</div>
+                <div class="future-grid">
+                    <div class="future-item">
+                        <div class="ico">👤</div>
+                        <div class="name" data-i18n="sec.future.face">Facial Recognition (Face ID)</div>
+                        <div class="meta" data-i18n="sec.future.ready">[Module Ready]</div>
                     </div>
-                    <div style="background: var(--bg-secondary); padding: 1rem; border-radius: 8px; border: 1px dashed var(--border);">
-                        <div style="font-size: 1.5rem; margin-bottom: 0.5rem;">👁️</div>
-                        <div style="font-weight: 600;">Iris Scanner</div>
-                        <div style="font-size: 0.75rem; color: var(--accent); margin-top: 0.25rem;">[Module Ready]</div>
+                    <div class="future-item">
+                        <div class="ico">👁️</div>
+                        <div class="name" data-i18n="sec.future.iris">Iris Scanner</div>
+                        <div class="meta">[Module Ready]</div>
                     </div>
-                    <div style="background: var(--bg-secondary); padding: 1rem; border-radius: 8px; border: 1px dashed var(--border);">
-                        <div style="font-size: 1.5rem; margin-bottom: 0.5rem;">🎙️</div>
-                        <div style="font-weight: 600;">Voiceprint Biometrics</div>
-                        <div style="font-size: 0.75rem; color: var(--accent); margin-top: 0.25rem;">[Module Ready]</div>
+                    <div class="future-item">
+                        <div class="ico">🎙️</div>
+                        <div class="name" data-i18n="sec.future.voice">Voiceprint Biometrics</div>
+                        <div class="meta">[Module Ready]</div>
                     </div>
                 </div>
             </div>
@@ -705,23 +916,23 @@ async fn index_html() -> Html<&'static str> {
         <div id="tab-logs" class="tab-content">
             <div class="card">
                 <div class="card-header">
-                    <div class="card-title">📜 Operational Audit Trail</div>
-                    <div style="display: flex; gap: 0.5rem;">
-                        <button class="btn btn-danger btn-sm" onclick="cleanAuditLogs()">🗑️ Clear Logs</button>
-                        <button class="btn btn-secondary btn-sm" onclick="cleanAllLogs()">🧹 Clear All</button>
-                        <button class="btn btn-secondary btn-sm" onclick="loadAuditLogs()">🔄 Refresh</button>
+                    <div class="card-title" data-i18n="logs.title">📜 Operational Audit Trail</div>
+                    <div class="action-bar">
+                        <button class="btn btn-danger btn-sm" onclick="cleanAuditLogs()" data-i18n="btn.clearLogs">🗑️ Clear Logs</button>
+                        <button class="btn btn-secondary btn-sm" onclick="cleanAllLogs()" data-i18n="btn.clearAll">🧹 Clear All</button>
+                        <button class="btn btn-secondary btn-sm" onclick="loadAuditLogs()" data-i18n="btn.refresh">🔄 Refresh</button>
                     </div>
                 </div>
-                <div style="overflow-x: auto;">
+                <div class="table-wrap">
                     <table>
                         <thead>
                             <tr>
-                                <th>Timestamp</th>
-                                <th>Relying Party</th>
-                                <th>Operation</th>
-                                <th>Method</th>
-                                <th>Status</th>
-                                <th>Details</th>
+                                <th data-i18n="logs.h.time">Timestamp</th>
+                                <th data-i18n="logs.h.rp">Relying Party</th>
+                                <th data-i18n="logs.h.op">Operation</th>
+                                <th data-i18n="logs.h.method">Method</th>
+                                <th data-i18n="logs.h.status">Status</th>
+                                <th data-i18n="logs.h.details">Details</th>
                             </tr>
                         </thead>
                         <tbody id="auditTableBody"></tbody>
@@ -734,21 +945,21 @@ async fn index_html() -> Html<&'static str> {
         <div id="tab-debug" class="tab-content">
             <div class="card">
                 <div class="card-header">
-                    <div class="card-title">🐞 System Debug Logs & Errors</div>
-                    <div style="display: flex; gap: 0.5rem;">
-                        <button class="btn btn-danger btn-sm" onclick="cleanDebugLogs()">🗑️ Clear Logs</button>
-                        <button class="btn btn-secondary btn-sm" onclick="cleanAllLogs()">🧹 Clear All</button>
-                        <button class="btn btn-secondary btn-sm" onclick="loadDebugLogs()">🔄 Refresh</button>
+                    <div class="card-title" data-i18n="debug.title">🐞 System Debug Logs & Errors</div>
+                    <div class="action-bar">
+                        <button class="btn btn-danger btn-sm" onclick="cleanDebugLogs()" data-i18n="btn.clearLogs">🗑️ Clear Logs</button>
+                        <button class="btn btn-secondary btn-sm" onclick="cleanAllLogs()" data-i18n="btn.clearAll">🧹 Clear All</button>
+                        <button class="btn btn-secondary btn-sm" onclick="loadDebugLogs()" data-i18n="btn.refresh">🔄 Refresh</button>
                     </div>
                 </div>
-                <div style="overflow-x: auto; max-height: 400px;">
+                <div class="table-wrap scroll-y">
                     <table>
                         <thead>
                             <tr>
                                 <th>Timestamp</th>
-                                <th>Level</th>
-                                <th>Component</th>
-                                <th>Message</th>
+                                <th data-i18n="debug.h.level">Level</th>
+                                <th data-i18n="debug.h.component">Component</th>
+                                <th data-i18n="debug.h.message">Message</th>
                             </tr>
                         </thead>
                         <tbody id="debugTableBody"></tbody>
@@ -762,15 +973,15 @@ async fn index_html() -> Html<&'static str> {
     <div id="enrollModal" class="modal-overlay">
         <div class="modal-box" style="max-width: 440px;">
             <div class="modal-icon" id="enrollIcon" style="font-size: 3.5rem;">🖐️</div>
-            <div class="modal-title" id="enrollModalTitle">Scanning USB Fingerprint</div>
+            <div class="modal-title" id="enrollModalTitle" data-i18n="enroll.title">Scanning USB Fingerprint</div>
             <p id="enrollStepDesc" style="font-size: 1.25rem; font-weight: 700; color: var(--accent); margin: 0.5rem 0;">Stage 1 / 6</p>
-            <p id="enrollActionPrompt" style="font-size: 0.95rem; color: var(--text-main); margin-bottom: 1.5rem;">Please place your finger on the USB sensor...</p>
+            <p id="enrollActionPrompt" style="font-size: 0.95rem; color: var(--text-main); margin-bottom: 1.5rem;" data-i18n="enroll.prompt">Please place your finger on the USB sensor...</p>
             
             <div style="background: var(--bg-secondary); border-radius: 9999px; height: 12px; width: 100%; overflow: hidden; margin-bottom: 1.5rem; border: 1px solid var(--border);">
                 <div id="enrollProgressBar" style="background: var(--accent); height: 100%; width: 16%; transition: width 0.3s;"></div>
             </div>
 
-            <button class="btn btn-danger" onclick="cancelEnrollment()">❌ Cancel</button>
+            <button class="btn btn-danger" onclick="cancelEnrollment()" data-i18n="common.cancel">❌ Cancel</button>
         </div>
     </div>
 
@@ -778,8 +989,8 @@ async fn index_html() -> Html<&'static str> {
     <div id="verifyModal" class="modal-overlay">
         <div class="modal-box">
             <div class="modal-icon" id="modalIcon">🛡️</div>
-            <div class="modal-title" id="modalTitle">WebAuthn Verification Request</div>
-            <p style="font-size: 0.9rem; color: var(--text-muted);">A website is requesting your security key:</p>
+            <div class="modal-title" id="modalTitle" data-i18n="verify.title">WebAuthn Verification Request</div>
+            <p style="font-size: 0.9rem; color: var(--text-muted);" data-i18n="verify.desc">A website is requesting your security key:</p>
             <div>
                 <span class="modal-rp" id="modalRpId">webauthn.io</span>
             </div>
@@ -787,37 +998,37 @@ async fn index_html() -> Html<&'static str> {
 
             <!-- MULTI-ACCOUNT SELECTION (WHEN USER NOT PROVIDED BY RP) -->
             <div id="modalAccountSelectionArea" style="display: none; text-align: left; margin: 0.75rem 0 1rem 0; background: var(--bg-secondary); padding: 0.75rem 1rem; border-radius: 8px; border: 1px solid var(--border);">
-                <label class="form-label" style="font-size: 0.8rem; margin-bottom: 0.35rem; color: var(--accent);">👤 Select Account to Authenticate:</label>
+                <label class="form-label" style="font-size: 0.8rem; margin-bottom: 0.35rem; color: var(--accent);" data-i18n="verify.select">👤 Select Account to Authenticate:</label>
                 <select id="modalAccountSelect" class="form-control" style="font-weight: 600; cursor: pointer;">
                 </select>
-                <div id="modalAccountNote" style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.35rem;">
+                <div id="modalAccountNote" style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.35rem;" data-i18n="verify.note">
                     Defaulted to latest used/added account.
                 </div>
             </div>
 
             <div id="modalSetupView" style="display: none; margin-top: 1rem; border-top: 1px solid var(--border); padding-top: 1rem;">
                 <p style="font-size: 0.9rem; color: var(--warning); margin-bottom: 0.75rem; font-weight: 600;">
-                    ⚠️ Security is not configured. Please create a 6-digit PIN to activate:
+                    <span data-i18n="verify.setup">⚠️ Security is not configured. Please create a 6-digit PIN to activate:</span>
                 </p>
-                <input type="password" maxlength="6" id="setupPinInput" class="form-control" placeholder="Enter 6 digits" style="text-align: center; font-size: 1.25rem; letter-spacing: 0.5rem; margin-bottom: 1rem;">
+                <input type="password" maxlength="6" id="setupPinInput" class="form-control" data-i18n-placeholder="verify.setupPh" placeholder="Enter 6 digits" style="text-align: center; font-size: 1.25rem; letter-spacing: 0.5rem; margin-bottom: 1rem;">
                 <div style="display: flex; gap: 0.5rem; justify-content: center;">
-                    <button class="btn btn-primary" onclick="submitModalApproval('SETUP')">Activate & Approve</button>
-                    <button class="btn btn-danger" onclick="submitModalReject()">Reject</button>
+                    <button class="btn btn-primary" onclick="submitModalApproval('SETUP')" data-i18n="verify.activate">Activate & Approve</button>
+                    <button class="btn btn-danger" onclick="submitModalReject()" data-i18n="common.reject">Reject</button>
                 </div>
             </div>
 
             <div id="modalVerifyView" style="display: none; margin-top: 1rem;">
                 <p style="font-size: 0.85rem; color: var(--accent); margin-bottom: 0.5rem; font-weight: 600;">
-                    💡 Touch the USB fingerprint sensor now or enter your PIN:
+                    <span data-i18n="verify.prompt">💡 Touch the USB fingerprint sensor now or enter your PIN:</span>
                 </p>
-                <input type="password" maxlength="6" id="verifyPinInput" class="form-control" placeholder="Enter 6-digit PIN" style="text-align: center; font-size: 1.25rem; letter-spacing: 0.5rem; margin-bottom: 1rem;" autofocus>
+                <input type="password" maxlength="6" id="verifyPinInput" class="form-control" data-i18n-placeholder="verify.pinPh" placeholder="Enter 6-digit PIN" style="text-align: center; font-size: 1.25rem; letter-spacing: 0.5rem; margin-bottom: 1rem;" autofocus>
                 
                 <div style="display: flex; flex-direction: column; gap: 0.75rem;">
                     <div style="display: flex; gap: 0.5rem; justify-content: center;">
-                        <button class="btn btn-primary" onclick="submitModalApproval('PIN')">🔑 Verify with PIN</button>
-                        <button class="btn btn-secondary" onclick="submitModalApproval('FINGERPRINT')">🖐️ Touch USB Sensor</button>
+                        <button class="btn btn-primary" onclick="submitModalApproval('PIN')" data-i18n="verify.withPin">🔑 Verify with PIN</button>
+                        <button class="btn btn-secondary" onclick="submitModalApproval('FINGERPRINT')" data-i18n="verify.withSensor">🖐️ Touch USB Sensor</button>
                     </div>
-                    <button class="btn btn-danger" style="margin-top: 0.5rem;" onclick="submitModalReject()">❌ Reject Request</button>
+                    <button class="btn btn-danger" style="margin-top: 0.5rem;" onclick="submitModalReject()" data-i18n="verify.reject">❌ Reject Request</button>
                 </div>
             </div>
         </div>
@@ -828,7 +1039,333 @@ async fn index_html() -> Html<&'static str> {
         let currentPromptId = null;
         let enrollInterval = null;
 
+        // Layout breakpoint shared with the stylesheet: 860px and below is treated as mobile.
+        const MOBILE_QUERY = window.matchMedia('(max-width: 860px)');
+        const isMobile = () => MOBILE_QUERY.matches;
+
+        // Desktop keeps the real table headers; mobile renders each row as a card, so every cell
+        // needs its column name. Deriving it from <thead> keeps the render functions untouched.
+        function decorateTables(root, force) {
+            (root || document).querySelectorAll('table').forEach(table => {
+                const headers = Array.from(table.querySelectorAll('thead th')).map(th => th.textContent.trim());
+                if (!headers.length) return;
+                table.querySelectorAll('tbody tr').forEach(row => {
+                    Array.from(row.children).forEach((cell, index) => {
+                        if (cell.tagName !== 'TD') return;
+                        if (cell.hasAttribute('colspan')) return;
+                        if (force) delete cell.dataset.label;
+                        if (cell.dataset.label) return;
+                        const label = headers[index];
+                        if (label) cell.dataset.label = label;
+                    });
+                });
+            });
+        }
+
+        let decorateScheduled = false;
+        const tableObserver = new MutationObserver(() => {
+            if (decorateScheduled) return;
+            decorateScheduled = true;
+            requestAnimationFrame(() => {
+                decorateScheduled = false;
+                decorateTables();
+            });
+        });
+        tableObserver.observe(document.body, { childList: true, subtree: true });
+
+        // ---------------------------------------------------------------------------
+        // i18n: English is the default; the choice is stored server-side in the database
+        // (POST /api/settings) so the web CMS and the Android app share one language.
+        // ---------------------------------------------------------------------------
+        const I18N = {
+            en: {
+                'tab.creds': '🔑 Passkey Credentials',
+                'tab.security': '🛡️ Security & Biometrics',
+                'tab.logs': '📜 Audit Trail',
+                'tab.debug': '🐞 Debug Logs',
+                'creds.title': 'Registered WebAuthn Credentials',
+                'creds.h.rp': 'Relying Party (Domain)',
+                'creds.h.user': 'Username',
+                'creds.h.display': 'Display Name',
+                'creds.h.signCount': 'Sign Count',
+                'creds.h.created': 'Created At',
+                'creds.h.lastUsed': 'Last Used',
+                'creds.h.actions': 'Actions',
+                'creds.empty': 'No passkey credentials stored yet. Open webauthn.io to register!',
+                'creds.promptUser': 'Enter new username:',
+                'creds.promptDisplay': 'Enter new display name:',
+                'creds.confirmDelete': "Are you sure you want to delete the credential for domain '{rp}'?",
+                'sec.pin.title': '🔢 Passkey PIN (6 Digits)',
+                'sec.pin.desc': 'A single 6-digit numeric PIN (0-9) used for rapid user verification when accessing websites.',
+                'sec.pin.active': 'Active',
+                'sec.pin.notConfigured': 'Not Configured',
+                'sec.pin.current': 'Current PIN:',
+                'sec.pin.new': 'Enter New 6-Digit PIN:',
+                'sec.pin.replace': 'Enter replacement 6-digit PIN:',
+                'sec.pin.currentPh': 'Current 6 digits',
+                'sec.pin.newPh': '6 digits (e.g. 123456)',
+                'sec.pin.save': '💾 Save PIN',
+                'sec.pin.remove': '🗑️ Remove PIN',
+                'sec.fp.title': '🖐️ Fingerprint Management',
+                'sec.fp.desc': 'Enroll up to 10 fingerprints. Click add and touch the USB sensor 6 times when prompted.',
+                'sec.fp.labelPh': 'Label (e.g. Right Index, Left Thumb...)',
+                'sec.fp.add': '➕ Add Fingerprint',
+                'sec.fp.h.slot': 'Slot',
+                'sec.fp.h.name': 'Fingerprint Name',
+                'sec.fp.h.enrolled': 'Enrolled At',
+                'sec.fp.h.action': 'Action',
+                'sec.fp.slot': 'Slot {n}',
+                'sec.fp.empty': 'No fingerprints enrolled yet. Up to 10 fingerprints.',
+                'sec.fp.limit': '/10',
+                'sec.fp.unlimited': ' - Unlimited',
+                'sec.future.title': '🚀 Extended Biometrics (Future Technologies)',
+                'sec.future.face': 'Facial Recognition (Face ID)',
+                'sec.future.iris': 'Iris Scanner',
+                'sec.future.voice': 'Voiceprint Biometrics',
+                'sec.future.ready': '[Module Ready]',
+                'logs.title': '📜 Operational Audit Trail',
+                'logs.h.time': 'Timestamp',
+                'logs.h.rp': 'Relying Party',
+                'logs.h.op': 'Operation',
+                'logs.h.method': 'Method',
+                'logs.h.status': 'Status',
+                'logs.h.details': 'Details',
+                'logs.empty': 'No audit logs yet.',
+                'logs.confirmClear': 'Delete all audit logs?',
+                'logs.confirmClearAll': 'Delete audit logs, debug logs and the audit trail? This cannot be undone.',
+                'debug.title': '🐞 System Debug Logs & Errors',
+                'debug.h.time': 'Timestamp',
+                'debug.h.level': 'Level',
+                'debug.h.component': 'Component',
+                'debug.h.message': 'Message',
+                'debug.empty': 'No debug logs yet (enable the --debug flag to capture packets).',
+                'debug.confirmClear': 'Delete all debug logs?',
+                'btn.refresh': '🔄 Refresh',
+                'btn.clearLogs': '🗑️ Clear Logs',
+                'btn.clearAll': '🧹 Clear All',
+                'status.uhidOnline': 'UHID FIDO2 Online',
+                'status.uhidOffline': 'UHID Offline',
+                'status.usbReady': 'USB 3274:8012 Ready',
+                'status.usbDisconnected': 'USB 3274:8012 Disconnected',
+                'status.unlimited': '♾️ Fingerprints: Unlimited',
+                'status.debug': 'CLI DEBUG ACTIVE',
+                'common.loading': 'Loading data...',
+                'common.delete': '🗑️ Delete',
+                'common.edit': '✏️ Edit',
+                'common.cancel': '❌ Cancel',
+                'common.reject': 'Reject',
+                'common.error': 'Error',
+                'common.errorLoading': 'Error loading data',
+                'common.errorLoadingLogs': 'Error loading logs',
+                'common.languageSaved': 'Language saved',
+                'enroll.title': 'Scanning USB Fingerprint',
+                'enroll.stage': 'Stage {n} / 6',
+                'enroll.prompt': 'Please place your finger on the USB sensor...',
+                'verify.title': 'WebAuthn Verification Request',
+                'verify.desc': 'A website is requesting your security key:',
+                'verify.select': '👤 Select Account to Authenticate:',
+                'verify.note': 'Defaulted to the latest used/added account.',
+                'verify.setup': '⚠️ Security is not configured. Please create a 6-digit PIN to activate:',
+                'verify.setupPh': 'Enter 6 digits',
+                'verify.activate': 'Activate & Approve',
+                'verify.prompt': '💡 Touch the USB fingerprint sensor now or enter your PIN:',
+                'verify.pinPh': 'Enter 6-digit PIN',
+                'verify.withPin': '🔑 Verify with PIN',
+                'verify.withSensor': '🖐️ Touch USB Sensor',
+                'verify.reject': '❌ Reject Request',
+                'enroll.initializing': 'Initializing...',
+                'enroll.connecting': 'Connecting to USB sensor...',
+                'enroll.success': 'Success!',
+                'enroll.captured': 'Captured 6 stages and saved to USB chip!',
+                'enroll.failed': 'Failed',
+                'enroll.error': 'An error occurred',
+                'fp.deleteConfirm': 'Delete this fingerprint?',
+                'fp.nameRequired': 'Please enter a name for the fingerprint!',
+                'pin.invalid': 'PIN must be exactly 6 numeric digits (0-9)!',
+                'pin.saved': 'PIN updated successfully!',
+                'pin.removed': 'PIN removed successfully!',
+                'pin.confirmRemoval': 'Please enter the current PIN to confirm removal:',
+                'logs.cleared': 'Logs cleared',
+                'debug.cleared': 'Debug logs cleared',
+                'all.cleared': 'All logs cleared',
+                'logs.clearConfirm': 'Clear all audit logs?',
+                'debug.clearConfirm': 'Clear all debug logs?',
+                'all.clearConfirm': 'Clear audit logs, debug logs and the audit trail? This cannot be undone.',
+                'common.errorClearing': 'Error clearing logs',
+                'common.confirm': 'Confirm'
+            },
+            vi: {
+                'tab.creds': '🔑 Khoá Passkey',
+                'tab.security': '🛡️ Bảo mật & Sinh trắc học',
+                'tab.logs': '📜 Nhật ký hoạt động',
+                'tab.debug': '🐞 Nhật ký gỡ lỗi',
+                'creds.title': 'Khoá WebAuthn đã đăng ký',
+                'creds.h.rp': 'Tên miền (Relying Party)',
+                'creds.h.user': 'Tên tài khoản',
+                'creds.h.display': 'Tên hiển thị',
+                'creds.h.signCount': 'Số lần ký',
+                'creds.h.created': 'Ngày tạo',
+                'creds.h.lastUsed': 'Dùng lần cuối',
+                'creds.h.actions': 'Thao tác',
+                'creds.empty': 'Chưa có khoá passkey nào. Mở webauthn.io để đăng ký!',
+                'creds.promptUser': 'Nhập tên tài khoản mới:',
+                'creds.promptDisplay': 'Nhập tên hiển thị mới:',
+                'creds.confirmDelete': "Xoá khoá của tên miền '{rp}'?",
+                'sec.pin.title': '🔢 Mã PIN Passkey (6 số)',
+                'sec.pin.desc': 'Một mã PIN 6 số (0-9) dùng để xác minh nhanh khi truy cập website.',
+                'sec.pin.active': 'Đang bật',
+                'sec.pin.notConfigured': 'Chưa thiết lập',
+                'sec.pin.current': 'PIN hiện tại:',
+                'sec.pin.new': 'Nhập PIN 6 số mới:',
+                'sec.pin.replace': 'Nhập PIN 6 số thay thế:',
+                'sec.pin.currentPh': '6 số hiện tại',
+                'sec.pin.newPh': '6 số (ví dụ 123456)',
+                'sec.pin.save': '💾 Lưu PIN',
+                'sec.pin.remove': '🗑️ Xoá PIN',
+                'sec.fp.title': '🖐️ Quản lý vân tay',
+                'sec.fp.desc': 'Đăng ký tối đa 10 vân tay. Bấm thêm và chạm cảm biến USB 6 lần theo hướng dẫn.',
+                'sec.fp.labelPh': 'Nhãn (ví dụ Ngón trỏ phải, Ngón cái trái...)',
+                'sec.fp.add': '➕ Thêm vân tay',
+                'sec.fp.h.slot': 'Khe',
+                'sec.fp.h.name': 'Tên vân tay',
+                'sec.fp.h.enrolled': 'Ngày đăng ký',
+                'sec.fp.h.action': 'Thao tác',
+                'sec.fp.slot': 'Khe {n}',
+                'sec.fp.empty': 'Chưa đăng ký vân tay nào. Tối đa 10 vân tay.',
+                'sec.fp.limit': '/10',
+                'sec.fp.unlimited': ' - Không giới hạn',
+                'sec.future.title': '🚀 Sinh trắc học mở rộng (công nghệ tương lai)',
+                'sec.future.face': 'Nhận diện khuôn mặt (Face ID)',
+                'sec.future.iris': 'Quét mống mắt',
+                'sec.future.voice': 'Sinh trắc học giọng nói',
+                'sec.future.ready': '[Sẵn sàng]',
+                'logs.title': '📜 Nhật ký hoạt động',
+                'logs.h.time': 'Thời gian',
+                'logs.h.rp': 'Tên miền',
+                'logs.h.op': 'Hành động',
+                'logs.h.method': 'Phương thức',
+                'logs.h.status': 'Trạng thái',
+                'logs.h.details': 'Chi tiết',
+                'logs.empty': 'Chưa có nhật ký hoạt động.',
+                'logs.confirmClear': 'Xoá toàn bộ nhật ký hoạt động?',
+                'logs.confirmClearAll': 'Xoá nhật ký hoạt động và nhật ký gỡ lỗi? Không thể hoàn tác.',
+                'debug.title': '🐞 Nhật ký gỡ lỗi & lỗi hệ thống',
+                'debug.h.time': 'Thời gian',
+                'debug.h.level': 'Mức',
+                'debug.h.component': 'Thành phần',
+                'debug.h.message': 'Nội dung',
+                'debug.empty': 'Chưa có nhật ký gỡ lỗi (bật cờ --debug để ghi gói tin).',
+                'debug.confirmClear': 'Xoá toàn bộ nhật ký gỡ lỗi?',
+                'btn.refresh': '🔄 Làm mới',
+                'btn.clearLogs': '🗑️ Xoá nhật ký',
+                'btn.clearAll': '🧹 Xoá tất cả',
+                'status.uhidOnline': 'UHID FIDO2 trực tuyến',
+                'status.uhidOffline': 'UHID ngoại tuyến',
+                'status.usbReady': 'USB 3274:8012 sẵn sàng',
+                'status.usbDisconnected': 'USB 3274:8012 chưa kết nối',
+                'status.unlimited': '♾️ Vân tay: không giới hạn',
+                'status.debug': 'ĐANG BẬT GỠ LỖI CLI',
+                'common.loading': 'Đang tải dữ liệu...',
+                'common.delete': '🗑️ Xoá',
+                'common.edit': '✏️ Sửa',
+                'common.cancel': '❌ Huỷ',
+                'common.reject': 'Từ chối',
+                'common.error': 'Lỗi',
+                'common.errorLoading': 'Lỗi khi tải dữ liệu',
+                'common.errorLoadingLogs': 'Lỗi khi tải nhật ký',
+                'common.languageSaved': 'Đã lưu ngôn ngữ',
+                'enroll.title': 'Đang quét vân tay USB',
+                'enroll.stage': 'Bước {n} / 6',
+                'enroll.prompt': 'Vui lòng đặt ngón tay lên cảm biến USB...',
+                'verify.title': 'Yêu cầu xác thực WebAuthn',
+                'verify.desc': 'Một website đang yêu cầu khoá bảo mật của bạn:',
+                'verify.select': '👤 Chọn tài khoản để xác thực:',
+                'verify.note': 'Mặc định dùng tài khoản dùng/thêm gần nhất.',
+                'verify.setup': '⚠️ Chưa thiết lập bảo mật. Hãy tạo mã PIN 6 số để kích hoạt:',
+                'verify.setupPh': 'Nhập 6 số',
+                'verify.activate': 'Kích hoạt & Chấp nhận',
+                'verify.prompt': '💡 Chạm cảm biến vân tay USB hoặc nhập mã PIN:',
+                'verify.pinPh': 'Nhập PIN 6 số',
+                'verify.withPin': '🔑 Xác thực bằng PIN',
+                'verify.withSensor': '🖐️ Chạm cảm biến USB',
+                'verify.reject': '❌ Từ chối yêu cầu',
+                'enroll.initializing': 'Đang khởi tạo...',
+                'enroll.connecting': 'Đang kết nối cảm biến USB...',
+                'enroll.success': 'Thành công!',
+                'enroll.captured': 'Đã ghi 6 bước và lưu vào chip USB!',
+                'enroll.failed': 'Thất bại',
+                'enroll.error': 'Đã xảy ra lỗi',
+                'fp.deleteConfirm': 'Xoá vân tay này?',
+                'fp.nameRequired': 'Vui lòng nhập tên cho vân tay!',
+                'pin.invalid': 'PIN phải gồm đúng 6 chữ số (0-9)!',
+                'pin.saved': 'Đã cập nhật PIN!',
+                'pin.removed': 'Đã xoá PIN!',
+                'pin.confirmRemoval': 'Nhập PIN hiện tại để xác nhận xoá:',
+                'logs.cleared': 'Đã xoá nhật ký',
+                'debug.cleared': 'Đã xoá nhật ký gỡ lỗi',
+                'all.cleared': 'Đã xoá toàn bộ nhật ký',
+                'logs.clearConfirm': 'Xoá toàn bộ nhật ký hoạt động?',
+                'debug.clearConfirm': 'Xoá toàn bộ nhật ký gỡ lỗi?',
+                'all.clearConfirm': 'Xoá nhật ký hoạt động và nhật ký gỡ lỗi? Không thể hoàn tác.',
+                'common.errorClearing': 'Lỗi khi xoá nhật ký',
+                'common.confirm': 'Xác nhận'
+            }
+        };
+
+        let currentLang = 'en';
+
+        function t(key, vars) {
+            const dict = I18N[currentLang] || I18N.en;
+            let text = dict[key] || I18N.en[key] || key;
+            if (vars) Object.keys(vars).forEach(k => { text = text.replace(`{${k}}`, vars[k]); });
+            return text;
+        }
+
+        function applyLanguage(lang) {
+            currentLang = I18N[lang] ? lang : 'en';
+            document.documentElement.lang = currentLang;
+            document.querySelectorAll('[data-i18n]').forEach(el => { el.textContent = t(el.dataset.i18n); });
+            document.querySelectorAll('[data-i18n-placeholder]').forEach(el => { el.placeholder = t(el.dataset.i18nPlaceholder); });
+            document.querySelectorAll('.lang-btn').forEach(b => b.classList.toggle('active', b.dataset.lang === currentLang));
+            decorateTables(document, true);
+        }
+
+        async function loadSettings() {
+            let language = 'en';
+            try {
+                const res = await fetch('/api/settings');
+                const json = await res.json();
+                if (json.success && json.data && json.data.language) language = json.data.language;
+            } catch (e) {
+                console.warn('settings unavailable, using default language', e);
+            }
+            applyLanguage(language);
+            return language;
+        }
+
+        async function setLanguage(lang) {
+            applyLanguage(lang);
+            try {
+                await fetch('/api/settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ language: currentLang })
+                });
+            } catch (e) {
+                console.warn('could not persist language', e);
+            }
+            // Texts rendered by script (status, toggles, fingerprint suffix) refresh here.
+            fetchStatus();
+            loadCredentials();
+        }
+
         function switchTab(tabId, btn) {
+            const panel = document.getElementById(tabId);
+            // A panel hidden for this viewport must never take over the screen.
+            if (panel && panel.classList.contains('desktop-only') && isMobile()) {
+                tabId = 'tab-creds';
+                btn = null;
+            }
             document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
             document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
             const targetBtn = btn || (typeof event !== 'undefined' && event && event.target) || document.querySelector(`[onclick*="${tabId}"]`);
@@ -847,25 +1384,19 @@ async fn index_html() -> Html<&'static str> {
                 const json = await res.json();
                 if (json.success) {
                     const s = json.data;
+                    // Toggle state classes instead of replacing className, so layout classes
+                    // such as desktop-only survive the status refresh.
                     const uhidEl = document.getElementById('uhidStatus');
                     const uhidTxt = document.getElementById('uhidText');
-                    if (s.uhid_connected) {
-                        uhidEl.className = 'badge-status badge-online';
-                        uhidTxt.innerText = 'UHID FIDO2 Online';
-                    } else {
-                        uhidEl.className = 'badge-status badge-offline';
-                        uhidTxt.innerText = 'UHID Offline';
-                    }
+                    uhidEl.classList.toggle('badge-online', !!s.uhid_connected);
+                    uhidEl.classList.toggle('badge-offline', !s.uhid_connected);
+                    uhidTxt.innerText = t(s.uhid_connected ? 'status.uhidOnline' : 'status.uhidOffline');
 
                     const usbEl = document.getElementById('usbSensorStatus');
                     const usbTxt = document.getElementById('usbSensorText');
-                    if (s.usb_sensor_connected) {
-                        usbEl.className = 'badge-status badge-online';
-                        usbTxt.innerText = 'USB 3274:8012 Ready';
-                    } else {
-                        usbEl.className = 'badge-status badge-offline';
-                        usbTxt.innerText = 'USB 3274:8012 Disconnected';
-                    }
+                    usbEl.classList.toggle('badge-online', !!s.usb_sensor_connected);
+                    usbEl.classList.toggle('badge-offline', !s.usb_sensor_connected);
+                    usbTxt.innerText = t(s.usb_sensor_connected ? 'status.usbReady' : 'status.usbDisconnected');
 
                     if (document.getElementById('debugStatus')) {
                         document.getElementById('debugStatus').style.display = s.debug_mode ? 'inline-flex' : 'none';
@@ -874,7 +1405,7 @@ async fn index_html() -> Html<&'static str> {
                         document.getElementById('unlimitedFpStatus').style.display = s.unlimited_fingerprints ? 'inline-flex' : 'none';
                     }
                     if (document.getElementById('fpLimitText')) {
-                        document.getElementById('fpLimitText').innerText = s.unlimited_fingerprints ? ' - Unlimited' : '/10';
+                        document.getElementById('fpLimitText').innerText = t(s.unlimited_fingerprints ? 'sec.fp.limit' : 'sec.fp.limit');
                     }
                     if (document.getElementById('credCount')) {
                         document.getElementById('credCount').innerText = s.credentials_count;
@@ -904,9 +1435,9 @@ async fn index_html() -> Html<&'static str> {
                                 <td><span style="font-weight:700; color:var(--accent);">${c.sign_count}</span></td>
                                 <td style="color:var(--text-muted);">${c.created_at}</td>
                                 <td style="color:var(--text-muted);">${c.last_used_at}</td>
-                                <td>
-                                    <button class="btn btn-secondary btn-sm btn-edit" data-id="${idAttr}" data-username="${uNameAttr}" data-displayname="${uDisplayAttr}">✏️ Edit</button>
-                                    <button class="btn btn-danger btn-sm btn-delete" data-id="${idAttr}" data-rpid="${rpIdAttr}">🗑️ Delete</button>
+                                <td class="actions-cell">
+                                    <button class="btn btn-secondary btn-sm btn-edit" data-id="${idAttr}" data-username="${uNameAttr}" data-displayname="${uDisplayAttr}">${escapeHtml(t('common.edit'))}</button>
+                                    <button class="btn btn-danger btn-sm btn-delete" data-id="${idAttr}" data-rpid="${rpIdAttr}">${escapeHtml(t('common.delete'))}</button>
                                 </td>
                             </tr>
                         `;
@@ -918,17 +1449,17 @@ async fn index_html() -> Html<&'static str> {
                         btn.onclick = () => deleteCredential(btn.dataset.id, btn.dataset.rpid);
                     });
                 } else {
-                    tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: var(--text-muted); padding: 2rem;">No passkey credentials stored yet. Open webauthn.io to register!</td></tr>';
+                    tbody.innerHTML = `<tr><td colspan="7" class="empty-row-cell" style="text-align: center; color: var(--text-muted); padding: 2rem;">${escapeHtml(t('creds.empty'))}</td></tr>`;
                 }
             } catch (e) {
-                tbody.innerHTML = `<tr><td colspan="7" style="color:var(--danger);">Error loading data: ${e}</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="7" class="empty-row-cell" style="color:var(--danger);">${escapeHtml(t('common.errorLoading'))}: ${e}</td></tr>`;
             }
         }
 
         async function editCredential(id, oldName, oldDisplay) {
-            const newName = prompt("Enter new username:", oldName);
+            const newName = prompt(t('creds.promptUser'), oldName);
             if (newName === null) return;
-            const newDisplay = prompt("Enter new display name:", oldDisplay);
+            const newDisplay = prompt(t('creds.promptDisplay'), oldDisplay);
             if (newDisplay === null) return;
 
             const res = await fetch(`/api/credentials/${id}`, {
@@ -940,18 +1471,18 @@ async fn index_html() -> Html<&'static str> {
             if (json.success) {
                 loadCredentials();
             } else {
-                alert("Error: " + json.error);
+                alert(t('common.error') + ': ' + json.error);
             }
         }
 
         async function deleteCredential(id, rpId) {
-            if (!confirm(`Are you sure you want to delete credential for domain '${rpId}'?`)) return;
+            if (!confirm(t('creds.confirmDelete', { rp: rpId }))) return;
             const res = await fetch(`/api/credentials/${id}`, { method: 'DELETE' });
             const json = await res.json();
             if (json.success) {
                 loadCredentials();
             } else {
-                alert("Error: " + json.error);
+                alert(t('common.error') + ': ' + json.error);
             }
         }
 
@@ -969,17 +1500,19 @@ async fn index_html() -> Html<&'static str> {
                     const newPinLabel = document.getElementById('newPinLabel');
 
                     if (sec.pin_enabled) {
-                        pinBadge.className = 'badge-status badge-online';
-                        pinBadge.innerText = 'Active';
+                        pinBadge.classList.remove('badge-offline');
+                        pinBadge.classList.add('badge-online');
+                        pinBadge.innerText = t('sec.pin.active');
                         oldGroup.style.display = 'block';
                         removeBtn.style.display = 'inline-flex';
-                        newPinLabel.innerText = 'Enter replacement 6-digit PIN:';
+                        newPinLabel.innerText = t('sec.pin.replace');
                     } else {
-                        pinBadge.className = 'badge-status badge-offline';
-                        pinBadge.innerText = 'Not Configured';
+                        pinBadge.classList.remove('badge-online');
+                        pinBadge.classList.add('badge-offline');
+                        pinBadge.innerText = t('sec.pin.notConfigured');
                         oldGroup.style.display = 'none';
                         removeBtn.style.display = 'none';
-                        newPinLabel.innerText = 'Enter new 6-digit PIN:';
+                        newPinLabel.innerText = t('sec.pin.new');
                     }
 
                     document.getElementById('fpCount').innerText = fps.length;
@@ -987,14 +1520,14 @@ async fn index_html() -> Html<&'static str> {
                     if (fps.length > 0) {
                         fpTbody.innerHTML = fps.map(f => `
                             <tr>
-                                <td>Slot ${f.slot_index}</td>
+                                <td>${escapeHtml(t('sec.fp.slot', { n: f.slot_index }))}</td>
                                 <td><strong>${escapeHtml(f.name)}</strong></td>
                                 <td style="color:var(--text-muted);">${f.enrolled_at}</td>
-                                <td><button class="btn btn-danger btn-sm" onclick="deleteFp(${f.id})">Delete</button></td>
+                                <td class="actions-cell"><button class="btn btn-danger btn-sm" onclick="deleteFp(${f.id})">${escapeHtml(t('common.delete'))}</button></td>
                             </tr>
                         `).join('');
                     } else {
-                        fpTbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--text-muted);">No fingerprints enrolled yet. Up to 10 fingerprints.</td></tr>';
+                        fpTbody.innerHTML = `<tr><td colspan="4" class="empty-row-cell" style="text-align: center; color: var(--text-muted);">${escapeHtml(t('sec.fp.empty'))}</td></tr>`;
                     }
                 }
             } catch (e) {
@@ -1007,7 +1540,7 @@ async fn index_html() -> Html<&'static str> {
             const oldPin = document.getElementById('oldPinInput').value.trim();
 
             if (pin.length !== 6 || !/^\d+$/.test(pin)) {
-                alert("PIN must be exactly 6 numeric digits (0-9)!");
+                alert(t('pin.invalid'));
                 return;
             }
 
@@ -1023,17 +1556,17 @@ async fn index_html() -> Html<&'static str> {
             });
             const json = await res.json();
             if (json.success) {
-                alert("PIN updated successfully!");
+                alert(t('pin.saved'));
                 document.getElementById('newPinInput').value = '';
                 document.getElementById('oldPinInput').value = '';
                 loadSecurity();
             } else {
-                alert("Error: " + json.error);
+                alert(t('common.error') + ': ' + json.error);
             }
         }
 
         async function removePin() {
-            const current_pin = prompt("Please enter current PIN to confirm removal:");
+            const current_pin = prompt(t('pin.confirmRemoval'));
             if (!current_pin) return;
 
             const res = await fetch('/api/security/pin', {
@@ -1043,10 +1576,10 @@ async fn index_html() -> Html<&'static str> {
             });
             const json = await res.json();
             if (json.success) {
-                alert("Security PIN removed successfully!");
+                alert(t('pin.removed'));
                 loadSecurity();
             } else {
-                alert("Error: " + json.error);
+                alert(t('common.error') + ': ' + json.error);
             }
         }
 
@@ -1055,13 +1588,13 @@ async fn index_html() -> Html<&'static str> {
             const nameInput = document.getElementById('fpNameInput');
             const name = nameInput.value.trim();
             if (!name) {
-                alert("Please enter a name for the fingerprint!");
+                alert(t('fp.nameRequired'));
                 return;
             }
 
             document.getElementById('enrollModal').style.display = 'flex';
-            document.getElementById('enrollStepDesc').innerText = 'Initializing...';
-            document.getElementById('enrollActionPrompt').innerText = 'Connecting to USB sensor...';
+            document.getElementById('enrollStepDesc').innerText = t('enroll.initializing');
+            document.getElementById('enrollActionPrompt').innerText = t('enroll.connecting');
             document.getElementById('enrollProgressBar').style.width = '10%';
             document.getElementById('enrollIcon').innerText = '🖐️';
 
@@ -1072,7 +1605,7 @@ async fn index_html() -> Html<&'static str> {
             });
             const json = await res.json();
             if (!json.success) {
-                alert("Error: " + json.error);
+                alert(t('common.error') + ': ' + json.error);
                 document.getElementById('enrollModal').style.display = 'none';
                 return;
             }
@@ -1090,7 +1623,7 @@ async fn index_html() -> Html<&'static str> {
                     if (p.active) {
                         const pct = Math.round((p.stage / p.total_stages) * 100);
                         document.getElementById('enrollProgressBar').style.width = pct + '%';
-                        document.getElementById('enrollStepDesc').innerText = `Stage ${p.stage} / ${p.total_stages}`;
+                        document.getElementById('enrollStepDesc').innerText = t('enroll.stage', { n: p.stage });
                         document.getElementById('enrollActionPrompt').innerText = p.message;
                         document.getElementById('enrollIcon').innerText = p.status === 'finger_lift' ? '👆' : '🖐️';
                     } else if (p.status === 'completed') {
@@ -1098,8 +1631,8 @@ async fn index_html() -> Html<&'static str> {
                         enrollInterval = null;
                         document.getElementById('enrollProgressBar').style.width = '100%';
                         document.getElementById('enrollIcon').innerText = '✅';
-                        document.getElementById('enrollStepDesc').innerText = 'Success!';
-                        document.getElementById('enrollActionPrompt').innerText = 'Captured 6 stages and saved to USB chip!';
+                        document.getElementById('enrollStepDesc').innerText = t('enroll.success');
+                        document.getElementById('enrollActionPrompt').innerText = t('enroll.captured');
                         setTimeout(() => {
                             document.getElementById('enrollModal').style.display = 'none';
                             document.getElementById('fpNameInput').value = '';
@@ -1109,8 +1642,8 @@ async fn index_html() -> Html<&'static str> {
                         clearInterval(enrollInterval);
                         enrollInterval = null;
                         document.getElementById('enrollIcon').innerText = '❌';
-                        document.getElementById('enrollStepDesc').innerText = 'Failed';
-                        document.getElementById('enrollActionPrompt').innerText = p.error || 'An error occurred';
+                        document.getElementById('enrollStepDesc').innerText = t('enroll.failed');
+                        document.getElementById('enrollActionPrompt').innerText = p.error || t('enroll.error');
                         setTimeout(() => {
                             document.getElementById('enrollModal').style.display = 'none';
                         }, 2500);
@@ -1131,13 +1664,13 @@ async fn index_html() -> Html<&'static str> {
         }
 
         async function deleteFp(id) {
-            if (!confirm("Delete this fingerprint?")) return;
+            if (!confirm(t('fp.deleteConfirm'))) return;
             const res = await fetch(`/api/security/fingerprints/${id}`, { method: 'DELETE' });
             const json = await res.json();
             if (json.success) {
                 loadSecurity();
             } else {
-                alert("Error: " + json.error);
+                alert(t('common.error') + ': ' + json.error);
             }
         }
 
@@ -1162,10 +1695,10 @@ async fn index_html() -> Html<&'static str> {
                         `;
                     }).join('');
                 } else {
-                    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; color:var(--text-muted);">No audit logs yet.</td></tr>';
+                    tbody.innerHTML = `<tr><td colspan="6" class="empty-row-cell" style="text-align:center; color:var(--text-muted);">${escapeHtml(t('logs.empty'))}</td></tr>`;
                 }
             } catch (e) {
-                tbody.innerHTML = `<tr><td colspan="6" style="color:var(--danger);">Error loading logs: ${e}</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="6" class="empty-row-cell" style="color:var(--danger);">${escapeHtml(t('common.errorLoadingLogs'))}: ${e}</td></tr>`;
             }
         }
 
@@ -1184,22 +1717,22 @@ async fn index_html() -> Html<&'static str> {
                         </tr>
                     `).join('');
                 } else {
-                    tbody.innerHTML = '<tr><td colspan="4" style="text-align:center; color:var(--text-muted);">No debug logs yet (Enable --debug CLI flag to view packets).</td></tr>';
+                    tbody.innerHTML = `<tr><td colspan="4" class="empty-row-cell" style="text-align:center; color:var(--text-muted);">${escapeHtml(t('debug.empty'))}</td></tr>`;
                 }
             } catch (e) {
-                tbody.innerHTML = `<tr><td colspan="4" style="color:var(--danger);">Error: ${e}</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="4" class="empty-row-cell" style="color:var(--danger);">${escapeHtml(t('common.error'))}: ${e}</td></tr>`;
             }
         }
 
         async function cleanAuditLogs() {
-            if (!confirm("Are you sure you want to clear all Audit Logs?")) return;
+            if (!confirm(t('logs.clearConfirm'))) return;
             try {
                 const res = await fetch('/api/logs', { method: 'DELETE' });
                 const json = await res.json();
                 if (json.success) {
                     loadAuditLogs();
                 } else {
-                    alert("Error clearing logs: " + json.error);
+                    alert(t('common.errorClearing') + ': ' + json.error);
                 }
             } catch (e) {
                 alert("Error: " + e);
@@ -1230,7 +1763,7 @@ async fn index_html() -> Html<&'static str> {
                     loadAuditLogs();
                     loadDebugLogs();
                 } else {
-                    alert("Error clearing logs: " + json.error);
+                    alert(t('common.errorClearing') + ': ' + json.error);
                 }
             } catch (e) {
                 alert("Error: " + e);
@@ -1384,9 +1917,14 @@ async fn index_html() -> Html<&'static str> {
                 .replace(/'/g, '&#39;');
         }
 
-        // Init
-        fetchStatus();
-        loadCredentials();
+        // Init: resolve the stored language first so the first paint is already localized.
+        (async () => {
+            await loadSettings();
+            decorateTables();
+            MOBILE_QUERY.addEventListener('change', () => decorateTables());
+            fetchStatus();
+            loadCredentials();
+        })();
         setInterval(fetchStatus, 3000);
         setInterval(pollPendingVerification, 1000);
     </script>
@@ -1417,6 +1955,105 @@ mod tests {
             unlimited_fps: false,
             port: 10209,
         }
+    }
+
+    #[tokio::test]
+    async fn test_settings_default_language_and_persistence() {
+        let state = create_test_state();
+
+        let initial = get_settings(State(state.clone())).await.0;
+        assert!(initial.success);
+        let defaults = initial.data.expect("settings payload");
+        assert_eq!(defaults.get("language").map(String::as_str), Some("en"));
+        assert_eq!(defaults.get("daemon.port").map(String::as_str), Some("10209"));
+
+        let updated = update_settings(
+            State(state.clone()),
+            Json(SettingsUpdate {
+                language: Some("vi".into()),
+                ..Default::default()
+            }),
+        )
+        .await
+        .0;
+        assert!(updated.success);
+        assert_eq!(
+            updated.data.as_ref().and_then(|m| m.get("language")).map(String::as_str),
+            Some("vi")
+        );
+        assert_eq!(state.db.get_app_setting("language").unwrap().as_deref(), Some("vi"));
+
+        // Unknown languages are rejected instead of being persisted.
+        let rejected = update_settings(
+            State(state.clone()),
+            Json(SettingsUpdate {
+                language: Some("fr".into()),
+                ..Default::default()
+            }),
+        )
+        .await
+        .0;
+        assert!(!rejected.success);
+        assert_eq!(state.db.get_app_setting("language").unwrap().as_deref(), Some("vi"));
+    }
+
+    #[tokio::test]
+    async fn test_settings_store_daemon_parameters() {
+        let state = create_test_state();
+
+        let stored = update_settings(
+            State(state.clone()),
+            Json(SettingsUpdate {
+                language: None,
+                daemon: Some(DaemonSettingsUpdate {
+                    host: Some("127.0.0.1".into()),
+                    port: Some(11223),
+                    database: Some("vault.db".into()),
+                    debug: Some(true),
+                    unlimited_fingerprints: Some(true),
+                    running: Some(true),
+                    ..Default::default()
+                }),
+            }),
+        )
+        .await
+        .0;
+        assert!(stored.success, "{:?}", stored.error);
+        let map = stored.data.expect("settings payload");
+        assert_eq!(map.get("daemon.host").map(String::as_str), Some("127.0.0.1"));
+        assert_eq!(map.get("daemon.port").map(String::as_str), Some("11223"));
+        assert_eq!(map.get("daemon.database").map(String::as_str), Some("vault.db"));
+        assert_eq!(map.get("daemon.debug").map(String::as_str), Some("true"));
+        assert_eq!(map.get("daemon.running").map(String::as_str), Some("true"));
+
+        // Invalid values must not be written.
+        let bad_port = update_settings(
+            State(state.clone()),
+            Json(SettingsUpdate {
+                daemon: Some(DaemonSettingsUpdate {
+                    port: Some(0),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+        )
+        .await
+        .0;
+        assert!(!bad_port.success);
+        let bad_host = update_settings(
+            State(state.clone()),
+            Json(SettingsUpdate {
+                daemon: Some(DaemonSettingsUpdate {
+                    host: Some("   ".into()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+        )
+        .await
+        .0;
+        assert!(!bad_host.success);
+        assert_eq!(state.db.get_app_setting("daemon.port").unwrap().as_deref(), Some("11223"));
     }
 
     #[tokio::test]

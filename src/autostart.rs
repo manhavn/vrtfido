@@ -96,7 +96,7 @@ pub fn generate_desktop_entry(exe_path: &Path, extra_args: &[String]) -> String 
         "[Desktop Entry]\n\
          Type=Application\n\
          Version=1.0\n\
-         Name=vrtfido\n\
+         Name=VrtFido\n\
          GenericName=Virtual FIDO2 / WebAuthn Authenticator\n\
          Comment=Virtual FIDO2 / WebAuthn Authenticator CMS\n\
          Exec={quoted_exe}{args_str} --daemon\n\
@@ -212,7 +212,7 @@ mod tests {
         let entry = generate_desktop_entry(exe, &args);
 
         assert!(entry.contains("Exec=/usr/local/bin/vrtfido --port 10209 --daemon"));
-        assert!(entry.contains("Name=vrtfido"));
+        assert!(entry.contains("Name=VrtFido"));
         assert!(entry.contains("X-GNOME-Autostart-enabled=true"));
     }
 

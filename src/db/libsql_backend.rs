@@ -103,7 +103,12 @@ impl LibSqlBackend {
                          enrolled_at TEXT NOT NULL
                      );
 
-                     CREATE TABLE IF NOT EXISTS debug_logs (
+                     CREATE TABLE IF NOT EXISTS app_settings (
+                        setting_key TEXT PRIMARY KEY,
+                        value TEXT NOT NULL
+                    );
+
+                    CREATE TABLE IF NOT EXISTS debug_logs (
                          id INTEGER PRIMARY KEY AUTOINCREMENT,
                          level TEXT NOT NULL,
                          component TEXT NOT NULL,
@@ -175,6 +180,42 @@ impl DbBackend for LibSqlBackend {
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                     libsql::params![cid, rp_id, operation, status, auth_method, details, now],
                 ).await;
+                Ok(())
+            })
+        })
+    }
+
+    fn get_app_settings(&self) -> Result<Vec<(String, String)>, DbError> {
+        let conn = self.conn.clone();
+        self.worker.run(move |rt| {
+            rt.block_on(async move {
+                let mut rows = conn
+                    .query("SELECT setting_key, value FROM app_settings ORDER BY setting_key", ())
+                    .await
+                    .map_err(|e| DbError::LibSql(e.to_string()))?;
+                let mut out = Vec::new();
+                while let Some(row) = rows.next().await.map_err(|e| DbError::LibSql(e.to_string()))? {
+                    let key: String = row.get(0).map_err(|e| DbError::LibSql(e.to_string()))?;
+                    let value: String = row.get(1).map_err(|e| DbError::LibSql(e.to_string()))?;
+                    out.push((key, value));
+                }
+                Ok(out)
+            })
+        })
+    }
+
+    fn set_app_setting(&self, key: &str, value: &str) -> Result<(), DbError> {
+        let conn = self.conn.clone();
+        let (key, value) = (key.to_string(), value.to_string());
+        self.worker.run(move |rt| {
+            rt.block_on(async move {
+                conn.execute(
+                    "INSERT INTO app_settings (setting_key, value) VALUES (?1, ?2)
+                     ON CONFLICT(setting_key) DO UPDATE SET value = excluded.value",
+                    libsql::params![key, value],
+                )
+                .await
+                .map_err(|e| DbError::LibSql(e.to_string()))?;
                 Ok(())
             })
         })

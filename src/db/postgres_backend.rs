@@ -93,7 +93,12 @@ impl PgWorker {
                      enrolled_at VARCHAR(64) NOT NULL
                  );
 
-                 CREATE TABLE IF NOT EXISTS debug_logs (
+                 CREATE TABLE IF NOT EXISTS app_settings (
+                    setting_key VARCHAR(128) PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS debug_logs (
                      id BIGSERIAL PRIMARY KEY,
                      level VARCHAR(32) NOT NULL,
                      component VARCHAR(64) NOT NULL,
@@ -189,6 +194,36 @@ impl DbBackend for PostgresBackend {
                  VALUES ($1, $2, $3, $4, $5, $6, $7)",
                 &[&cid, &rp_id, &operation, &status, &auth_method, &details, &now],
             );
+            Ok(())
+        })
+    }
+
+    fn get_app_settings(&self) -> Result<Vec<(String, String)>, DbError> {
+        self.worker.run(|client| {
+            let rows = client
+                .query("SELECT setting_key, value FROM app_settings ORDER BY setting_key", &[])
+                .map_err(pg_err)?;
+            Ok(rows
+                .into_iter()
+                .map(|row| {
+                    let setting_key: String = row.get(0);
+                    let value: String = row.get(1);
+                    (setting_key, value)
+                })
+                .collect())
+        })
+    }
+
+    fn set_app_setting(&self, key: &str, value: &str) -> Result<(), DbError> {
+        let (key, value) = (key.to_string(), value.to_string());
+        self.worker.run(move |client| {
+            client
+                .execute(
+                    "INSERT INTO app_settings (setting_key, value) VALUES ($1, $2)
+                     ON CONFLICT (setting_key) DO UPDATE SET value = EXCLUDED.value",
+                    &[&key, &value],
+                )
+                .map_err(pg_err)?;
             Ok(())
         })
     }

@@ -132,6 +132,9 @@ pub struct DatabaseExport {
     pub security_settings: SecuritySettingsData,
     pub fingerprints: Vec<FingerprintRow>,
     pub debug_logs: Vec<DebugLogRow>,
+    /// UI language and daemon parameters, shared by the web CMS and the Android app.
+    #[serde(default)]
+    pub app_settings: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default)]
@@ -141,6 +144,8 @@ pub struct ImportStats {
     pub fingerprints_imported: usize,
     pub debug_logs_imported: usize,
     pub security_settings_updated: bool,
+    #[serde(default)]
+    pub app_settings_imported: usize,
 }
 
 pub trait DbBackend: Send + Sync {
@@ -158,6 +163,12 @@ pub trait DbBackend: Send + Sync {
         details: Option<&str>,
         now: &str,
     ) -> Result<()>;
+
+    /// All persisted UI/daemon settings as key/value pairs.
+    fn get_app_settings(&self) -> Result<Vec<(String, String)>>;
+
+    /// Inserts or overwrites a single setting.
+    fn set_app_setting(&self, key: &str, value: &str) -> Result<()>;
 
     fn get_credentials(&self) -> Result<Vec<CredentialRow>>;
 
@@ -542,6 +553,7 @@ impl Db {
         let security_settings = self.backend.get_security_settings_raw()?;
         let fingerprints = self.backend.get_fingerprints()?;
         let debug_logs = self.backend.get_debug_logs(usize::MAX)?;
+        let app_settings = self.backend.get_app_settings()?.into_iter().collect();
 
         Ok(DatabaseExport {
             version: 1,
@@ -552,6 +564,7 @@ impl Db {
             security_settings,
             fingerprints,
             debug_logs,
+            app_settings,
         })
     }
 
@@ -603,7 +616,13 @@ impl Db {
             stats.auth_logs_imported += 1;
         }
 
-        // 5. Import debug logs
+        // 5. Import UI / daemon settings
+        for (key, value) in &data.app_settings {
+            self.backend.set_app_setting(key, value)?;
+            stats.app_settings_imported += 1;
+        }
+
+        // 6. Import debug logs
         for log in &data.debug_logs {
             self.backend.insert_debug_log_full(
                 log.id,
@@ -616,6 +635,26 @@ impl Db {
         }
 
         Ok(stats)
+    }
+
+    /// All persisted UI / daemon settings.
+    pub fn get_app_settings(&self) -> Result<Vec<(String, String)>> {
+        self.backend.get_app_settings()
+    }
+
+    /// Value of one setting, if present.
+    pub fn get_app_setting(&self, key: &str) -> Result<Option<String>> {
+        Ok(self
+            .backend
+            .get_app_settings()?
+            .into_iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v))
+    }
+
+    /// Inserts or overwrites one setting.
+    pub fn set_app_setting(&self, key: &str, value: &str) -> Result<()> {
+        self.backend.set_app_setting(key, value)
     }
 
     pub fn export_to_file(&self, path: &str) -> Result<()> {
@@ -987,6 +1026,14 @@ mod tests {
         assert_eq!(debug_logs.len(), 1);
         assert_eq!(debug_logs[0].component, "TEST");
         assert_eq!(debug_logs[0].message, "Testing export import");
+
+        db1.set_app_setting("language", "vi").unwrap();
+        db1.set_app_setting("daemon.port", "11223").unwrap();
+        db1.export_to_file(export_path_str).expect("Failed to export with app settings");
+        let with_settings = db2.import_from_file(export_path_str).expect("Failed to import settings");
+        assert_eq!(with_settings.app_settings_imported, 2);
+        assert_eq!(db2.get_app_setting("language").unwrap().as_deref(), Some("vi"));
+        assert_eq!(db2.get_app_setting("daemon.port").unwrap().as_deref(), Some("11223"));
 
         // 5. Re-importing the same file must overwrite instead of failing on duplicate IDs,
         //    which is what the Android backup screen and repeated CLI restores rely on.
