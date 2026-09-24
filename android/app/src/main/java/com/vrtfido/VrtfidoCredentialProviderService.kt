@@ -76,7 +76,7 @@ class VrtfidoCredentialProviderService : CredentialProviderService() {
                         .getBoolean(BUNDLE_KEY_IS_AUTO_SELECT_ALLOWED, false)
                     val autoSelect = candidates.size == 1 &&
                         (callerAllowsAutoSelect || allowList.isNotEmpty())
-                    Log.i(
+                    Log.d(
                         TAG,
                         "get request rp=$rpId entries=${candidates.size} pinned=${allowList.isNotEmpty()} " +
                             "callerAutoSelect=$callerAllowsAutoSelect autoSelect=$autoSelect"
