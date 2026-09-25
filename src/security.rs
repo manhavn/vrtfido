@@ -49,6 +49,13 @@ pub struct PendingPrompt {
 }
 
 #[derive(Clone, Debug)]
+pub enum PromptEvent {
+    NewPrompt(PendingPrompt),
+    PromptUpdated(PendingPrompt),
+    PromptClosed(u64),
+}
+
+#[derive(Clone, Debug)]
 pub struct VerificationSuccess {
     pub method: String,
     pub selected_credential_id: Option<String>,
@@ -81,6 +88,7 @@ pub struct SecurityEngine {
     fp_listener_paused: Arc<AtomicBool>,
     /// One manual scan per request: a double click must not start a second scan on the same chip.
     fp_manual_active: Arc<AtomicBool>,
+    prompt_tx: tokio::sync::broadcast::Sender<PromptEvent>,
 }
 
 impl SecurityEngine {
@@ -95,17 +103,34 @@ impl SecurityEngine {
             session_verified: Arc::new(AtomicBool::new(false)),
             fp_listener_paused: Arc::new(AtomicBool::new(false)),
             fp_manual_active: Arc::new(AtomicBool::new(false)),
+            prompt_tx: tokio::sync::broadcast::channel(64).0,
         }
     }
 
     pub fn sensor(&self) -> &UsbSensor {
         &self.sensor
     }
+    pub fn subscribe_prompts(&self) -> tokio::sync::broadcast::Receiver<PromptEvent> {
+        self.prompt_tx.subscribe()
+    }
+
+    #[allow(dead_code)]
+    pub fn notify_prompt_event(&self, event: PromptEvent) {
+        let _ = self.prompt_tx.send(event);
+    }
+
 
     /// Live state of the modal checkbox. Kept on the server so the USB sensor's background listener
     /// can honour the same choice as the on-screen buttons.
     pub fn set_remember_requested(&self, enabled: bool) {
         self.remember_requested.store(enabled, Ordering::SeqCst);
+        let mut guard = self.pending.lock();
+        if let Some(active) = guard.as_mut() {
+            active.prompt.remember_requested = enabled;
+            let updated = active.prompt.clone();
+            drop(guard);
+            let _ = self.prompt_tx.send(PromptEvent::PromptUpdated(updated));
+        }
     }
 
     /// Extend the verification to the rest of this run - only ever on top of a verification that
@@ -277,7 +302,9 @@ impl SecurityEngine {
         let mut guard = self.pending.lock();
         if let Some(active) = guard.as_mut() {
             if active.start_time.elapsed() > Duration::from_secs(active.prompt.timeout_seconds) {
+                let req_id = active.prompt.request_id;
                 *guard = None;
+                let _ = self.prompt_tx.send(PromptEvent::PromptClosed(req_id));
                 None
             } else {
                 // The flags are live state, not a snapshot: the checkbox is pushed by the browser and
@@ -370,11 +397,12 @@ impl SecurityEngine {
         {
             let mut guard = self.pending.lock();
             *guard = Some(ActiveVerification {
-                prompt,
+                prompt: prompt.clone(),
                 start_time: Instant::now(),
                 responder: Some(tx),
             });
         }
+        let _ = self.prompt_tx.send(PromptEvent::NewPrompt(prompt));
 
         println!(
             "\n[SECURITY] >>> NEW VERIFICATION REQUEST (Request #{} - RP: '{}', Operation: '{}') <<<",
@@ -475,16 +503,19 @@ impl SecurityEngine {
             Ok(Ok(res)) => {
                 let mut guard = self.pending.lock();
                 *guard = None;
+                let _ = self.prompt_tx.send(PromptEvent::PromptClosed(req_id));
                 res
             }
             Ok(Err(_)) => {
                 let mut guard = self.pending.lock();
                 *guard = None;
+                let _ = self.prompt_tx.send(PromptEvent::PromptClosed(req_id));
                 Err("Verification session cancelled".to_string())
             }
             Err(_) => {
                 let mut guard = self.pending.lock();
                 *guard = None;
+                let _ = self.prompt_tx.send(PromptEvent::PromptClosed(req_id));
                 Err("Verification timed out (Timeout 60s)".to_string())
             }
         };
@@ -535,6 +566,7 @@ impl SecurityEngine {
                         "PIN",
                         Some("Verified 6-digit PIN successfully via Web CMS"),
                     );
+                    let _ = self.prompt_tx.send(PromptEvent::PromptClosed(req_id));
                     Ok(())
                 }
                 "FINGERPRINT" => {
@@ -629,6 +661,7 @@ impl SecurityEngine {
                         "FINGERPRINT",
                         Some("Fingerprint sensor verified successfully (Template match)"),
                     );
+                    let _ = self.prompt_tx.send(PromptEvent::PromptClosed(req_id));
                     Ok(())
                 }
                 "SETUP" => {
@@ -650,6 +683,7 @@ impl SecurityEngine {
                         "SETUP",
                         Some("Initialized new security settings successfully"),
                     );
+                    let _ = self.prompt_tx.send(PromptEvent::PromptClosed(req_id));
                     Ok(())
                 }
 
@@ -677,6 +711,7 @@ impl SecurityEngine {
                         "REMEMBERED",
                         Some("Approved with the remembered session of this app run (no PIN / fingerprint)"),
                     );
+                    let _ = self.prompt_tx.send(PromptEvent::PromptClosed(req_id));
                     Ok(())
                 }
 
@@ -699,7 +734,9 @@ impl SecurityEngine {
             }
 
             active.prompt.selected_credential_id = Some(credential_id.to_string());
+            let updated = active.prompt.clone();
             *guard = Some(active);
+            let _ = self.prompt_tx.send(PromptEvent::PromptUpdated(updated));
             Ok(())
         } else {
             Err("No pending verification request".to_string())
@@ -725,6 +762,7 @@ impl SecurityEngine {
                 "NONE",
                 Some(reason),
             );
+            let _ = self.prompt_tx.send(PromptEvent::PromptClosed(req_id));
             Ok(())
         } else {
             Err("No pending verification request".to_string())

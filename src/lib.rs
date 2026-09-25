@@ -5,6 +5,7 @@ pub mod security;
 pub mod sensor;
 pub mod tray;
 pub mod web;
+pub mod gui;
 
 // Re-export common types
 pub use db::Db;
