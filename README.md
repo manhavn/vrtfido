@@ -29,6 +29,7 @@ The application includes an embedded **Web CMS Dashboard** on port **10209**, su
 4. **Web Management CMS (Port 10209):**
    - Modern, lightweight Dark theme embedded directly into the binary (zero Node.js/npm dependencies).
    - Manage registered passkey credentials (Relying Party domain, username, sign count, creation date, last used date).
+   - **Search box** filters the credential list live by domain, username or display name (case-insensitive substring, client-side).
    - Edit usernames and display names, or delete credentials.
    - **Operational Audit Trail:** Complete operation history with detailed logs.
    - **Debug & Error Logs:** System logs and CTAP2 packet inspection.

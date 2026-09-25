@@ -677,6 +677,10 @@ async fn index_html() -> Html<&'static str> {
         .action-bar, .form-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }
         .input-row { display: flex; gap: 0.5rem; align-items: stretch; flex-wrap: wrap; }
         .input-row .form-control { flex: 1 1 12rem; min-width: 0; }
+        .search-input { flex: 1 1 16rem; max-width: 22rem; min-width: 0; }
+        /* The search box and Refresh share the header row; the action bar claims the space the
+           title leaves over so the input grows to 22rem instead of wrapping above the button. */
+        #tab-creds .card-header .action-bar { flex: 1 1 auto; justify-content: flex-end; }
 
         /* ---------- Tables ---------- */
         .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
@@ -779,6 +783,7 @@ async fn index_html() -> Html<&'static str> {
             /* Full-width actions read better than a cramped inline row on a phone. */
             .action-bar { width: 100%; }
             .action-bar .btn { flex: 1 1 auto; }
+            .action-bar .search-input { flex: 1 1 100%; max-width: none; }
             .form-actions .btn, .input-row .btn { flex: 1 1 100%; }
             .modal-box { padding: 1.25rem 1rem; }
 
@@ -852,6 +857,9 @@ async fn index_html() -> Html<&'static str> {
                 <div class="card-header">
                     <div class="card-title" data-i18n="creds.title">Registered WebAuthn Credentials</div>
                     <div class="action-bar">
+                        <input type="search" id="credSearchInput" class="form-control search-input" autocomplete="off"
+                               placeholder="Search domain, username, display name" data-i18n-placeholder="creds.searchPh"
+                               oninput="onCredSearch()">
                         <button class="btn btn-secondary btn-sm" onclick="loadCredentials()" data-i18n="btn.refresh">🔄 Refresh</button>
                     </div>
                 </div>
@@ -1264,6 +1272,8 @@ async fn index_html() -> Html<&'static str> {
                 'creds.h.lastUsed': 'Last Used',
                 'creds.h.actions': 'Actions',
                 'creds.empty': 'No passkey credentials stored yet. Open webauthn.io to register!',
+                'creds.searchPh': 'Search domain, username or display name...',
+                'creds.noMatch': 'No credentials match your search.',
                 'creds.promptUser': 'Enter new username:',
                 'creds.promptDisplay': 'Enter new display name:',
                 'creds.confirmDelete': "Are you sure you want to delete the credential for domain '{rp}'?",
@@ -1380,6 +1390,8 @@ async fn index_html() -> Html<&'static str> {
                 'creds.h.lastUsed': 'Dùng lần cuối',
                 'creds.h.actions': 'Thao tác',
                 'creds.empty': 'Chưa có khoá passkey nào. Mở webauthn.io để đăng ký!',
+                'creds.searchPh': 'Tìm tên miền, tên tài khoản hoặc tên hiển thị...',
+                'creds.noMatch': 'Không có khoá nào khớp với tìm kiếm.',
                 'creds.promptUser': 'Nhập tên tài khoản mới:',
                 'creds.promptDisplay': 'Nhập tên hiển thị mới:',
                 'creds.confirmDelete': "Xoá khoá của tên miền '{rp}'?",
@@ -1590,40 +1602,66 @@ async fn index_html() -> Html<&'static str> {
             }
         }
 
+        // Credentials are fetched in full, so filtering happens in the browser: typing in the
+        // search box never hits the API and never loses the current result set ordering. The query
+        // is read from the input at render time, so browser form-restore cannot desync the list.
+        let credCache = [];
+
+        function onCredSearch() {
+            renderCredentials();
+        }
+
+        function renderCredentials() {
+            const tbody = document.getElementById('credTableBody');
+            const input = document.getElementById('credSearchInput');
+            const q = (input ? input.value : '').trim().toLowerCase();
+            const rows = q
+                ? credCache.filter(c => [c.rp_id, c.user_name, c.user_display_name].some(v => (v || '').toLowerCase().includes(q)))
+                : credCache;
+            if (rows.length === 0) {
+                const key = credCache.length === 0 ? 'creds.empty' : 'creds.noMatch';
+                tbody.innerHTML = `<tr><td colspan="7" class="empty-row-cell" style="text-align: center; color: var(--text-muted); padding: 2rem;">${escapeHtml(t(key))}</td></tr>`;
+                return;
+            }
+            tbody.innerHTML = rows.map(c => {
+                const idAttr = escapeHtml(c.id);
+                const uNameAttr = escapeHtml(c.user_name);
+                const uDisplayAttr = escapeHtml(c.user_display_name);
+                const rpIdAttr = escapeHtml(c.rp_id);
+                return `
+                    <tr>
+                        <td><strong>${rpIdAttr}</strong></td>
+                        <td>${uNameAttr}</td>
+                        <td>${uDisplayAttr}</td>
+                        <td><span style="font-weight:700; color:var(--accent);">${c.sign_count}</span></td>
+                        <td style="color:var(--text-muted);">${c.created_at}</td>
+                        <td style="color:var(--text-muted);">${c.last_used_at}</td>
+                        <td class="actions-cell">
+                            <button class="btn btn-secondary btn-sm btn-edit" data-id="${idAttr}" data-username="${uNameAttr}" data-displayname="${uDisplayAttr}">${escapeHtml(t('common.edit'))}</button>
+                            <button class="btn btn-danger btn-sm btn-delete" data-id="${idAttr}" data-rpid="${rpIdAttr}">${escapeHtml(t('common.delete'))}</button>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+            tbody.querySelectorAll('.btn-edit').forEach(btn => {
+                btn.onclick = () => editCredential(btn.dataset.id, btn.dataset.username, btn.dataset.displayname);
+            });
+            tbody.querySelectorAll('.btn-delete').forEach(btn => {
+                btn.onclick = () => deleteCredential(btn.dataset.id, btn.dataset.rpid);
+            });
+        }
+
         async function loadCredentials() {
             const tbody = document.getElementById('credTableBody');
             try {
                 const res = await fetch('/api/credentials');
                 const json = await res.json();
-                if (json.success && json.data.length > 0) {
-                    tbody.innerHTML = json.data.map(c => {
-                        const idAttr = escapeHtml(c.id);
-                        const uNameAttr = escapeHtml(c.user_name);
-                        const uDisplayAttr = escapeHtml(c.user_display_name);
-                        const rpIdAttr = escapeHtml(c.rp_id);
-                        return `
-                            <tr>
-                                <td><strong>${rpIdAttr}</strong></td>
-                                <td>${uNameAttr}</td>
-                                <td>${uDisplayAttr}</td>
-                                <td><span style="font-weight:700; color:var(--accent);">${c.sign_count}</span></td>
-                                <td style="color:var(--text-muted);">${c.created_at}</td>
-                                <td style="color:var(--text-muted);">${c.last_used_at}</td>
-                                <td class="actions-cell">
-                                    <button class="btn btn-secondary btn-sm btn-edit" data-id="${idAttr}" data-username="${uNameAttr}" data-displayname="${uDisplayAttr}">${escapeHtml(t('common.edit'))}</button>
-                                    <button class="btn btn-danger btn-sm btn-delete" data-id="${idAttr}" data-rpid="${rpIdAttr}">${escapeHtml(t('common.delete'))}</button>
-                                </td>
-                            </tr>
-                        `;
-                    }).join('');
-                    tbody.querySelectorAll('.btn-edit').forEach(btn => {
-                        btn.onclick = () => editCredential(btn.dataset.id, btn.dataset.username, btn.dataset.displayname);
-                    });
-                    tbody.querySelectorAll('.btn-delete').forEach(btn => {
-                        btn.onclick = () => deleteCredential(btn.dataset.id, btn.dataset.rpid);
-                    });
+                if (json.success && Array.isArray(json.data)) {
+                    credCache = json.data;
+                    renderCredentials();
                 } else {
-                    tbody.innerHTML = `<tr><td colspan="7" class="empty-row-cell" style="text-align: center; color: var(--text-muted); padding: 2rem;">${escapeHtml(t('creds.empty'))}</td></tr>`;
+                    credCache = [];
+                    tbody.innerHTML = `<tr><td colspan="7" class="empty-row-cell" style="color:var(--danger);">${escapeHtml(t('common.errorLoading'))}: ${escapeHtml(json.error || '')}</td></tr>`;
                 }
             } catch (e) {
                 tbody.innerHTML = `<tr><td colspan="7" class="empty-row-cell" style="color:var(--danger);">${escapeHtml(t('common.errorLoading'))}: ${e}</td></tr>`;

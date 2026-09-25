@@ -11,7 +11,9 @@ pub use db::Db;
 pub use security::SecurityEngine;
 pub use web::AppState;
 
+#[cfg(feature = "jni-bridge")]
 use std::sync::atomic::AtomicBool;
+#[cfg(feature = "jni-bridge")]
 use std::sync::Arc;
 
 /// Startup parameters for the embedded server, mirroring the desktop CLI flags.
@@ -35,6 +37,10 @@ pub struct DaemonOptions {
     pub unlimited_fingerprints: bool,
 }
 
+/// Builds the embedded server's router from CLI-equivalent options. Only the JNI bridge starts a
+/// daemon this way; the desktop binary builds its own `AppState` because it shares the debug/UHID
+/// flags with the UHID thread and the tray.
+#[cfg(feature = "jni-bridge")]
 fn server_router(options: &DaemonOptions) -> Result<axum::Router, db::DbError> {
     let db = Db::open_with_options(
         &options.database,
