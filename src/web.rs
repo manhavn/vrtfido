@@ -63,6 +63,14 @@ pub struct ApproveVerifyRequest {
     pub method: String,
     pub pin: Option<String>,
     pub credential_id: Option<String>,
+    /// "Remember" checkbox of the modal: keep the verification for the rest of this app run.
+    #[serde(default)]
+    pub remember: Option<bool>,
+}
+
+#[derive(Deserialize)]
+pub struct RememberRequest {
+    pub enabled: bool,
 }
 #[derive(Deserialize)]
 pub struct SelectAccountRequest {
@@ -126,6 +134,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/security/fingerprints/{id}", delete(delete_fingerprint))
         .route("/api/verify/pending", get(get_pending_verify))
         .route("/api/verify/select", post(select_verify_account))
+        .route("/api/verify/remember", post(set_remember))
         .route("/api/verify/approve", post(approve_verify))
         .route("/api/verify/reject", post(reject_verify))
         .route("/api/settings", get(get_settings))
@@ -397,10 +406,21 @@ async fn approve_verify(
         &payload.method,
         payload.pin.as_deref(),
         payload.credential_id,
+        payload.remember,
     ) {
         Ok(_) => Json(ApiResponse::ok(true)),
         Err(e) => Json(ApiResponse::err(e)),
     }
+}
+
+/// Live state of the modal's "Remember" checkbox. The USB sensor runs its own approval path in a
+/// background thread, so the choice has to reach the engine before the finger is placed.
+async fn set_remember(
+    State(state): State<AppState>,
+    Json(payload): Json<RememberRequest>,
+) -> Json<ApiResponse<bool>> {
+    state.security.set_remember_requested(payload.enabled);
+    Json(ApiResponse::ok(payload.enabled))
 }
 
 async fn select_verify_account(
@@ -752,6 +772,17 @@ async fn index_html() -> Html<&'static str> {
         .modal-icon { font-size: 3rem; margin-bottom: 1rem; }
         .modal-title { font-size: 1.3rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--accent); }
         .modal-rp { font-size: 1.05rem; font-weight: 600; color: var(--text-main); background: var(--bg-secondary); padding: 0.5rem 1rem; border-radius: 8px; display: inline-block; margin: 0.75rem 0; word-break: break-word; }
+        .modal-box.modal-wide { max-width: 620px; }
+        .modal-sep { border-top: 1px solid var(--border); margin-top: 1.25rem; padding-top: 1.25rem; }
+        /* Action row for modals: buttons share a single line while each label still has room, and the
+           row wraps instead of squashing a label once the viewport (or the box) gets narrow. */
+        .modal-actions { display: flex; flex-wrap: wrap; gap: 0.6rem; }
+        .modal-actions .btn { flex: 1 1 10rem; padding-left: 0.9rem; padding-right: 0.9rem; }
+        /* Opt-in checkbox that spans the whole row: the text is the click target, not just the box. */
+        .remember-row { display: flex; align-items: flex-start; gap: 0.55rem; margin-top: 1.1rem; padding: 0.6rem 0.75rem; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; font-size: 0.78rem; line-height: 1.35; color: var(--text-muted); text-align: left; cursor: pointer; }
+        .remember-row:hover { border-color: var(--accent); }
+        .remember-row input { flex: 0 0 auto; width: 1rem; height: 1rem; margin: 0.1rem 0 0 0; accent-color: var(--accent); cursor: pointer; }
+        .remember-row span { flex: 1 1 auto; }
 
         .tag-op { display: inline-block; padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.75rem; font-weight: 700; text-transform: uppercase; }
         .tag-make { background: rgba(56, 189, 248, 0.15); color: var(--accent); }
@@ -786,6 +817,8 @@ async fn index_html() -> Html<&'static str> {
             .action-bar .search-input { flex: 1 1 100%; max-width: none; }
             .form-actions .btn, .input-row .btn { flex: 1 1 100%; }
             .modal-box { padding: 1.25rem 1rem; }
+            /* Tablet / small window: the three actions still fit one line, so only shrink the basis. */
+            .modal-actions .btn { flex: 1 1 8.5rem; }
 
             /* Tables become stacked cards; labels come from data-label, set by decorateTables(). */
             .table-wrap, .table-wrap.scroll-y { overflow: visible; max-height: none; }
@@ -810,7 +843,12 @@ async fn index_html() -> Html<&'static str> {
             .actions-cell .btn + .btn { margin-left: 0; }
             .actions-cell .btn:first-of-type { margin-left: auto; }
         }
-    </style>
+
+        /* Phone: the three actions no longer share a line - one tap target per line,
+           ordered PIN -> sensor -> reject. */
+        @media (max-width: 560px) {
+            .modal-actions .btn { flex: 1 1 100%; }
+        }
     </style>
 </head>
 <body>
@@ -1039,7 +1077,7 @@ async fn index_html() -> Html<&'static str> {
 
     <!-- REAL-TIME WEBAUTHN VERIFICATION PROMPT MODAL -->
     <div id="verifyModal" class="modal-overlay">
-        <div class="modal-box">
+        <div class="modal-box modal-wide">
             <div class="modal-icon" id="modalIcon">🛡️</div>
             <div class="modal-title" id="modalTitle" data-i18n="verify.title">WebAuthn Verification Request</div>
             <p style="font-size: 0.9rem; color: var(--text-muted);" data-i18n="verify.desc">A website is requesting your security key:</p>
@@ -1058,12 +1096,19 @@ async fn index_html() -> Html<&'static str> {
                 </div>
             </div>
 
+            <!-- "REMEMBER" CHOICE: one verification covers the rest of this app run. Lives above
+                 both views so the setup flow ("Activate & Approve") can remember as well. -->
+            <label class="remember-row" id="rememberRow">
+                <input type="checkbox" id="rememberToggle" onchange="onRememberToggle()">
+                <span data-i18n="verify.remember">🔓 Remember for this app run — later requests skip the PIN / fingerprint (click Approve only). Resets when the app restarts.</span>
+            </label>
+
             <div id="modalSetupView" style="display: none; margin-top: 1rem; border-top: 1px solid var(--border); padding-top: 1rem;">
                 <p style="font-size: 0.9rem; color: var(--warning); margin-bottom: 0.75rem; font-weight: 600;">
                     <span data-i18n="verify.setup">⚠️ Security is not configured. Please create a 6-digit PIN to activate:</span>
                 </p>
                 <input type="password" maxlength="6" id="setupPinInput" class="form-control" data-i18n-placeholder="verify.setupPh" placeholder="Enter 6 digits" style="text-align: center; font-size: 1.25rem; letter-spacing: 0.5rem; margin-bottom: 1rem;">
-                <div style="display: flex; gap: 0.5rem; justify-content: center;">
+                <div class="modal-actions">
                     <button class="btn btn-primary" onclick="submitModalApproval('SETUP')" data-i18n="verify.activate">Activate & Approve</button>
                     <button class="btn btn-danger" onclick="submitModalReject()" data-i18n="common.reject">Reject</button>
                 </div>
@@ -1075,12 +1120,22 @@ async fn index_html() -> Html<&'static str> {
                 </p>
                 <input type="password" maxlength="6" id="verifyPinInput" class="form-control" data-i18n-placeholder="verify.pinPh" placeholder="Enter 6-digit PIN" style="text-align: center; font-size: 1.25rem; letter-spacing: 0.5rem; margin-bottom: 1rem;" autofocus>
                 
-                <div style="display: flex; flex-direction: column; gap: 0.75rem;">
-                    <div style="display: flex; gap: 0.5rem; justify-content: center;">
-                        <button class="btn btn-primary" onclick="submitModalApproval('PIN')" data-i18n="verify.withPin">🔑 Verify with PIN</button>
-                        <button class="btn btn-secondary" onclick="submitModalApproval('FINGERPRINT')" data-i18n="verify.withSensor">🖐️ Touch USB Sensor</button>
-                    </div>
-                    <button class="btn btn-danger" style="margin-top: 0.5rem;" onclick="submitModalReject()" data-i18n="verify.reject">❌ Reject Request</button>
+                <div class="modal-actions modal-sep">
+                    <button class="btn btn-primary" onclick="submitModalApproval('PIN')" data-i18n="verify.withPin">🔑 Verify with PIN</button>
+                    <button class="btn btn-secondary" onclick="submitModalApproval('FINGERPRINT')" data-i18n="verify.withSensor">🖐️ Touch USB Sensor</button>
+                    <button class="btn btn-danger" onclick="submitModalReject()" data-i18n="verify.reject">❌ Reject Request</button>
+                </div>
+            </div>
+
+            <!-- ALREADY VERIFIED IN THIS APP RUN: approving stays an explicit click, it is never
+                 automatic, but no PIN or finger is asked for again. -->
+            <div id="modalRememberedView" style="display: none; margin-top: 1rem;">
+                <p style="font-size: 0.85rem; color: var(--success); margin-bottom: 0.5rem; font-weight: 600;">
+                    <span data-i18n="verify.remembered">🔓 This app run is already verified — press Approve to confirm, no PIN or fingerprint needed.</span>
+                </p>
+                <div class="modal-actions modal-sep">
+                    <button class="btn btn-primary" onclick="submitModalApproval('REMEMBERED')" data-i18n="verify.approve">✔️ Approve</button>
+                    <button class="btn btn-danger" onclick="submitModalReject()" data-i18n="verify.reject">❌ Reject Request</button>
                 </div>
             </div>
         </div>
@@ -1355,6 +1410,9 @@ async fn index_html() -> Html<&'static str> {
                 'verify.withPin': '🔑 Verify with PIN',
                 'verify.withSensor': '🖐️ Touch USB Sensor',
                 'verify.reject': '❌ Reject Request',
+                'verify.remember': '🔓 Remember for this app run — later requests skip the PIN / fingerprint (click Approve only). Resets when the app restarts.',
+                'verify.remembered': '🔓 This app run is already verified — press Approve to confirm, no PIN or fingerprint needed.',
+                'verify.approve': '✔️ Approve',
                 'enroll.initializing': 'Initializing...',
                 'enroll.connecting': 'Connecting to USB sensor...',
                 'enroll.success': 'Success!',
@@ -1473,6 +1531,9 @@ async fn index_html() -> Html<&'static str> {
                 'verify.withPin': '🔑 Xác thực bằng PIN',
                 'verify.withSensor': '🖐️ Chạm cảm biến USB',
                 'verify.reject': '❌ Từ chối yêu cầu',
+                'verify.remember': '🔓 Ghi nhớ trong lần chạy này — các yêu cầu sau chỉ cần bấm Phê duyệt, không phải nhập PIN / vân tay. Sẽ reset khi khởi động lại app.',
+                'verify.remembered': '🔓 Phiên chạy này đã xác thực — bấm Phê duyệt để xác nhận, không cần PIN hay vân tay.',
+                'verify.approve': '✔️ Phê duyệt',
                 'enroll.initializing': 'Đang khởi tạo...',
                 'enroll.connecting': 'Đang kết nối cảm biến USB...',
                 'enroll.success': 'Thành công!',
@@ -2039,19 +2100,25 @@ async fn index_html() -> Html<&'static str> {
                         document.getElementById('modalUserDesc').innerText = p.user_name ? `Account: ${p.user_name}` : '';
                     }
 
-                    if (!p.is_security_setup) {
-                        document.getElementById('modalSetupView').style.display = 'block';
-                        document.getElementById('modalVerifyView').style.display = 'none';
-                    } else {
-                        document.getElementById('modalSetupView').style.display = 'none';
-                        document.getElementById('modalVerifyView').style.display = 'block';
-                        if (isNewPrompt) {
-                            setTimeout(() => {
-                                if (document.activeElement !== accountSelect) {
-                                    document.getElementById('verifyPinInput').focus();
-                                }
-                            }, 100);
-                        }
+                    // Three states: setup (no PIN yet), verify (PIN / sensor), and "remembered"
+                    // (this app run already verified - only an explicit Approve is left to click).
+                    const remembered = p.session_remembered === true;
+                    const rememberToggle = document.getElementById('rememberToggle');
+                    document.getElementById('modalRememberedView').style.display = remembered ? 'block' : 'none';
+                    document.getElementById('modalSetupView').style.display = (!remembered && !p.is_security_setup) ? 'block' : 'none';
+                    document.getElementById('modalVerifyView').style.display = (!remembered && p.is_security_setup) ? 'block' : 'none';
+                    document.getElementById('rememberRow').style.display = remembered ? 'none' : 'flex';
+
+                    if (isNewPrompt) {
+                        rememberToggle.checked = p.remember_requested === true;
+                    }
+
+                    if (!remembered && p.is_security_setup && isNewPrompt) {
+                        setTimeout(() => {
+                            if (document.activeElement !== accountSelect) {
+                                document.getElementById('verifyPinInput').focus();
+                            }
+                        }, 100);
                     }
 
                     if (isNewPrompt) {
@@ -2067,6 +2134,21 @@ async fn index_html() -> Html<&'static str> {
                 }
             } catch (e) {
                 // Ignore network errors in poll
+            }
+        }
+
+        // The USB sensor approves on its own background thread, so the checkbox has to reach the
+        // server immediately instead of only travelling with the Approve click.
+        async function onRememberToggle() {
+            const enabled = document.getElementById('rememberToggle').checked;
+            try {
+                await fetch('/api/verify/remember', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ enabled })
+                });
+            } catch (e) {
+                // A failed sync only costs the convenience: the next approval asks for the PIN again.
             }
         }
 
@@ -2090,11 +2172,12 @@ async fn index_html() -> Html<&'static str> {
 
             const accountSelect = document.getElementById('modalAccountSelect');
             const credential_id = (accountSelect && accountSelect.value) ? accountSelect.value : null;
+            const remember = document.getElementById('rememberToggle').checked;
 
             const res = await fetch('/api/verify/approve', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ request_id: currentPromptId, method, pin, credential_id })
+                body: JSON.stringify({ request_id: currentPromptId, method, pin, credential_id, remember })
             });
             const json = await res.json();
             if (json.success) {
@@ -2455,6 +2538,7 @@ mod tests {
             method: "PIN".into(),
             pin: Some("123456".into()),
             credential_id: Some("cred_2".into()),
+            remember: None,
         };
         let approve_res = approve_verify(State(state.clone()), axum::Json(approve_req)).await;
         assert!(approve_res.0.success);
@@ -2577,6 +2661,7 @@ mod tests {
                 method: "FINGERPRINT".into(),
                 pin: None,
                 credential_id: None,
+                remember: None,
             }),
         )
         .await
@@ -2589,5 +2674,257 @@ mod tests {
             "the request must stay pending so the user can fall back to the PIN"
         );
         verify_task.abort();
+    }
+
+    /// Ticking "Remember" and verifying once covers the rest of the process run: a later request
+    /// with nothing left to choose is approved on the spot, without any prompt.
+    #[tokio::test]
+    async fn test_remembered_session_approves_later_requests_without_pin() {
+        let state = create_test_state();
+        state.security.set_pin("123456").unwrap();
+
+        let first = tokio::spawn({
+            let sec = state.security.clone();
+            async move { sec.request_user_verification("example.com", "GetAssertion", "alice").await }
+        });
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        let prompt = get_pending_verify(State(state.clone())).await.0.data.unwrap().unwrap();
+        assert!(!prompt.session_remembered, "a fresh run must ask for the PIN");
+        assert!(!prompt.remember_requested, "the box starts unticked after a restart");
+
+        let approved = approve_verify(
+            State(state.clone()),
+            Json(ApproveVerifyRequest {
+                request_id: prompt.request_id,
+                method: "PIN".into(),
+                pin: Some("123456".into()),
+                credential_id: None,
+                remember: Some(true),
+            }),
+        )
+        .await
+        .0;
+        assert!(approved.success);
+        assert_eq!(first.await.unwrap().unwrap(), "PIN");
+
+        // Nothing to choose here, so the remembered session answers the next request by itself.
+        let second = tokio::spawn({
+            let sec = state.security.clone();
+            async move { sec.request_user_verification("example.com", "GetAssertion", "alice").await }
+        });
+        assert_eq!(second.await.unwrap().unwrap(), "REMEMBERED");
+        assert!(
+            get_pending_verify(State(state.clone())).await.0.data.unwrap().is_none(),
+            "an auto-approved request must never show a modal"
+        );
+    }
+
+    /// With several candidate accounts the remembered session is not enough: the prompt still goes
+    /// up so the user chooses one, and only the explicit Approve finishes the request.
+    #[tokio::test]
+    async fn test_remembered_session_still_asks_when_several_accounts() {
+        let state = create_test_state();
+        state.security.set_pin("123456").unwrap();
+
+        // Establish the remembered session with a plain PIN approval.
+        let first = tokio::spawn({
+            let sec = state.security.clone();
+            async move { sec.request_user_verification("example.com", "GetAssertion", "alice").await }
+        });
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        let prompt = get_pending_verify(State(state.clone())).await.0.data.unwrap().unwrap();
+        approve_verify(
+            State(state.clone()),
+            Json(ApproveVerifyRequest {
+                request_id: prompt.request_id,
+                method: "PIN".into(),
+                pin: Some("123456".into()),
+                credential_id: None,
+                remember: Some(true),
+            }),
+        )
+        .await
+        .0;
+        assert_eq!(first.await.unwrap().unwrap(), "PIN");
+
+        let accounts = vec![
+            crate::security::PendingAccountOption {
+                id: "cred_1".into(),
+                user_name: "alice".into(),
+                user_display_name: "Alice A".into(),
+                last_used_at: "2026-09-22 10:00:00".into(),
+                created_at: "2026-09-20 10:00:00".into(),
+            },
+            crate::security::PendingAccountOption {
+                id: "cred_2".into(),
+                user_name: "bob".into(),
+                user_display_name: "Bob B".into(),
+                last_used_at: "2026-09-21 10:00:00".into(),
+                created_at: "2026-09-20 11:00:00".into(),
+            },
+        ];
+
+        let verify_task = tokio::spawn({
+            let sec = state.security.clone();
+            async move {
+                sec.request_user_verification_with_accounts(
+                    "example.com",
+                    "GetAssertion",
+                    "alice",
+                    accounts,
+                    Some("cred_1".into()),
+                )
+                .await
+            }
+        });
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Still pending: the remembered session must not answer a request that needs a choice.
+        let prompt2 = get_pending_verify(State(state.clone()))
+            .await
+            .0
+            .data
+            .unwrap()
+            .expect("a multi-account request must stay pending");
+        assert!(prompt2.session_remembered);
+        assert_eq!(prompt2.accounts.len(), 2);
+
+        // Choosing an account does not approve anything on its own.
+        select_verify_account(
+            State(state.clone()),
+            Json(SelectAccountRequest {
+                request_id: prompt2.request_id,
+                credential_id: "cred_2".into(),
+            }),
+        )
+        .await
+        .0;
+        tokio::time::sleep(tokio::time::Duration::from_millis(30)).await;
+        assert!(
+            !verify_task.is_finished(),
+            "selecting an account must not auto-approve the request"
+        );
+
+        let approved = approve_verify(
+            State(state.clone()),
+            Json(ApproveVerifyRequest {
+                request_id: prompt2.request_id,
+                method: "REMEMBERED".into(),
+                pin: None,
+                credential_id: Some("cred_2".into()),
+                remember: None,
+            }),
+        )
+        .await
+        .0;
+        assert!(approved.success);
+
+        let result = verify_task.await.unwrap().unwrap();
+        assert_eq!(result.method, "REMEMBERED");
+        assert_eq!(result.selected_credential_id, Some("cred_2".into()));
+    }
+
+    /// The remembered path must not become a bypass: with no verification in this run it fails and
+    /// leaves the request pending for the PIN / sensor.
+    #[tokio::test]
+    async fn test_remembered_method_is_rejected_without_a_session() {
+        let state = create_test_state();
+        state.security.set_pin("123456").unwrap();
+
+        let verify_task = tokio::spawn({
+            let sec = state.security.clone();
+            async move { sec.request_user_verification("example.com", "GetAssertion", "alice").await }
+        });
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        let prompt = get_pending_verify(State(state.clone())).await.0.data.unwrap().unwrap();
+        let res = approve_verify(
+            State(state.clone()),
+            Json(ApproveVerifyRequest {
+                request_id: prompt.request_id,
+                method: "REMEMBERED".into(),
+                pin: None,
+                credential_id: None,
+                remember: None,
+            }),
+        )
+        .await
+        .0;
+
+        assert!(!res.success);
+        assert!(res.error.unwrap_or_default().contains("No verified session"));
+        assert!(
+            get_pending_verify(State(state.clone())).await.0.data.unwrap().is_some(),
+            "the request must stay pending"
+        );
+        verify_task.abort();
+    }
+
+    /// Leaving the box unticked (or only ticking it) must not change the existing flow: the next
+    /// request still asks for the PIN and the remembered shortcut stays unavailable.
+    #[tokio::test]
+    async fn test_unticked_remember_keeps_asking_for_the_pin() {
+        let state = create_test_state();
+        state.security.set_pin("123456").unwrap();
+
+        // Ticking the box is only a preference - it verifies nothing on its own.
+        let toggled = set_remember(
+            State(state.clone()),
+            Json(RememberRequest { enabled: true }),
+        )
+        .await
+        .0;
+        assert!(toggled.success);
+
+        let first = tokio::spawn({
+            let sec = state.security.clone();
+            async move { sec.request_user_verification("example.com", "GetAssertion", "alice").await }
+        });
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        let prompt = get_pending_verify(State(state.clone())).await.0.data.unwrap().unwrap();
+        assert!(prompt.remember_requested, "the tick must reach the pending prompt");
+        assert!(!prompt.session_remembered, "ticking alone must not verify anything");
+
+        let approved = approve_verify(
+            State(state.clone()),
+            Json(ApproveVerifyRequest {
+                request_id: prompt.request_id,
+                method: "PIN".into(),
+                pin: Some("123456".into()),
+                credential_id: None,
+                remember: Some(false),
+            }),
+        )
+        .await
+        .0;
+        assert!(approved.success);
+        assert_eq!(first.await.unwrap().unwrap(), "PIN");
+
+        let second = tokio::spawn({
+            let sec = state.security.clone();
+            async move { sec.request_user_verification("example.com", "GetAssertion", "alice").await }
+        });
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        let prompt2 = get_pending_verify(State(state.clone())).await.0.data.unwrap().unwrap();
+        assert!(!prompt2.session_remembered, "no session may be remembered when unticked");
+        assert!(!prompt2.remember_requested);
+
+        let shortcut = approve_verify(
+            State(state.clone()),
+            Json(ApproveVerifyRequest {
+                request_id: prompt2.request_id,
+                method: "REMEMBERED".into(),
+                pin: None,
+                credential_id: None,
+                remember: None,
+            }),
+        )
+        .await
+        .0;
+        assert!(!shortcut.success, "the shortcut must stay closed");
+        second.abort();
     }
 }

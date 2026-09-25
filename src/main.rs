@@ -1524,7 +1524,7 @@ mod tests {
             Some((0xFFFFFFFF, CTAPHID_CMD_INIT, nonce.to_vec()))
         );
 
-        let mut stray = [0u8; 64];
+        let stray = [0u8; 64];
         assert_eq!(parser.process_packet(&stray), None, "stray continuation frame");
     }
 

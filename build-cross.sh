@@ -78,6 +78,12 @@ fi
 IFS=',' read -r -a BUILD_TARGETS <<< "$TARGETS_CSV"
 mkdir -p "$ROOT/dist/packages"
 
+# rustc links every artifact with -Wl,-O1 and the lld that zig ships deprecates that value, so each
+# cross build used to print "ignoring deprecated linker optimization setting '1'" through the
+# linker_messages lint. The notice describes the toolchain, not this crate, so the lint is allowed
+# for these builds only - a plain `cargo build` / `cargo test` keeps it enabled.
+CROSS_RUSTFLAGS="${RUSTFLAGS:-}"
+
 echo ""
 echo "Targets to build: ${BUILD_TARGETS[*]}"
 echo "------------------------------------------------------------"
@@ -87,6 +93,15 @@ for target in "${BUILD_TARGETS[@]}"; do
   target="$(echo "$target" | xargs)"
   [[ -n "$target" ]] || continue
   echo "==> Building $PROJECT_NAME for target: $target"
+
+  # A musl build additionally drops `cdylib` (only the Android JNI library needs that crate type and
+  # Cargo cannot scope [lib] crate-type per target), and that notice carries no lint name of its
+  # own. Nothing in this crate is gated on target_env, and the host build plus the GNU targets lint
+  # every line, so the warnings group is allowed for the musl packaging builds alone.
+  case "$target" in
+    *musl*) export RUSTFLAGS="$CROSS_RUSTFLAGS -A warnings" ;;
+    *) export RUSTFLAGS="$CROSS_RUSTFLAGS -A linker_messages" ;;
+  esac
 
   # Automatically add target to rustup if missing
   rustup target add "$target" >/dev/null 2>&1 || true

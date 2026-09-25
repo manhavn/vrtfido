@@ -7,7 +7,7 @@ CACHE="${VRTFIDO_ANDROID_CACHE:-$ROOT/.android-build}"
 SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$CACHE/sdk}}"
 NDK_VERSION=26.3.11579264
 GRADLE_VERSION=8.7
-CMDLINE_TOOLS=https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+CMDLINE_TOOLS=https://dl.google.com/android/repository/commandlinetools-linux-13114758_latest.zip
 JNILIBS="$ROOT/android/app/src/main/jniLibs"
 VARIANT="${1:-release}"
 case "$VARIANT" in
@@ -153,6 +153,12 @@ if ! command -v cargo-ndk >/dev/null 2>&1; then
     cargo install cargo-ndk --locked
 fi
 rustup target add aarch64-linux-android x86_64-linux-android
+
+# rustc links every artifact with -Wl,-O1 and the NDK's lld deprecates that value, so without this
+# the native build printed "ignoring deprecated linker optimization setting '1'" through the
+# linker_messages lint. The notice describes the toolchain, not this crate, so only that lint is
+# allowed; every other warning (including anything gated on target_os = "android") still shows up.
+export RUSTFLAGS="${RUSTFLAGS:-} -A linker_messages"
 
 # Output directly into Gradle's jniLibs; any native failure aborts the APK build.
 mkdir -p "$JNILIBS"

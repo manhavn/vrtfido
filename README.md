@@ -17,6 +17,8 @@ The application includes an embedded **Web CMS Dashboard** on port **10209**, su
    - When a website (e.g. `webauthn.io`, GitHub, Google) sends a WebAuthn verification request, the Web CMS displays a real-time verification modal.
    - If security is not yet configured: Prompts to set up a 6-digit PIN.
    - If configured: Allows verification via 6-digit PIN or USB fingerprint sensor.
+   - **Remember for this app run:** ticking the box extends a successful PIN / sensor verification to the rest of the process run. Later requests that have nothing to choose are approved without a prompt, and one that still needs an account choice shows the picker plus a single **Approve** button instead of asking for the PIN or the finger again. Approving is never automatic in that case, the tick is never persisted, and both the tick and the remembered session disappear when the app restarts. Leaving the box unticked keeps the standard flow.
+   - **Account selection:** shown only when the relying party sends no `allowList` and several stored credentials match that domain. Choosing an account never approves the request by itself — the approve button still has to be pressed.
 
 3. **Security & Biometrics Policies:**
    - **6-Digit PIN (Passkey Password):** Enforces 6 numeric digits, hashed with SHA-256 and salt. Supports setup, changing (requires old PIN), and removal.

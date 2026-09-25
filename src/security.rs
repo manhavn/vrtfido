@@ -2,7 +2,7 @@ use crate::db::Db;
 use crate::sensor::{SensorBusyMode, UsbSensor};
 use parking_lot::Mutex;
 use sha2::{Digest, Sha256};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
@@ -40,6 +40,12 @@ pub struct PendingPrompt {
     pub timeout_seconds: u64,
     pub accounts: Vec<PendingAccountOption>,
     pub selected_credential_id: Option<String>,
+    /// True when this run already verified the user (checkbox "Remember" + one successful approval).
+    /// Only requests that still need an account choice reach this point, so the modal shows the
+    /// chooser plus a single Approve button instead of asking for the PIN / fingerprint again.
+    pub session_remembered: bool,
+    /// Current checkbox state, so a reloaded / second tab renders the same tick.
+    pub remember_requested: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -62,6 +68,13 @@ pub struct SecurityEngine {
     pending: Arc<Mutex<Option<ActiveVerification>>>,
     req_counter: Arc<AtomicU64>,
     unlimited_fps: bool,
+    /// State of the "Remember" checkbox in the Web CMS modal, pushed by the browser. Only read when
+    /// an approval succeeds, so it never influences whether a request needs confirmation.
+    remember_requested: Arc<AtomicBool>,
+    /// Set once an approval succeeds while `remember_requested` was on: later requests in the *same
+    /// process run* are approved without touching the PIN or the sensor again. Never persisted, so
+    /// restarting the app always falls back to a full verification.
+    session_verified: Arc<AtomicBool>,
 }
 
 impl SecurityEngine {
@@ -72,11 +85,27 @@ impl SecurityEngine {
             pending: Arc::new(Mutex::new(None)),
             req_counter: Arc::new(AtomicU64::new(1)),
             unlimited_fps,
+            remember_requested: Arc::new(AtomicBool::new(false)),
+            session_verified: Arc::new(AtomicBool::new(false)),
         }
     }
 
     pub fn sensor(&self) -> &UsbSensor {
         &self.sensor
+    }
+
+    /// Live state of the modal checkbox. Kept on the server so the USB sensor's background listener
+    /// can honour the same choice as the on-screen buttons.
+    pub fn set_remember_requested(&self, enabled: bool) {
+        self.remember_requested.store(enabled, Ordering::SeqCst);
+    }
+
+    /// Extend the verification to the rest of this run - only ever on top of a verification that
+    /// just succeeded, and only when the checkbox asked for it.
+    fn remember_session(&self) {
+        if self.remember_requested.load(Ordering::SeqCst) {
+            self.session_verified.store(true, Ordering::SeqCst);
+        }
     }
 
     pub fn is_pin_configured(&self) -> bool {
@@ -229,12 +258,18 @@ impl SecurityEngine {
 
     pub fn get_pending_prompt(&self) -> Option<PendingPrompt> {
         let mut guard = self.pending.lock();
-        if let Some(active) = guard.as_ref() {
+        if let Some(active) = guard.as_mut() {
             if active.start_time.elapsed() > Duration::from_secs(active.prompt.timeout_seconds) {
                 *guard = None;
                 None
             } else {
-                Some(active.prompt.clone())
+                // The flags are live state, not a snapshot: the checkbox is pushed by the browser and
+                // the session can be extended while the prompt is up, so a reload or a second tab
+                // must see the current values instead of the ones captured at creation time.
+                let mut prompt = active.prompt.clone();
+                prompt.session_remembered = self.session_verified.load(Ordering::SeqCst);
+                prompt.remember_requested = self.remember_requested.load(Ordering::SeqCst);
+                Some(prompt)
             }
         } else {
             None
@@ -261,6 +296,30 @@ impl SecurityEngine {
         accounts: Vec<PendingAccountOption>,
         default_selected_cred_id: Option<String>,
     ) -> Result<VerificationSuccess, String> {
+        // A remembered session skips the prompt entirely, but only while there is nothing left to
+        // decide. With several candidate accounts the user still picks one in the CMS and presses
+        // Approve, so the request has to be raised as a normal prompt.
+        if self.session_verified.load(Ordering::SeqCst) && accounts.len() <= 1 {
+            println!(
+                "\n[SECURITY] >>> AUTO-APPROVED by the remembered session (RP: '{}', Operation: '{}', candidates: {}) <<<",
+                rp_id,
+                operation,
+                accounts.len()
+            );
+            self.db.log_auth(
+                default_selected_cred_id.as_deref(),
+                rp_id,
+                operation,
+                "SUCCESS",
+                "REMEMBERED",
+                Some("Auto-approved with the remembered session of this app run (no PIN / fingerprint, no prompt)"),
+            );
+            return Ok(VerificationSuccess {
+                method: "REMEMBERED".to_string(),
+                selected_credential_id: default_selected_cred_id,
+            });
+        }
+
         let settings = self.db.get_security_settings(self.unlimited_fps).map_err(|e| e.to_string())?;
         let is_security_setup = settings.pin_enabled || settings.fp_count > 0;
         let sensor_ok = UsbSensor::is_hardware_plugged();
@@ -286,6 +345,8 @@ impl SecurityEngine {
             timeout_seconds: 60,
             accounts,
             selected_credential_id: default_selected_cred_id,
+            session_remembered: self.session_verified.load(Ordering::SeqCst),
+            remember_requested: self.remember_requested.load(Ordering::SeqCst),
         };
 
         let (tx, rx) = oneshot::channel();
@@ -313,6 +374,10 @@ impl SecurityEngine {
         let db_clone = self.db.clone();
         let rp_id_owned = rp_id.to_string();
         let op_owned = operation.to_string();
+        // A finger pressed on the sensor is an approval too, so it must extend the session exactly
+        // like the on-screen buttons when the checkbox is ticked.
+        let remember_pref_clone = self.remember_requested.clone();
+        let session_verified_clone = self.session_verified.clone();
 
         let fp_listener = tokio::task::spawn_blocking(move || {
             if !UsbSensor::is_hardware_plugged() || enrolled_slots.is_empty() {
@@ -334,6 +399,9 @@ impl SecurityEngine {
                                             method: "USB_FINGERPRINT_HARDWARE".to_string(),
                                             selected_credential_id: chosen_id,
                                         }));
+                                    }
+                                    if remember_pref_clone.load(Ordering::SeqCst) {
+                                        session_verified_clone.store(true, Ordering::SeqCst);
                                     }
                                     db_clone.log_auth(
                                         None,
@@ -400,7 +468,14 @@ impl SecurityEngine {
         method: &str,
         input_pin: Option<&str>,
         selected_credential_id: Option<String>,
+        remember: Option<bool>,
     ) -> Result<(), String> {
+        // The checkbox travels with the approval as well as through /api/verify/remember, so a click
+        // that races the toggle still records the user's intent.
+        if let Some(enabled) = remember {
+            self.remember_requested.store(enabled, Ordering::SeqCst);
+        }
+
         let mut guard = self.pending.lock();
         if let Some(mut active) = guard.take() {
             if active.prompt.request_id != req_id {
@@ -420,6 +495,7 @@ impl SecurityEngine {
                             selected_credential_id: chosen_cred_id,
                         }));
                     }
+                    self.remember_session();
                     self.db.log_auth(
                         None,
                         &active.prompt.rp_id,
@@ -466,6 +542,7 @@ impl SecurityEngine {
                             selected_credential_id: chosen_cred_id,
                         }));
                     }
+                    self.remember_session();
                     self.db.log_auth(
                         None,
                         &active.prompt.rp_id,
@@ -486,6 +563,7 @@ impl SecurityEngine {
                             selected_credential_id: chosen_cred_id,
                         }));
                     }
+                    self.remember_session();
                     self.db.log_auth(
                         None,
                         &active.prompt.rp_id,
@@ -493,6 +571,33 @@ impl SecurityEngine {
                         "SUCCESS",
                         "SETUP",
                         Some("Initialized new security settings successfully"),
+                    );
+                    Ok(())
+                }
+
+                // Only usable on top of a verification that already happened in this run: pressing
+                // Approve in the "remembered" modal sends no PIN and no fingerprint.
+                "REMEMBERED" => {
+                    if !self.session_verified.load(Ordering::SeqCst) {
+                        *guard = Some(active);
+                        return Err(
+                            "No verified session in this app run — verify with the PIN or the sensor first".into(),
+                        );
+                    }
+
+                    if let Some(responder) = active.responder.take() {
+                        let _ = responder.send(Ok(VerificationSuccess {
+                            method: "REMEMBERED".to_string(),
+                            selected_credential_id: chosen_cred_id,
+                        }));
+                    }
+                    self.db.log_auth(
+                        None,
+                        &active.prompt.rp_id,
+                        &active.prompt.operation,
+                        "SUCCESS",
+                        "REMEMBERED",
+                        Some("Approved with the remembered session of this app run (no PIN / fingerprint)"),
                     );
                     Ok(())
                 }
