@@ -75,6 +75,12 @@ pub struct SecurityEngine {
     /// process run* are approved without touching the PIN or the sensor again. Never persisted, so
     /// restarting the app always falls back to a full verification.
     session_verified: Arc<AtomicBool>,
+    /// Set while an on-screen "Touch USB Sensor" approval owns the chip. The background touch
+    /// listener has to stop scanning then: both paths drive the same single USB device, and letting
+    /// them overlap made every manual attempt fail with "Fingerprint sensor error: USB sensor busy".
+    fp_listener_paused: Arc<AtomicBool>,
+    /// One manual scan per request: a double click must not start a second scan on the same chip.
+    fp_manual_active: Arc<AtomicBool>,
 }
 
 impl SecurityEngine {
@@ -87,6 +93,8 @@ impl SecurityEngine {
             unlimited_fps,
             remember_requested: Arc::new(AtomicBool::new(false)),
             session_verified: Arc::new(AtomicBool::new(false)),
+            fp_listener_paused: Arc::new(AtomicBool::new(false)),
+            fp_manual_active: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -183,7 +191,10 @@ impl SecurityEngine {
         if !UsbSensor::is_hardware_plugged() {
             return Err("USB fingerprint sensor (3274:8012) is not connected — plug it in and retry".into());
         }
-        if self.sensor.busy_mode() != SensorBusyMode::Idle {
+        // Only another *enrollment* is a real conflict: verify windows of the background touch
+        // listener are seconds long and `enroll_fingerprint_pipeline` queues behind them, so
+        // rejecting them here made the dashboard refuse to enroll while any prompt was up.
+        if self.sensor.busy_mode() == SensorBusyMode::Enrolling {
             return Err("USB fingerprint sensor is busy with another operation".into());
         }
         Ok(())
@@ -254,6 +265,12 @@ impl SecurityEngine {
             }
         }
         Ok(ok)
+    }
+
+    /// ID of the request the CMS is currently showing, or `None` when nothing waits for approval.
+    /// Used by the manual sensor path to detect that another path already settled the request.
+    fn pending_request_id(&self) -> Option<u64> {
+        self.pending.lock().as_ref().map(|a| a.prompt.request_id)
     }
 
     pub fn get_pending_prompt(&self) -> Option<PendingPrompt> {
@@ -378,6 +395,7 @@ impl SecurityEngine {
         // like the on-screen buttons when the checkbox is ticked.
         let remember_pref_clone = self.remember_requested.clone();
         let session_verified_clone = self.session_verified.clone();
+        let fp_listener_paused_clone = self.fp_listener_paused.clone();
 
         let fp_listener = tokio::task::spawn_blocking(move || {
             if !UsbSensor::is_hardware_plugged() || enrolled_slots.is_empty() {
@@ -385,6 +403,19 @@ impl SecurityEngine {
             }
             let start = Instant::now();
             while start.elapsed() < Duration::from_secs(55) {
+                // The request was settled by another path (PIN, reject, the 60s timeout, or a
+                // manual scan): stop scanning, otherwise the chip stays occupied by a listener that
+                // has nothing left to approve.
+                if pending_ref.lock().is_none() {
+                    println!("[SECURITY] USB touch listener: request #{} already settled, stopping.", req_id);
+                    return;
+                }
+                // A manual approval (click on "Touch USB Sensor") took the chip over: stay off it,
+                // otherwise both scans fight for the single USB device.
+                if fp_listener_paused_clone.load(Ordering::SeqCst) {
+                    std::thread::sleep(Duration::from_millis(100));
+                    continue;
+                }
                 if sensor_clone.busy_mode() == SensorBusyMode::Idle {
                     // Wait and verify real fingerprint
                     match sensor_clone.verify_fingerprint(&enrolled_slots, 2) {
@@ -521,8 +552,55 @@ impl SecurityEngine {
                         );
                     }
 
-                    println!("[SECURITY] Waiting for finger press on USB sensor...");
-                    match self.sensor.verify_fingerprint(&enrolled_slots, 15) {
+                    if self.fp_manual_active.swap(true, Ordering::SeqCst) {
+                        *guard = Some(active);
+                        return Err("A fingerprint scan is already running on the USB sensor".into());
+                    }
+
+                    // The request stays visible to the CMS while the chip is scanned: the PIN
+                    // fallback and `/api/verify/pending` must not sit behind a 15s USB wait.
+                    *guard = Some(active);
+                    drop(guard);
+
+                    // Stop the background touch listener before touching the chip — it runs its own
+                    // scan windows on the same device, and overlapping the two is exactly what made
+                    // the on-screen sensor button answer "USB sensor busy" every single time.
+                    self.fp_listener_paused.store(true, Ordering::SeqCst);
+                    let scan = match self
+                        .sensor
+                        .wait_until_idle(crate::sensor::OPERATION_TAKEOVER_WAIT)
+                    {
+                        // The listener's last window may have matched the finger while we waited;
+                        // then the request is already answered and there is nothing left to scan.
+                        Ok(()) if self.pending_request_id() != Some(req_id) => Ok(true),
+                        Ok(()) => {
+                            println!("[SECURITY] Waiting for finger press on USB sensor...");
+                            self.sensor.verify_fingerprint(&enrolled_slots, 15)
+                        }
+                        Err(e) => Err(e),
+                    };
+                    self.fp_listener_paused.store(false, Ordering::SeqCst);
+                    self.fp_manual_active.store(false, Ordering::SeqCst);
+
+                    // Another path may have settled the request meanwhile (listener match, PIN,
+                    // reject, or the 60s timeout); the WebAuthn result is already decided then.
+                    let mut guard = self.pending.lock();
+                    let mut active = match guard.take() {
+                        Some(a) if a.prompt.request_id == req_id => a,
+                        Some(a) => {
+                            *guard = Some(a);
+                            return Err("Request ID mismatch".to_string());
+                        }
+                        None => {
+                            println!(
+                                "[SECURITY] Manual fingerprint approval: request #{} was already settled while the sensor was busy.",
+                                req_id
+                            );
+                            return Ok(());
+                        }
+                    };
+
+                    match scan {
                         Ok(true) => {
                             println!("[SECURITY] Fingerprint verified successfully!");
                         }

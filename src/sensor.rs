@@ -32,6 +32,13 @@ const ENROLL_LIFT_TIMEOUT_SECS: u64 = 60;
 const TOUCH_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const TOUCH_LIFT_POLL_INTERVAL: Duration = Duration::from_millis(80);
 const TOUCH_RETRY_INTERVAL: Duration = Duration::from_millis(500);
+/// How long a caller that must own the chip waits for the running operation to finish before it
+/// gives up. The background touch listener holds the sensor in scan windows of a few seconds
+/// (longer only while a finger is being lifted), so a click on the CMS sensor button has to queue
+/// behind that window instead of failing with "sensor busy".
+pub const OPERATION_TAKEOVER_WAIT: Duration = Duration::from_secs(10);
+/// Polling step while waiting for the chip to fall idle.
+const OPERATION_WAIT_STEP: Duration = Duration::from_millis(50);
 
 /// Result of waiting for the finger to arrive or leave.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -137,6 +144,50 @@ impl UsbSensor {
         p.active = false;
         p.status = "error".into();
         p.error = Some("Operation cancelled".into());
+    }
+
+    /// Exclusive ownership of the chip. A non-zero `wait` queues behind the running operation
+    /// instead of failing on the first busy reading: the background touch listener keeps the
+    /// sensor in short scan windows, and those must not surface to the user as "sensor busy".
+    fn begin_operation(&self, mode: SensorBusyMode, wait: Duration) -> Result<(), String> {
+        let deadline = Instant::now() + wait;
+        loop {
+            {
+                let mut busy = self.busy_mode.lock();
+                if *busy == SensorBusyMode::Idle {
+                    *busy = mode;
+                    return Ok(());
+                }
+            }
+            if Instant::now() >= deadline {
+                return Err(match mode {
+                    SensorBusyMode::Idle => "USB sensor state corrupted".to_string(),
+                    SensorBusyMode::Enrolling => "USB sensor busy with another operation".to_string(),
+                    SensorBusyMode::Verifying => "USB sensor busy".to_string(),
+                });
+            }
+            sleep(OPERATION_WAIT_STEP);
+        }
+    }
+
+    fn end_operation(&self) {
+        *self.busy_mode.lock() = SensorBusyMode::Idle;
+    }
+
+    /// Wait until nobody owns the chip. Does not reserve it: the caller must already have stopped
+    /// every other producer (the verification flow pauses its touch listener first), otherwise the
+    /// following `verify_fingerprint` is the authoritative check.
+    pub fn wait_until_idle(&self, wait: Duration) -> Result<(), String> {
+        let deadline = Instant::now() + wait;
+        loop {
+            if self.busy_mode() == SensorBusyMode::Idle {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err("USB sensor busy with another operation".to_string());
+            }
+            sleep(OPERATION_WAIT_STEP);
+        }
     }
 
     pub fn get_enroll_progress(&self) -> EnrollProgress {
@@ -459,13 +510,10 @@ impl UsbSensor {
     }
 
     pub fn enroll_fingerprint_pipeline(&self, preferred_slot: u32) -> Result<u16, String> {
-        {
-            let mut busy = self.busy_mode.lock();
-            if *busy != SensorBusyMode::Idle {
-                return Err("USB sensor busy with another operation".into());
-            }
-            *busy = SensorBusyMode::Enrolling;
-        }
+        // Queue behind a running scan window instead of refusing on the first busy reading; an
+        // enrollment that starts while the touch listener happens to be sampling used to die with
+        // "USB sensor busy with another operation".
+        self.begin_operation(SensorBusyMode::Enrolling, OPERATION_TAKEOVER_WAIT)?;
         self.cancel_requested.store(false, Ordering::SeqCst);
 
         {
@@ -495,9 +543,8 @@ impl UsbSensor {
                     p.error = Some(err.clone());
                 }
             }
-            let mut busy = self.busy_mode.lock();
-            *busy = SensorBusyMode::Idle;
         }
+        self.end_operation();
 
         run_result
     }
@@ -714,20 +761,9 @@ impl UsbSensor {
             return Err("No fingerprints enrolled in the system".into());
         }
 
-        {
-            let mut busy = self.busy_mode.lock();
-            if *busy != SensorBusyMode::Idle {
-                return Err("USB sensor busy".into());
-            }
-            *busy = SensorBusyMode::Verifying;
-        }
-
+        self.begin_operation(SensorBusyMode::Verifying, Duration::ZERO)?;
         let res = self.execute_verification(enrolled_slots, timeout_secs);
-
-        {
-            let mut busy = self.busy_mode.lock();
-            *busy = SensorBusyMode::Idle;
-        }
+        self.end_operation();
         res
     }
 
@@ -773,5 +809,57 @@ impl UsbSensor {
         println!("[SENSOR] [REJECT] >>> FINGERPRINT DOES NOT MATCH ANY ENROLLED TEMPLATE! REJECTED! <<<");
         let _ = self.wait_for_finger_lift(5);
         Ok(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The CMS's "Touch USB Sensor" button used to lose the race against the background touch
+    /// listener — which keeps the chip in short `Verifying` windows — and failed with "USB sensor
+    /// busy" every single time. Ownership must now queue behind the running window.
+    #[test]
+    fn test_busy_operation_queues_instead_of_failing() {
+        let sensor = UsbSensor::new();
+        let holder = sensor.clone();
+        // Holds `Verifying` for ~3s; no finger is involved, so this needs no hardware.
+        let holder_thread = std::thread::spawn(move || {
+            let _ = holder.verify_fingerprint(&[0], 3);
+        });
+
+        // Wait until the holder really owns the chip.
+        let mut waited = Duration::ZERO;
+        while sensor.busy_mode() != SensorBusyMode::Verifying && waited < Duration::from_secs(2) {
+            sleep(Duration::from_millis(20));
+            waited += Duration::from_millis(20);
+        }
+        assert_eq!(
+            sensor.busy_mode(),
+            SensorBusyMode::Verifying,
+            "the holder never acquired the sensor"
+        );
+
+        // A second operation must never stampede the chip...
+        assert_eq!(sensor.verify_fingerprint(&[0], 1).unwrap_err(), "USB sensor busy");
+
+        // ...but a takeover waits the running window out and then reports the chip as free.
+        let t0 = Instant::now();
+        sensor
+            .wait_until_idle(OPERATION_TAKEOVER_WAIT)
+            .expect("a takeover must queue for the chip, not fail");
+        assert!(
+            t0.elapsed() >= Duration::from_millis(500),
+            "the takeover returned without waiting for the running operation"
+        );
+
+        // An expired takeover still reports the conflict instead of pretending the chip is free.
+        let mut guard = sensor.busy_mode.lock();
+        *guard = SensorBusyMode::Enrolling;
+        drop(guard);
+        assert!(sensor.wait_until_idle(Duration::from_millis(100)).is_err());
+        sensor.end_operation();
+
+        holder_thread.join().unwrap();
     }
 }

@@ -2676,6 +2676,69 @@ mod tests {
         verify_task.abort();
     }
 
+    /// The CMS "Touch USB Sensor" button used to answer "Fingerprint sensor error: USB sensor busy"
+    /// no matter what the user did: the per-request touch listener kept the chip in ~2s `Verifying`
+    /// windows and only slept 100ms between them, so a manual scan always lost the race for the
+    /// single USB device. The button has to queue behind that window and scan for real.
+    #[tokio::test]
+    async fn test_manual_fingerprint_approval_takes_the_sensor_over_from_the_listener() {
+        if !crate::sensor::UsbSensor::is_hardware_plugged() {
+            // Without the dongle the listener never starts and the manual path stops at the
+            // "not connected" pre-check, which is a different case (covered above).
+            return;
+        }
+
+        let state = create_test_state();
+        state.db.add_fingerprint(0, "T1").unwrap();
+
+        let sec = state.security.clone();
+        let verify_task = tokio::spawn(async move {
+            sec.request_user_verification("example.com", "GetAssertion", "alice").await
+        });
+        // Long enough for the background touch listener to be inside its scan window.
+        tokio::time::sleep(tokio::time::Duration::from_millis(1200)).await;
+
+        let prompt = get_pending_verify(State(state.clone()))
+            .await
+            .0
+            .data
+            .unwrap()
+            .expect("a verification request must be pending");
+
+        // Nobody touches the sensor: the scan must reach its own touch timeout. What matters is
+        // that it ran at all instead of being refused because the listener held the chip.
+        let approved = approve_verify(
+            State(state.clone()),
+            Json(ApproveVerifyRequest {
+                request_id: prompt.request_id,
+                method: "FINGERPRINT".into(),
+                pin: None,
+                credential_id: None,
+                remember: None,
+            }),
+        )
+        .await
+        .0;
+
+        let err = approved.error.unwrap_or_default();
+        assert!(
+            !err.contains("busy"),
+            "the manual scan must queue for the chip instead of reporting it busy: {err}"
+        );
+        assert!(
+            err.contains("timed out") || err.contains("not responding"),
+            "the manual scan must really poll the sensor: {err}"
+        );
+
+        // Settle the request through the real reject path: aborting the task would leave the
+        // pending entry behind, and the touch listener would keep the chip for its full 55s.
+        state
+            .security
+            .reject_pending(prompt.request_id, "test done")
+            .expect("the request must still be pending after a failed manual scan");
+        assert!(verify_task.await.unwrap().is_err());
+    }
+
     /// Ticking "Remember" and verifying once covers the rest of the process run: a later request
     /// with nothing left to choose is approved on the spot, without any prompt.
     #[tokio::test]
