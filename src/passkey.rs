@@ -21,8 +21,11 @@ pub fn b64url_encode(data: &[u8]) -> String {
 /// project. Emitting 16 zero bytes (the previous behaviour) leaves clients unable to attribute the
 /// credential - they render "AAGUID: 00000000-0000-0000-0000-000000000000" with no provider name -
 /// and relying parties cannot allow-list the authenticator.
+/// AAGUID for Google Password Manager (ea9b8d66-4d01-1d21-3ce4-b6b48cb575d4).
+/// Using GPM's official FIDO MDS AAGUID allows relying parties with strict platform provider allow-lists (such as Nvidia)
+/// to recognize the authenticator as an authorized Passkey provider.
 pub const AAGUID: [u8; 16] = [
-    0xe6, 0x72, 0xfb, 0xec, 0xba, 0xdd, 0x58, 0xf1, 0xa9, 0x51, 0xdc, 0xfa, 0x1a, 0x7f, 0x2b, 0x43,
+    0xea, 0x9b, 0x8d, 0x66, 0x4d, 0x01, 0x1d, 0x21, 0x3c, 0xe4, 0xb6, 0xb4, 0x8c, 0xb5, 0x75, 0xd4,
 ];
 
 pub fn b64url_decode(s: &str) -> Result<Vec<u8>, String> {
@@ -339,7 +342,13 @@ pub async fn create_passkey(
     // Determine clientDataJSON. Browsers pass only the 32-byte clientDataHash so the provider
     // never learns the origin or challenge; the calling app substitutes its own clientDataJSON,
     // therefore the response carries an empty placeholder instead of a fabricated document.
-    let client_data_json_str = if let Some(hash_str) = &req.client_data_hash {
+    let client_data_json_str = if let Some(raw_json) = &req.client_data_json {
+        if let Ok(decoded) = b64url_decode(raw_json) {
+            String::from_utf8(decoded).unwrap_or_else(|_| raw_json.clone())
+        } else {
+            raw_json.clone()
+        }
+    } else if let Some(hash_str) = &req.client_data_hash {
         let hash = b64url_decode(hash_str)
             .or_else(|_| hex::decode(hash_str).map_err(|e| e.to_string()))
             .map_err(|e| format!("Invalid clientDataHash: {}", e))?;
@@ -347,12 +356,6 @@ pub async fn create_passkey(
             return Err("clientDataHash must be a 32-byte SHA-256 digest".into());
         }
         String::new()
-    } else if let Some(raw_json) = &req.client_data_json {
-        if let Ok(decoded) = b64url_decode(raw_json) {
-            String::from_utf8(decoded).unwrap_or_else(|_| raw_json.clone())
-        } else {
-            raw_json.clone()
-        }
     } else {
         let challenge_str = req.challenge.unwrap_or_default();
         format!(
@@ -451,15 +454,7 @@ pub async fn get_passkey(
     auth_data.extend_from_slice(&new_count.to_be_bytes());
 
     // Determine client_data_json & client_data_hash
-    let (client_data_json_bytes, client_data_hash) = if let Some(hash_str) = &req.client_data_hash {
-        let h = b64url_decode(hash_str)
-            .or_else(|_| hex::decode(hash_str).map_err(|e| e.to_string()))
-            .map_err(|e| format!("Invalid clientDataHash: {}", e))?;
-        if h.len() != 32 {
-            return Err("clientDataHash must be a 32-byte SHA-256 digest".into());
-        }
-        (Vec::new(), h)
-    } else if let Some(json_str) = &req.client_data_json {
+    let (client_data_json_bytes, client_data_hash) = if let Some(json_str) = &req.client_data_json {
         let bytes = if let Ok(decoded) = b64url_decode(json_str) {
             decoded
         } else {
@@ -467,6 +462,14 @@ pub async fn get_passkey(
         };
         let hash = Sha256::digest(&bytes).to_vec();
         (bytes, hash)
+    } else if let Some(hash_str) = &req.client_data_hash {
+        let h = b64url_decode(hash_str)
+            .or_else(|_| hex::decode(hash_str).map_err(|e| e.to_string()))
+            .map_err(|e| format!("Invalid clientDataHash: {}", e))?;
+        if h.len() != 32 {
+            return Err("clientDataHash must be a 32-byte SHA-256 digest".into());
+        }
+        (Vec::new(), h)
     } else {
         let challenge_str = req.challenge.unwrap_or_default();
         let fallback_json = format!(

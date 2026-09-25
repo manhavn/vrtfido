@@ -1,0 +1,14 @@
+{
+  "extName": {
+    "message": "VrtFido Passkey Provider",
+    "description": "Extension name"
+  },
+  "extDesc": {
+    "message": "Virtual FIDO2 Platform Passkey Authenticator for Linux and browsers",
+    "description": "Extension description"
+  },
+  "actionTitle": {
+    "message": "VrtFido Passkey Settings & Manager",
+    "description": "Action icon title"
+  }
+}
