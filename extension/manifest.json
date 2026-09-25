@@ -1,0 +1,61 @@
+{
+  "manifest_version": 3,
+  "default_locale": "vi",
+  "name": "__MSG_extName__",
+  "version": "0.2.9",
+  "description": "__MSG_extDesc__",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAolU4NAuRUa1Omq+X8lYlpg1uTyTZjiavzUTt47MvaJcog6pmd8ihrIsXKk2O3Lc/pB0W30pk8YhuNV6V5AE6O/vhY874Gm8whItwvZx0ngvqBaaVRq8278VOl0HJEswqpuu622qg+ao6WSeHafKPbacp9sNQyFEZA6D7O8Nzp3jz+anFOvdUvakI/8nVXJgNnrXW+HU2iZsswXP0Enx0d6M4JTTEpk5Q2gVeDlsysDewtjTnVRZE6NgOuL/TG+RWpDijhTxwrdk7RsDRWj5qW+Mkw5/QZjdtw6fcFusH+3bV7Co7w7/zG2y3xflF5tslvDsbUZ85U0Bj2IswjCIf9QIDAQAB",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "scripts": ["background.js"]
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "__MSG_actionTitle__",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["inject.js"],
+      "run_at": "document_start",
+      "all_frames": true,
+      "world": "MAIN"
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_start",
+      "all_frames": true
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["inject.js", "icons/*"],
+      "matches": ["<all_urls>"]
+    }
+  ],
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "vrtfido@local",
+      "strict_min_version": "109.0"
+    }
+  }
+}

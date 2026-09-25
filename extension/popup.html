@@ -1,0 +1,625 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VrtFido Passkey CMS</title>
+  <style>
+    :root {
+      --bg-main: #0b0f19;
+      --bg-card: #131d31;
+      --bg-card-hover: #19263e;
+      --bg-input: #0a0f1d;
+      --border: #22324e;
+      --border-focus: #38bdf8;
+      --text-main: #f1f5f9;
+      --text-muted: #8899ac;
+      --accent: #38bdf8;
+      --accent-hover: #0284c7;
+      --accent-glow: rgba(56, 189, 248, 0.25);
+      --success: #10b981;
+      --success-bg: rgba(16, 185, 129, 0.15);
+      --danger: #ef4444;
+      --danger-bg: rgba(239, 68, 68, 0.15);
+      --warning: #f59e0b;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: var(--bg-main);
+      color: var(--text-main);
+      font-size: 13px;
+      line-height: 1.5;
+      width: 100%;
+      min-width: 380px;
+      max-width: 480px;
+      margin: 0 auto;
+      padding: 16px;
+      transition: all 0.2s ease;
+    }
+
+    @media (min-width: 600px) {
+      body {
+        max-width: 720px;
+        padding: 24px;
+      }
+    }
+
+    /* Header */
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 14px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--border);
+    }
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .header-logo {
+      font-size: 26px;
+      line-height: 1;
+      filter: drop-shadow(0 0 8px var(--accent-glow));
+    }
+    .header-title-group h1 {
+      font-size: 17px;
+      font-weight: 700;
+      color: #fff;
+      letter-spacing: 0.3px;
+    }
+    .header-title-group p {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+    .header-controls {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .lang-btn {
+      padding: 4px 8px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+      border: 1px solid var(--border);
+      background: var(--bg-card);
+      color: var(--text-muted);
+      transition: all 0.15s;
+    }
+    .lang-btn.active {
+      background: var(--accent);
+      color: #0b0f19;
+      border-color: var(--accent);
+    }
+    .icon-btn {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      padding: 5px 8px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.15s;
+    }
+    .icon-btn:hover {
+      color: var(--text-main);
+      border-color: var(--accent);
+    }
+
+    /* Cards */
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 14px;
+      margin-bottom: 12px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+    }
+    .card-title {
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--accent);
+      margin-bottom: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    /* Status row */
+    .status-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 12px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .status-online {
+      background: var(--success-bg);
+      color: var(--success);
+      border: 1px solid rgba(16, 185, 129, 0.35);
+    }
+    .status-offline {
+      background: var(--danger-bg);
+      color: var(--danger);
+      border: 1px solid rgba(239, 68, 68, 0.35);
+    }
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+    .btn-refresh {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      border-radius: 6px;
+      padding: 4px 8px;
+      font-size: 11px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      transition: all 0.15s;
+    }
+    .btn-refresh:hover {
+      color: var(--text-main);
+      border-color: var(--accent);
+    }
+
+    .info-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      background: var(--bg-main);
+      border-radius: 8px;
+      padding: 10px;
+      border: 1px solid var(--border);
+    }
+    .info-cell {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .info-label {
+      font-size: 10px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+      font-weight: 600;
+    }
+    .info-value {
+      font-size: 12px;
+      color: var(--text-main);
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* Host & Port Layout (like Android) */
+    .host-port-row {
+      display: flex;
+      gap: 8px;
+      align-items: flex-start;
+      margin-bottom: 10px;
+    }
+    .field-proto {
+      flex: 0 0 80px;
+    }
+    .field-host {
+      flex: 1;
+    }
+    .field-port {
+      flex: 0 0 85px;
+    }
+
+    .field {
+      margin-bottom: 8px;
+    }
+    label {
+      display: block;
+      margin-bottom: 4px;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-muted);
+      font-weight: 600;
+    }
+    input[type="text"], input[type="number"], select, input[type="search"] {
+      width: 100%;
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--bg-input);
+      color: #fff;
+      font-size: 12.5px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    input[type="text"]:focus, input[type="number"]:focus, select:focus, input[type="search"]:focus {
+      border-color: var(--border-focus);
+    }
+    .url-preview {
+      font-family: monospace;
+      font-size: 11px;
+      color: var(--accent);
+      background: var(--bg-main);
+      padding: 6px 10px;
+      border-radius: 6px;
+      border: 1px dashed var(--border);
+      margin-bottom: 12px;
+      word-break: break-all;
+    }
+
+    /* Switch / Toggle row */
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px;
+      background: var(--bg-main);
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      margin-bottom: 12px;
+    }
+    .toggle-text {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .toggle-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-main);
+    }
+    .toggle-desc {
+      font-size: 10.5px;
+      color: var(--text-muted);
+    }
+    .switch {
+      position: relative;
+      display: inline-block;
+      width: 38px;
+      height: 22px;
+      flex-shrink: 0;
+    }
+    .switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+    .slider {
+      position: absolute;
+      cursor: pointer;
+      inset: 0;
+      background-color: #334155;
+      transition: .2s;
+      border-radius: 22px;
+    }
+    .slider:before {
+      position: absolute;
+      content: "";
+      height: 16px;
+      width: 16px;
+      left: 3px;
+      bottom: 3px;
+      background-color: white;
+      transition: .2s;
+      border-radius: 50%;
+    }
+    input:checked + .slider {
+      background-color: var(--accent);
+    }
+    input:checked + .slider:before {
+      transform: translateX(16px);
+    }
+
+    /* Buttons */
+    .btn {
+      width: 100%;
+      padding: 8px 14px;
+      border-radius: 8px;
+      font-weight: 600;
+      font-size: 12.5px;
+      cursor: pointer;
+      border: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      transition: all 0.15s ease;
+    }
+    .btn-primary {
+      background: linear-gradient(135deg, #0284c7, #0ea5e9);
+      color: #fff;
+      box-shadow: 0 2px 8px rgba(14, 165, 233, 0.3);
+    }
+    .btn-primary:hover {
+      background: linear-gradient(135deg, #0369a1, #0284c7);
+    }
+    .btn-secondary {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      color: var(--text-main);
+    }
+    .btn-secondary:hover {
+      background: var(--bg-card-hover);
+      border-color: var(--accent);
+    }
+
+    /* Quick Actions */
+    .actions-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .actions-grid .btn-full {
+      grid-column: span 2;
+    }
+
+    /* Passkeys List */
+    .search-box {
+      margin-bottom: 10px;
+    }
+    .passkeys-container {
+      max-height: 200px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding-right: 2px;
+    }
+    .passkey-item {
+      background: var(--bg-main);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 10px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      transition: border-color 0.15s;
+    }
+    .passkey-item:hover {
+      border-color: var(--border-focus);
+    }
+    .passkey-info {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      overflow: hidden;
+    }
+    .passkey-domain {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--accent);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .passkey-user {
+      font-size: 11px;
+      color: var(--text-main);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .passkey-meta {
+      font-size: 10px;
+      color: var(--text-muted);
+    }
+    .passkey-delete-btn {
+      background: transparent;
+      border: 1px solid rgba(239, 68, 68, 0.3);
+      color: var(--danger);
+      border-radius: 6px;
+      padding: 4px 7px;
+      cursor: pointer;
+      font-size: 11px;
+      flex-shrink: 0;
+      transition: all 0.15s;
+    }
+    .passkey-delete-btn:hover {
+      background: var(--danger-bg);
+      border-color: var(--danger);
+    }
+    .empty-state {
+      text-align: center;
+      padding: 16px 10px;
+      color: var(--text-muted);
+      font-size: 11.5px;
+    }
+
+    /* Toast Notification */
+    .toast {
+      position: fixed;
+      bottom: 12px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #1e293b;
+      border: 1px solid var(--accent);
+      color: #fff;
+      padding: 7px 16px;
+      border-radius: 20px;
+      font-size: 11.5px;
+      font-weight: 500;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s ease, transform 0.2s ease;
+      z-index: 1000;
+      white-space: nowrap;
+    }
+    .toast.show {
+      opacity: 1;
+      transform: translateX(-50%) translateY(-4px);
+    }
+
+    .passkeys-container::-webkit-scrollbar {
+      width: 5px;
+    }
+    .passkeys-container::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    .passkeys-container::-webkit-scrollbar-thumb {
+      background: var(--border);
+      border-radius: 4px;
+    }
+  </style>
+</head>
+<body>
+  <!-- Header Bar -->
+  <header class="header">
+    <div class="header-left">
+      <div class="header-logo"><img src="icons/icon-32.png" width="28" height="28" alt="VrtFido" style="border-radius: 6px; display: block;"></div>
+      <div class="header-title-group">
+        <h1>VrtFido</h1>
+        <p id="txtTagline">Trình xác thực Passkey ảo</p>
+      </div>
+    </div>
+    <div class="header-controls">
+      <button class="lang-btn active" id="btnLangVi">VI</button>
+      <button class="lang-btn" id="btnLangEn">EN</button>
+      <button class="icon-btn" id="btnExpandTab" title="Mở trang đầy đủ">↗</button>
+    </div>
+  </header>
+
+  <!-- Service Status Card -->
+  <section class="card">
+    <div class="card-title">
+      <span id="txtStatusTitle">Trạng thái dịch vụ</span>
+      <button class="btn-refresh" id="btnRefreshStatus">
+        <span>🔄</span> <span id="txtRefresh">Làm mới</span>
+      </button>
+    </div>
+
+    <div class="status-row">
+      <div class="status-badge status-offline" id="statusBadge">
+        <span class="status-dot" id="statusDot"></span>
+        <span id="statusText">Đang kiểm tra kết nối...</span>
+      </div>
+    </div>
+
+    <div class="info-grid">
+      <div class="info-cell">
+        <span class="info-label" id="txtLblServer">Địa chỉ máy chủ</span>
+        <span class="info-value" id="valServerUrl">http://127.0.0.1:10209</span>
+      </div>
+      <div class="info-cell">
+        <span class="info-label" id="txtLblCount">Số Passkeys lưu</span>
+        <span class="info-value" id="valCredsCount">--</span>
+      </div>
+      <div class="info-cell">
+        <span class="info-label" id="txtLblVersion">Phiên bản</span>
+        <span class="info-value" id="valVersion">--</span>
+      </div>
+      <div class="info-cell">
+        <span class="info-label" id="txtLblSensor">Cảm biến / UHID</span>
+        <span class="info-value" id="valSensorStatus">--</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- Server Connection & Approval Settings Card (Host & Port editable like Android) -->
+  <section class="card">
+    <div class="card-title" id="txtSettingsTitle">Cấu hình kết nối & Xác thực</div>
+
+    <div class="host-port-row">
+      <div class="field field-proto">
+        <label id="txtLblProto">Giao thức</label>
+        <select id="protoSelect">
+          <option value="http">http://</option>
+          <option value="https">https://</option>
+        </select>
+      </div>
+      <div class="field field-host">
+        <label id="txtLblHost">Host (IPv4 / Tên miền)</label>
+        <input type="text" id="hostInput" placeholder="127.0.0.1" value="127.0.0.1">
+      </div>
+      <div class="field field-port">
+        <label id="txtLblPort">Port</label>
+        <input type="number" id="portInput" placeholder="10209" value="10209" min="1" max="65535">
+      </div>
+    </div>
+
+    <div class="url-preview" id="urlPreview">http://127.0.0.1:10209</div>
+
+    <div class="toggle-row" style="background: rgba(14, 165, 233, 0.08); border-color: rgba(56, 189, 248, 0.25);">
+      <div class="toggle-text">
+        <span class="toggle-title" id="txtSecurityNoticeTitle">🛡️ Bảo mật bắt buộc</span>
+        <span class="toggle-desc" id="txtSecurityNoticeDesc">Luôn hiển thị hộp thoại Approve / Cancel khi có yêu cầu Passkey</span>
+      </div>
+      <span id="txtSecurityNoticeBadge" style="color: var(--accent); font-weight: 700; font-size: 11px;">BẬT</span>
+    </div>
+
+    <button class="btn btn-primary" id="saveBtn">
+      <span>💾</span> <span id="txtSaveBtn">Lưu cấu hình</span>
+    </button>
+  </section>
+
+  <!-- Quick Actions Card (like Android Main Screen) -->
+  <section class="card">
+    <div class="card-title" id="txtActionsTitle">Thao tác nhanh</div>
+    <div class="actions-grid">
+      <button class="btn btn-secondary btn-full" id="btnOpenWeb">
+        <span>🌐</span> <span id="txtOpenWeb">Mở Web CMS Dashboard</span>
+      </button>
+      <button class="btn btn-secondary" id="btnExportJson">
+        <span>💾</span> <span id="txtExportJson">Xuất JSON</span>
+      </button>
+      <button class="btn btn-secondary" id="btnImportJson">
+        <span>📥</span> <span id="txtImportJson">Nhập JSON</span>
+      </button>
+    </div>
+    <!-- Hidden file input for import -->
+    <input type="file" id="importFileInput" accept=".json,application/json" style="display: none;">
+  </section>
+
+  <!-- Stored Passkeys Management Card -->
+  <section class="card">
+    <div class="card-title">
+      <span id="txtPasskeysTitle">Passkeys đã lưu trên máy chủ</span>
+      <span class="info-label" id="passkeyBadgeCount">0</span>
+    </div>
+
+    <div class="search-box">
+      <input type="search" id="searchPasskeys" placeholder="🔍 Tìm kiếm theo domain hoặc tài khoản...">
+    </div>
+
+    <div class="passkeys-container" id="passkeysList">
+      <div class="empty-state" id="txtLoadingPasskeys">Đang tải danh sách Passkeys...</div>
+    </div>
+  </section>
+
+  <!-- Toast Notification -->
+  <div class="toast" id="toastMsg"></div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

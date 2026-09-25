@@ -1188,6 +1188,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("[CLI] FINGERPRINT mode: LIMITED TO 10 (Use '--unlimited-fps' to remove limit)");
     }
 
+
     // 2. Initialize Database connection
     println!("[DB] Connecting to database: {}", mask_db_url(&db_spec));
     let db = Db::open_with_options(&db_spec, db_type.as_deref(), auth_token.as_deref())?;

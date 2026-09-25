@@ -1,0 +1,14 @@
+{
+  "extName": {
+    "message": "VrtFido Passkey Provider",
+    "description": "Tên tiện ích mở rộng"
+  },
+  "extDesc": {
+    "message": "Trình xác thực Platform Passkey FIDO2 ảo cho Linux và trình duyệt",
+    "description": "Mô tả tiện ích mở rộng"
+  },
+  "actionTitle": {
+    "message": "VrtFido Passkey - Cài đặt & Quản lý",
+    "description": "Tiêu đề nút tiện ích"
+  }
+}

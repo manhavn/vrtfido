@@ -111,7 +111,7 @@ impl UsbSensor {
         if let Err(e) = sensor.try_connect() {
             // Not fatal: the module re-enumerates by itself, so every command retries the
             // connection. Say so, otherwise a missing sensor looks like a silent daemon.
-            println!("[SENSOR] Fingerprint sensor not available yet: {}", e);
+            eprintln!("[SENSOR] Fingerprint sensor not available yet: {}", e);
         }
         sensor
     }
