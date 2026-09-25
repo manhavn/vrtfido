@@ -45,7 +45,7 @@ From the repository root directory, run:
 
 Build outputs are generated in `dist/`:
 - **Chrome / Chromium / Brave / Edge / Opera**: Directory `dist/chrome/` and package `dist/vrtfido-chrome.zip`.
-- **Firefox**: Directory `dist/firefox/` and package `dist/vrtfido-firefox.zip` (also copied to `$HOME/vrtfido-firefox.zip` to support Firefox Snap sandbox).
+- **Firefox**: Directory `dist/firefox/` and package `dist/vrtfido-firefox.zip`.
 - **Apple Safari**: Directory `dist/safari/` and package `dist/vrtfido-safari.zip`.
 
 ---
@@ -66,9 +66,8 @@ Build outputs are generated in `dist/`:
 2. Click **Load Temporary Add-on...**.
 3. Select the package file:
    ```text
-   /home/dev/vrtfido-firefox.zip
+   vrtfido/dist/vrtfido-firefox.zip
    ```
-   *(or `vrtfido/dist/vrtfido-firefox.zip` if Firefox is not running under Snap)*.
 
 ### C. For Apple Safari (macOS & iOS/iPadOS):
 Safari packages Web Extensions inside a native macOS/iOS application wrapper via Apple Xcode's `safari-web-extension-converter`:

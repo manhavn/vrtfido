@@ -45,7 +45,7 @@ Tại thư mục gốc dự án, chạy script build:
 
 Kết quả build sẽ nằm tại thư mục `dist/`:
 - **Chrome / Chromium / Brave / Edge / Opera**: Thư mục `dist/chrome/` và tệp `dist/vrtfido-chrome.zip`.
-- **Firefox**: Thư mục `dist/firefox/` và tệp `dist/vrtfido-firefox.zip` (đồng thời tự sao chép sang `$HOME/vrtfido-firefox.zip` để vượt qua sandbox Snap của Ubuntu).
+- **Firefox**: Thư mục `dist/firefox/` và tệp `dist/vrtfido-firefox.zip`.
 - **Apple Safari**: Thư mục `dist/safari/` và tệp `dist/vrtfido-safari.zip`.
 
 ---
@@ -66,9 +66,8 @@ Kết quả build sẽ nằm tại thư mục `dist/`:
 2. Nhấp vào nút **Tải tiện ích bổ sung tạm thời...** (**Load Temporary Add-on...**).
 3. Chọn tệp:
    ```text
-   /home/dev/vrtfido-firefox.zip
+   vrtfido/dist/vrtfido-firefox.zip
    ```
-   *(hoặc chọn tệp `vrtfido/dist/vrtfido-firefox.zip` nếu Firefox không dùng Snap)*.
 
 ### C. Cho Apple Safari (macOS & iOS/iPadOS):
 Safari đóng gói Web Extension dưới dạng một ứng dụng macOS native thông qua công cụ `safari-web-extension-converter` của Apple Xcode:
