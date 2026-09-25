@@ -7,7 +7,7 @@ DIST_DIR="$SCRIPT_DIR/dist"
 FIREFOX_DIST="$DIST_DIR/firefox"
 
 echo "=== [1/3] Chuẩn bị thư mục build Firefox ==="
-rm -rf "$FIREFOX_DIST" "$DIST_DIR/vrtfido-firefox.zip" "$HOME/vrtfido-firefox.zip"
+rm -rf "$FIREFOX_DIST" "$DIST_DIR/vrtfido-firefox.zip"
 mkdir -p "$FIREFOX_DIST"
 
 echo "=== [2/3] Sao chép tệp nguồn extension ==="
@@ -49,17 +49,13 @@ python3 -c '
 import zipfile, os
 dist = "'"$FIREFOX_DIST"'"
 out_zip = "'"$DIST_DIR"'/vrtfido-firefox.zip"
-home_zip = os.path.expanduser("~/vrtfido-firefox.zip")
 with zipfile.ZipFile(out_zip, "w", zipfile.ZIP_DEFLATED) as z:
     for root, dirs, files in os.walk(dist):
         for f in files:
             p = os.path.join(root, f)
             z.write(p, os.path.relpath(p, dist))
-import shutil
-shutil.copy(out_zip, home_zip)
 '
 
 echo "✓ Build Firefox Extension thành công!"
 echo "  - Thư mục nạp trực tiếp: $FIREFOX_DIST"
-echo "  - Tệp zip trong dist: $DIST_DIR/vrtfido-firefox.zip"
-echo "  - Tệp zip tại \$HOME (hỗ trợ Firefox Snap sandbox): $HOME/vrtfido-firefox.zip"
+echo "  - Tệp zip đóng gói: $DIST_DIR/vrtfido-firefox.zip"
