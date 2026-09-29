@@ -192,6 +192,7 @@ The script installs missing host utilities with apt/dnf/pacman, bootstraps Rust 
 **Android 14+ usage:**
    - Install the generated APK, configure **Host (IPv4)** and **Port** before switching ON. Defaults: `0.0.0.0:10209`; settings persist across app restarts. Use `127.0.0.1` if access must stay on the phone.
    - **Daemon parameters (CLI parity):** the main screen also exposes the desktop CLI options — **Database** (`--database` / `DATABASE_URL`: a file name, `sqlite:…`, or a `postgresql://`, `mysql://`, `mariadb://`, `mongodb://`, `libsql://` URL), **DB type** (`--db-type`, optional; auto-detected when empty), **Auth token** (`--auth-token` for LibSQL/Turso), plus the boolean flags **--debug** and **--unlimited-fps** as checkboxes. A relative file name resolves inside the app's private storage; the default is `authenticator.db`. Parameters are applied at daemon start and persisted with the rest of the settings.
+   - The daemon keeps **two separate SQLite files** for offline operation: a shadow for reads when the primary disconnects, and a durable queue for writes replayed in order when it reconnects. It can start while the primary is unavailable; on a fresh install without a prior shadow, remote data is not available until a successful connection. Android passes explicit paths in the native daemon options: for a local `authenticator.db`, `authenticator.shadow.db` and `authenticator.queue.db` live next to it under app-private `filesDir` (including `sqlite:authenticator.db`). Remote or externally located primary databases use separate, spec-derived filenames under app-private `filesDir`. No offline cache defaults to shared/public storage. Uninstalling the app deletes these files, including pending writes; preserve them securely before uninstalling.
    - **The Database field is masked.** A connection string can carry credentials (`mongodb://user:password@host/db`), so the field renders like a password box with an eye button that reveals it on demand; every app launch and screen rotation starts masked again.
    - ON turns green only after the native HTTP server responds. On failure the app displays the startup error instead of claiming it is running. OFF stops the server.
    - While ON, an ongoing foreground notification displays the bound address. Tapping the notification returns to the app; closing the app UI or swiping its task away does not intentionally stop the service. Android may still stop foreground services via system controls or battery policies. The notification is optional: denying `POST_NOTIFICATIONS` (Android 13+) or turning the app's notifications off only hides that ongoing notice — the daemon still starts and runs, and the status line then says so while keeping the switch ON.
@@ -238,6 +239,26 @@ By default, the application uses local SQLite file `authenticator.db`. Configure
 export DATABASE_URL="postgresql://postgres:vrtfido@127.0.0.1:5435/postgres"
 ./vrtfido
 ```
+
+### Offline shadow and write queue
+
+Normal desktop daemon startup uses a **SQLite shadow database for reads** when the configured primary is offline and a **different SQLite database for pending writes**. The daemon also starts when the primary cannot be reached; queued writes are replayed **in order** on the next request or by a background retry every five seconds after reconnect. The shadow refreshes from an available primary at most once every two seconds. Previously synced data can be read offline, but a fresh shadow cannot supply remote records until the primary has been reached. Do not delete or edit the shadow and queue files while writes are pending.
+
+Replay uses stable IDs and absolute credential counters so ordinary retries do not duplicate logs or increments. Cross-device concurrent changes to the same credential cannot be resolved automatically without a transactional idempotency protocol on the primary; a conflicting replay remains queued and its error is reported rather than discarding the write.
+
+On Ubuntu, **no extra parameters are required**: the daemon creates a private `0700` directory at `/tmp/vrtfido-<uid>/` and two distinct `0600` SQLite files there. Names are derived from the primary database identity (without exposing credentials in the filename), so different primary databases get separate queues. **`/tmp` can be cleared on reboot or by system cleanup; pending writes will then be lost.** If pending writes must survive reboot, choose two persistent paths outside `/tmp`:
+
+```bash
+./vrtfido --database "postgresql://user:pass@host/db" \
+  --shadow-db /private/vrtfido/primary.shadow.db \
+  --queue-db /private/vrtfido/primary.queue.db
+# Or: SHADOW_DB=/private/vrtfido/primary.shadow.db
+#     QUEUE_DB=/private/vrtfido/primary.queue.db
+```
+
+Flags take precedence over `SHADOW_DB` and `QUEUE_DB`. Override paths must be writable **local SQLite files**, separate from each other and from the primary SQLite file; neither should point to `:memory:` or a URL. The shadow contains credentials and private keys, and the queue may contain pending credential/security changes: restrict directory and file access (for example, a private `0700` directory and `0600` files), including **existing files** and SQLite `-wal`/`-shm` siblings; protect backups and do not put them on shared/public storage. When switching primary databases, use a distinct pair of sidecars per primary; never replay another primary's pending queue into the new one.
+
+Desktop `--export`, `--import`, and `--clean-logs` operate **directly on the primary** and require it online (rather than silently exporting stale shadow data or queuing migration/cleanup). An `--import` that continues to serve switches to the resilient daemon after the import succeeds. Android requires no extra path options: it creates the shadow and queue SQLite files automatically inside the app's private `filesDir` (application data), not Ubuntu's `/tmp`.
 
 ### 2. Export & Import 100% Data
 

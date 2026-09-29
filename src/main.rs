@@ -944,6 +944,60 @@ fn handle_frame(
     Ok(())
 }
 
+/// Default offline files share a private per-user /tmp directory, but not a
+/// queue: different primary databases get different filenames.
+fn default_resilient_paths(spec: &str, db_type: Option<&str>) -> (String, String) {
+    let spec = spec.trim();
+    let local = match db_type.map(|kind| kind.to_ascii_lowercase()) {
+        Some(kind) if kind == "sqlite" => true,
+        Some(kind) if kind == "libsql" || kind == "turso" => {
+            !spec.starts_with("libsql://")
+                && !spec.starts_with("http://")
+                && !spec.starts_with("https://")
+        }
+        Some(_) => false,
+        None => !spec.contains("://") && !spec.starts_with("file:"),
+    };
+    let identity_spec = if local {
+        let path = spec.strip_prefix("sqlite:")
+            .or_else(|| spec.strip_prefix("libsql:"))
+            .unwrap_or(spec);
+        let path = if path.is_empty() { "authenticator.db" } else { path };
+        if Path::new(path).is_absolute() {
+            path.to_string()
+        } else {
+            std::env::current_dir().unwrap_or_default().join(path).to_string_lossy().into_owned()
+        }
+    } else {
+        spec.to_string()
+    };
+    let hash = hex::encode(Sha256::digest(format!("{}\n{}", db_type.unwrap_or("").to_ascii_lowercase(), identity_spec).as_bytes()));
+    let dir = format!("/tmp/vrtfido-{}", unsafe { libc::geteuid() });
+    (
+        format!("{dir}/{}.shadow.db", &hash[..24]),
+        format!("{dir}/{}.queue.db", &hash[..24]),
+    )
+}
+
+fn ensure_default_sidecar_dir() -> std::io::Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+    let path = format!("/tmp/vrtfido-{}", unsafe { libc::geteuid() });
+    match std::fs::DirBuilder::new().mode(0o700).create(&path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(e),
+    }
+    let metadata = std::fs::symlink_metadata(&path)?;
+    if !metadata.file_type().is_dir() || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.permissions().mode() & 0o777 != 0o700 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("{path} must be a private directory owned by the current user (mode 0700)"),
+        ));
+    }
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 1. Parse CLI arguments & environment variables
@@ -1122,6 +1176,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("                                  - MongoDB:    mongodb://user:pass@host:port/dbname (or mongodb+srv://...)");
         println!("      --db-type <TYPE>          Specify DB type (sqlite, postgres, libsql, mysql, mariadb, mongodb)");
         println!("      --auth-token <TOKEN>      Authentication token (used by LibSQL / Turso; embed MongoDB creds in the URL)");
+        println!("      --shadow-db <FILE>        Override SQLite read fallback (default: /tmp/vrtfido-<uid>/...)");
+        println!("      --queue-db <FILE>         Override separate pending-write queue (default: /tmp/vrtfido-<uid>/...)");
         println!("      --export <FILE.json>      Export 100% database data to JSON file and exit");
         println!("      --import <FILE.json>      Import data from JSON file into current database");
         println!("      --exit-after-import       Exit immediately after import (do not start server)");
@@ -1132,6 +1188,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  DATABASE_URL / DB_URL         Connection string or database file path");
         println!("  DB_TYPE                       Database type");
         println!("  LIBSQL_AUTH_TOKEN             LibSQL authentication token");
+        println!("  SHADOW_DB / QUEUE_DB          Override shadow and queue file paths (flags take precedence)");
+        println!("Offline startup uses the local shadow; writes queue in order until the primary reconnects.");
+        println!("Ubuntu defaults: private /tmp/vrtfido-<uid>/, separate files for each primary.");
+        println!("/tmp can be cleared at reboot: use --shadow-db/--queue-db for durable storage.");
+        println!("One-off --export, --import and --clean-logs require the primary database online.");
         return Ok(());
     }
 
@@ -1164,6 +1225,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .or_else(|| std::env::var("LIBSQL_AUTH_TOKEN").ok())
         .or_else(|| std::env::var("DATABASE_AUTH_TOKEN").ok());
 
+    let (default_shadow, default_queue) = default_resilient_paths(&db_spec, db_type.as_deref());
+    let shadow_override = get_opt("--shadow-db", None).or_else(|| std::env::var("SHADOW_DB").ok());
+    let queue_override = get_opt("--queue-db", None).or_else(|| std::env::var("QUEUE_DB").ok());
+    let uses_default_sidecars = shadow_override.is_none() || queue_override.is_none();
+    let shadow_path = shadow_override.unwrap_or(default_shadow);
+    let queue_path = queue_override.unwrap_or(default_queue);
+
     let export_file = get_opt("--export", None);
     let import_file = get_opt("--import", None);
 
@@ -1193,10 +1261,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
 
-    // 2. Initialize Database connection
+    // One-off migration/maintenance must operate directly on the primary, never on stale data
+    // or on a pending queue. Normal serving is resilient even if the primary is offline.
     println!("[DB] Connecting to database: {}", mask_db_url(&db_spec));
-    let db = Db::open_with_options(&db_spec, db_type.as_deref(), auth_token.as_deref())?;
-    println!("[DB] [+] Successfully connected to database backend: {}", db.backend_name());
+    let direct_operation = check_clean_logs.is_some() || export_file.is_some() || import_file.is_some();
+    let continue_after_import = import_file.is_some();
+    if uses_default_sidecars && (!direct_operation || (continue_after_import && !exit_after_import)) {
+        ensure_default_sidecar_dir()?;
+    }
+    let db = if direct_operation {
+        Db::open_with_options(&db_spec, db_type.as_deref(), auth_token.as_deref())?
+    } else {
+        Db::open_resilient(&db_spec, db_type.as_deref(), auth_token.as_deref(), &shadow_path, &queue_path)?
+    };
+    println!("[DB] [+] Database backend: {}", db.backend_name());
     if check_clean_logs.is_none() && export_file.is_none() {
         db.log_debug("INFO", "SYSTEM", &format!("Virtual FIDO2 Manager started with {} backend", db.backend_name()));
     }
@@ -1292,9 +1370,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             Err(e) => {
                 eprintln!("[MIGRATION] [!] Export error: {}", e);
+                return Err(e.into());
             }
         }
     }
+
+    // --import without --exit-after-import proceeds as a daemon, with a fresh resilient handle.
+    let db = if continue_after_import {
+        drop(db);
+        Db::open_resilient(&db_spec, db_type.as_deref(), auth_token.as_deref(), &shadow_path, &queue_path)?
+    } else {
+        db
+    };
 
     // 3. Check and grant /dev/uhid access via sudo if needed
     println!("[UHID] Checking /dev/uhid access permission...");
