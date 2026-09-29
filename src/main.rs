@@ -1119,8 +1119,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("                                  - LibSQL:     libsql://... or https://... (Turso) or file");
         println!("                                  - MySQL:      mysql://user:pass@host:port/dbname");
         println!("                                  - MariaDB:    mariadb://user:pass@host:port/dbname");
-        println!("      --db-type <TYPE>          Specify DB type (sqlite, postgres, libsql, mysql, mariadb)");
-        println!("      --auth-token <TOKEN>      Authentication token for LibSQL / Turso Cloud");
+        println!("                                  - MongoDB:    mongodb://user:pass@host:port/dbname (or mongodb+srv://...)");
+        println!("      --db-type <TYPE>          Specify DB type (sqlite, postgres, libsql, mysql, mariadb, mongodb)");
+        println!("      --auth-token <TOKEN>      Authentication token (used by LibSQL / Turso; embed MongoDB creds in the URL)");
         println!("      --export <FILE.json>      Export 100% database data to JSON file and exit");
         println!("      --import <FILE.json>      Import data from JSON file into current database");
         println!("      --exit-after-import       Exit immediately after import (do not start server)");

@@ -31,11 +31,13 @@
     <string name="backup_file_name">VrtFido-backup-%1$s.json</string>
     <string name="params_title">Tham số daemon (tương đương CLI)</string>
     <string name="database_label">Database (đường dẫn hoặc URL như --database)</string>
-    <string name="database_hint">authenticator.db, postgresql://…, mysql://…, libsql://…</string>
+    <string name="database_hint">authenticator.db, postgresql://…, mysql://…, libsql://…, mongodb://…</string>
+    <string name="database_toggle_show">Hiện chuỗi database</string>
+    <string name="database_toggle_hide">Ẩn chuỗi database</string>
     <string name="db_type_label">DB type (tùy chọn, --db-type)</string>
-    <string name="db_type_hint">sqlite, postgresql, mysql, libsql (bỏ trống để tự nhận diện)</string>
+    <string name="db_type_hint">sqlite, postgresql, mysql, mariadb, libsql, mongodb (bỏ trống để tự nhận diện)</string>
     <string name="auth_token_label">Auth token (LibSQL/Turso, --auth-token)</string>
-    <string name="auth_token_hint">bỏ trống nếu không dùng</string>
+    <string name="auth_token_hint">bỏ trống nếu không dùng (MongoDB để thông tin đăng nhập trong URL)</string>
     <string name="flag_debug">--debug: ghi log gói tin chi tiết</string>
 
     <!-- Language switch -->

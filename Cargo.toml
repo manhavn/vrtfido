@@ -1,6 +1,6 @@
 [package]
 name = "vrtfido"
-version = "0.2.9"
+version = "0.3.0"
 edition = "2021"
 
 [lib]
@@ -28,6 +28,7 @@ rusb = { version = "0.9.4", features = ["vendored"] }
 postgres = "0.19.14"
 mysql = "28.0.2"
 url = "2.5.8"
+mongodb = { version = "3.9", default-features = false, features = ["compat-3-3-0", "bson-2", "rustls-tls", "dns-resolver"] }
 libsql = { version = "0.9.30", default-features = false, features = ["remote", "tls"] }
 chrono = "0.4.45"
 libc = "0.2.189"
