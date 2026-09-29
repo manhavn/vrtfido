@@ -29,6 +29,10 @@ pub struct DaemonOptions {
     /// `--auth-token` for LibSQL / Turso.
     #[serde(default)]
     pub auth_token: Option<String>,
+    /// Persistent private SQLite copy used for reads when the primary is unavailable.
+    pub shadow_db: String,
+    /// Separate persistent SQLite queue for writes awaiting ordered replay.
+    pub queue_db: String,
     /// `--debug`
     #[serde(default)]
     pub debug_mode: bool,
@@ -42,10 +46,12 @@ pub struct DaemonOptions {
 /// flags with the UHID thread and the tray.
 #[cfg(feature = "jni-bridge")]
 fn server_router(options: &DaemonOptions) -> Result<axum::Router, db::DbError> {
-    let db = Db::open_with_options(
+    let db = Db::open_resilient(
         &options.database,
         options.db_type.as_deref(),
         options.auth_token.as_deref(),
+        &options.shadow_db,
+        &options.queue_db,
     )?;
     let sensor = sensor::UsbSensor::new();
     let security = SecurityEngine::new(db.clone(), sensor, options.unlimited_fingerprints);
@@ -87,6 +93,9 @@ pub mod jni_bridge {
         }
         if options.database.trim().is_empty() {
             return Err("Database must not be empty".into());
+        }
+        if options.shadow_db.trim().is_empty() || options.queue_db.trim().is_empty() {
+            return Err("Shadow and queue database paths must not be empty".into());
         }
         let port = options.port;
         let mut current = DAEMON.lock();
@@ -208,6 +217,8 @@ pub mod jni_bridge {
                 host: host.to_string(),
                 port,
                 db_type: None,
+                shadow_db: format!("{database}.shadow.db"),
+                queue_db: format!("{database}.queue.db"),
                 auth_token: None,
                 debug_mode: false,
                 unlimited_fingerprints: false,
@@ -238,9 +249,45 @@ pub mod jni_bridge {
             start(options(&db, "127.0.0.1", port)).unwrap();
             assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_ok());
             stop();
-            let _ = std::fs::remove_file(&path);
-            let _ = std::fs::remove_file(path.with_extension("db-wal"));
-            let _ = std::fs::remove_file(path.with_extension("db-shm"));
+            // JNI daemon must accept and retain settings while the configured
+            // primary cannot be opened, then replay them once it returns.
+            let offline_dir = format!("{db}.offline");
+            let offline_primary = format!("{offline_dir}/primary.db");
+            let mut offline_options = options(&offline_primary, "127.0.0.1", port);
+            offline_options.shadow_db = format!("{db}.offline-shadow.db");
+            offline_options.queue_db = format!("{db}.offline-queue.db");
+            start(offline_options).unwrap();
+            let body = br#"{"language":"vi"}"#;
+            let mut socket = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            socket.write_all(format!(
+                "POST /api/settings HTTP/1.0\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            ).as_bytes()).unwrap();
+            socket.write_all(body).unwrap();
+            let mut response = String::new();
+            socket.read_to_string(&mut response).unwrap();
+            assert!(response.contains("\"language\":\"vi\""), "{response}");
+            std::fs::create_dir(&offline_dir).unwrap();
+            let mut socket = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            socket.write_all(b"GET /api/settings HTTP/1.0\r\nHost: localhost\r\n\r\n").unwrap();
+            response.clear();
+            socket.read_to_string(&mut response).unwrap();
+            assert!(response.contains("\"language\":\"vi\""), "{response}");
+            assert_eq!(Db::open(&offline_primary).unwrap().get_app_setting("language").unwrap().as_deref(), Some("vi"));
+            stop();
+            std::fs::remove_dir_all(&offline_dir).unwrap();
+            for file in [format!("{db}.offline-shadow.db"), format!("{db}.offline-queue.db")] {
+                let _ = std::fs::remove_file(&file);
+                let _ = std::fs::remove_file(format!("{file}-wal"));
+                let _ = std::fs::remove_file(format!("{file}-shm"));
+            }
+            for file in [db.clone(), format!("{db}.shadow.db"), format!("{db}.queue.db")] {
+                let _ = std::fs::remove_file(&file);
+                let _ = std::fs::remove_file(format!("{file}-wal"));
+                let _ = std::fs::remove_file(format!("{file}-shm"));
+            }
         }
 
         #[test]

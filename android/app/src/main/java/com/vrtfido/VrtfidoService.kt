@@ -22,6 +22,7 @@ import kotlinx.coroutines.launch
 import android.util.Log
 import org.json.JSONObject
 import java.io.File
+import java.security.MessageDigest
 
 class VrtfidoService : Service() {
 
@@ -126,23 +127,57 @@ class VrtfidoService : Service() {
     }
 
     /**
-     * Serializes the configured CLI-equivalent parameters for the native side. Relative file names
-     * resolve inside the app's private directory so a bare `authenticator.db` stays app-scoped.
+     * The local SQLite files live under the app's private files directory, even when a bare
+     * sqlite:/libsql: spec is supplied. Sidecars stay private if a user chooses an external
+     * absolute primary path; they are never placed in public storage by default.
      */
     private fun daemonOptionsJson(binding: ServerBinding): String {
         val spec = binding.database.trim()
-        val database = if (spec.contains("://") || spec.startsWith("/") ||
-            spec.startsWith("sqlite:") || spec.startsWith("libsql:") || spec.startsWith("file:")
-        ) {
-            spec
-        } else {
-            File(filesDir, spec).absolutePath
+        val localPrefix = when {
+            spec.startsWith("sqlite:") -> "sqlite:"
+            spec.startsWith("libsql:") && !spec.startsWith("libsql://") -> "libsql:"
+            else -> ""
         }
+        val localSpec = spec.removePrefix(localPrefix)
+        val isLocal = !spec.contains("://") && !spec.startsWith("file:") &&
+            binding.dbType.trim().lowercase() !in setOf("postgres", "postgresql", "mysql", "mariadb", "mongodb", "mongo")
+        val localPath = localSpec.ifEmpty { "authenticator.db" }
+        val database = if (isLocal && !localPath.startsWith("/") && localPath != ":memory:") {
+            "$localPrefix${File(filesDir, localPath).canonicalPath}"
+        } else {
+            spec
+        }
+
+        val privateDir = filesDir.canonicalFile
+        val primaryFile = if (isLocal && localPath != ":memory:") {
+            File(localPath).let { if (it.isAbsolute) it else File(privateDir, it.path) }.canonicalFile
+        } else {
+            null
+        }
+        val privatePrimary = primaryFile?.parentFile?.takeIf { parent ->
+            parent == privateDir || parent.toPath().startsWith(privateDir.toPath())
+        }
+        // Different remote (or externally located) primaries must not share an offline queue.
+        // Hashing the spec gives stable filenames without exposing URL credentials in a filename.
+        val stem = if (privatePrimary != null) {
+            primaryFile.name.removeSuffix(".db").ifEmpty { "authenticator" }
+        } else {
+            val digest = MessageDigest.getInstance("SHA-256")
+                .digest("${binding.dbType.trim()}:$database".toByteArray(Charsets.UTF_8))
+                .take(12)
+                .joinToString("") { (it.toInt() and 0xff).toString(16).padStart(2, '0') }
+            "primary-$digest"
+        }
+        val sidecarDir = privatePrimary ?: privateDir
+        val shadowDb = File(sidecarDir, "$stem.shadow.db").absolutePath
+        val queueDb = File(sidecarDir, "$stem.queue.db").absolutePath
 
         return JSONObject().apply {
             put("database", database)
             put("host", binding.host)
             put("port", binding.port)
+            put("shadow_db", shadowDb)
+            put("queue_db", queueDb)
             if (binding.dbType.isNotBlank()) put("db_type", binding.dbType.trim())
             if (binding.authToken.isNotBlank()) put("auth_token", binding.authToken.trim())
             put("debug_mode", binding.debugMode)

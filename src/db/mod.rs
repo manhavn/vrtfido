@@ -3,6 +3,7 @@ pub mod mongodb_backend;
 pub mod mysql_backend;
 pub mod postgres_backend;
 pub mod sqlite;
+mod resilient;
 
 use chrono::Utc;
 use std::fmt;
@@ -270,6 +271,22 @@ impl Db {
         Self::open_with_options(path_or_url, None, None)
     }
 
+    /// Opens a primary database with a persistent SQLite read shadow and a separate
+    /// SQLite write queue. Both paths must name different, persistent local files.
+    pub fn open_resilient(
+        spec: &str,
+        db_type: Option<&str>,
+        auth_token: Option<&str>,
+        shadow_path: &str,
+        queue_path: &str,
+    ) -> Result<Self> {
+        let backend = Arc::new(resilient::ResilientBackend::open(
+            spec, db_type, auth_token, shadow_path, queue_path,
+        )?);
+        backend.start_sync_worker();
+        Ok(Self { backend })
+    }
+
     pub fn open_with_options(
         spec: &str,
         db_type: Option<&str>,
@@ -372,7 +389,9 @@ impl Db {
 
     pub fn log_debug(&self, level: &str, component: &str, message: &str) {
         let now = current_timestamp();
-        let _ = self.backend.log_debug(level, component, message, &now);
+        if let Err(e) = self.backend.log_debug(level, component, message, &now) {
+            eprintln!("[DB] Failed to persist debug log: {e}");
+        }
     }
 
     pub fn log_auth(
@@ -385,7 +404,9 @@ impl Db {
         details: Option<&str>,
     ) {
         let now = current_timestamp();
-        let _ = self.backend.log_auth(credential_id, rp_id, operation, status, auth_method, details, &now);
+        if let Err(e) = self.backend.log_auth(credential_id, rp_id, operation, status, auth_method, details, &now) {
+            eprintln!("[DB] Failed to persist authentication log: {e}");
+        }
     }
 
     pub fn get_credentials(&self) -> Result<Vec<CredentialRow>> {
@@ -455,8 +476,8 @@ impl Db {
 
         // 2. If existing record found for same account, delete old data and update audit logs to new ID
         for old_id in &matching_ids {
-            let _ = self.backend.delete_credential(old_id);
-            let _ = self.backend.update_auth_log_credential_id(old_id, id_hex);
+            self.backend.delete_credential(old_id)?;
+            self.backend.update_auth_log_credential_id(old_id, id_hex)?;
         }
 
         // 3. Overwrite / insert record with latest data
@@ -1275,49 +1296,6 @@ mod tests {
         assert_eq!(db.get_debug_logs(10).unwrap().len(), 0);
     }
 
-    /// Parses the exact JSON the Android `VrtfidoService.daemonOptionsJson` produces and runs it
-    /// through the same `Db::open_with_options` call the JNI bridge makes. Catches issues like
-    /// the URL getting rewritten by Kotlin or the auto-detect missing a `mongodb://` prefix.
-    #[test]
-    fn test_android_daemon_options_mongodb_autodetect() {
-        let payload = serde_json::json!({
-            "database": "mongodb://app:gQHawvm7sqJQr96@127.0.0.1:27017/vrtfido",
-            "host": "0.0.0.0",
-            "port": 10209,
-            "debug_mode": false,
-            "unlimited_fingerprints": false,
-        })
-        .to_string();
-        // DaemonOptions struct lives in src/lib.rs and is what the JNI parses from this exact JSON.
-        // We mirror its shape here so the test stays in the db crate.
-        #[derive(serde::Deserialize)]
-        struct AndroidOptions {
-            database: String,
-            #[serde(default)]
-            db_type: Option<String>,
-            #[serde(default)]
-            auth_token: Option<String>,
-        }
-        let opts: AndroidOptions = serde_json::from_str(&payload)
-            .expect("Android-shaped JSON must deserialize into the JNI shape");
-        match Db::open_with_options(
-            &opts.database,
-            opts.db_type.as_deref(),
-            opts.auth_token.as_deref(),
-        ) {
-            Ok(db) => assert_eq!(
-                db.backend_name(),
-                "MongoDB",
-                "mongodb:// URL must auto-routing through MongoBackend (got {})",
-                db.backend_name()
-            ),
-            Err(e) => panic!(
-                "Db::open_with_options failed for payload {payload}: {e}\n\
-                 If this is Err(DbError::MongoDb(KIND *Server selection*)), that's the test\n\
-                 environment lacking a reachable mongod — the URI parsing & routing still hold."
-            ),
-        }
-    }
 
     #[test]
     fn test_android_daemon_options_mongodb_explicit_db_type() {

@@ -3,7 +3,7 @@ use super::{
     SecuritySettingsData,
 };
 use parking_lot::Mutex;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::sync::Arc;
 
 pub struct SqliteBackend {
@@ -114,6 +114,64 @@ impl SqliteBackend {
             name,
         })
     }
+    pub(super) fn bind_primary(&self, identity: &str) -> Result<(), DbError> {
+        let conn = self.conn.lock();
+        conn.execute_batch("CREATE TABLE IF NOT EXISTS resilient_metadata
+            (key TEXT PRIMARY KEY, value TEXT NOT NULL);").map_err(DbError::Sqlite)?;
+        let existing: Option<String> = conn.query_row(
+            "SELECT value FROM resilient_metadata WHERE key='primary'", [], |r| r.get(0),
+        ).optional().map_err(DbError::Sqlite)?;
+        if existing.as_deref().is_some_and(|value| value != identity) {
+            return Err(DbError::Config("shadow belongs to another primary database".into()));
+        }
+        conn.execute("INSERT OR IGNORE INTO resilient_metadata(key,value) VALUES('primary',?1)",
+            [identity]).map_err(DbError::Sqlite)?;
+        Ok(())
+    }
+    /// Replace the read mirror in one transaction; a failed remote fetch never
+    /// erases the last usable offline snapshot.
+    pub(super) fn replace_snapshot(&self, data: &super::DatabaseExport) -> Result<(), DbError> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction().map_err(DbError::Sqlite)?;
+        tx.execute_batch("DELETE FROM credentials; DELETE FROM auth_logs; DELETE FROM debug_logs;
+            DELETE FROM fingerprints; DELETE FROM app_settings;").map_err(DbError::Sqlite)?;
+        tx.execute(
+            "UPDATE security_settings SET pin_hash=?1,pin_salt=?2,pin_enabled=?3,
+             fp_enabled=?4,require_uv=?5,updated_at=?6 WHERE id=1",
+            params![data.security_settings.pin_hash, data.security_settings.pin_salt,
+                data.security_settings.pin_enabled, data.security_settings.fp_enabled,
+                data.security_settings.require_uv, data.security_settings.updated_at],
+        ).map_err(DbError::Sqlite)?;
+        for c in &data.credentials {
+            tx.execute("INSERT INTO credentials (id,rp_id,user_id,user_name,user_display_name,
+                private_key_sec1,public_key_cose,sign_count,created_at,last_used_at)
+                VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                params![c.id,c.rp_id,hex::decode(&c.user_id_hex).map_err(|e| DbError::Config(e.to_string()))?,
+                    c.user_name,c.user_display_name,
+                    hex::decode(&c.private_key_sec1_hex).map_err(|e| DbError::Config(e.to_string()))?,
+                    hex::decode(&c.public_key_cose_hex).map_err(|e| DbError::Config(e.to_string()))?,
+                    c.sign_count,c.created_at,c.last_used_at]).map_err(DbError::Sqlite)?;
+        }
+        for f in &data.fingerprints {
+            tx.execute("INSERT INTO fingerprints (id,slot_index,name,enrolled_at) VALUES (?1,?2,?3,?4)",
+                params![f.id,f.slot_index,f.name,f.enrolled_at]).map_err(DbError::Sqlite)?;
+        }
+        for l in &data.auth_logs {
+            tx.execute("INSERT INTO auth_logs (id,credential_id,rp_id,operation,status,auth_method,details,created_at)
+                VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+                params![l.id,l.credential_id,l.rp_id,l.operation,l.status,l.auth_method,l.details,l.created_at])
+                .map_err(DbError::Sqlite)?;
+        }
+        for l in &data.debug_logs {
+            tx.execute("INSERT INTO debug_logs (id,level,component,message,created_at) VALUES (?1,?2,?3,?4,?5)",
+                params![l.id,l.level,l.component,l.message,l.created_at]).map_err(DbError::Sqlite)?;
+        }
+        for (key, value) in &data.app_settings {
+            tx.execute("INSERT INTO app_settings (setting_key,value) VALUES (?1,?2)", params![key,value])
+                .map_err(DbError::Sqlite)?;
+        }
+        tx.commit().map_err(DbError::Sqlite)
+    }
 }
 
 impl DbBackend for SqliteBackend {
@@ -123,10 +181,10 @@ impl DbBackend for SqliteBackend {
 
     fn log_debug(&self, level: &str, component: &str, message: &str, now: &str) -> Result<(), DbError> {
         let conn = self.conn.lock();
-        let _ = conn.execute(
+        conn.execute(
             "INSERT INTO debug_logs (level, component, message, created_at) VALUES (?1, ?2, ?3, ?4)",
             params![level, component, message, now],
-        );
+        ).map_err(DbError::Sqlite)?;
         Ok(())
     }
 
@@ -141,11 +199,11 @@ impl DbBackend for SqliteBackend {
         now: &str,
     ) -> Result<(), DbError> {
         let conn = self.conn.lock();
-        let _ = conn.execute(
+        conn.execute(
             "INSERT INTO auth_logs (credential_id, rp_id, operation, status, auth_method, details, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![credential_id, rp_id, operation, status, auth_method, details, now],
-        );
+        ).map_err(DbError::Sqlite)?;
         Ok(())
     }
 
@@ -272,10 +330,10 @@ impl DbBackend for SqliteBackend {
 
     fn update_auth_log_credential_id(&self, old_id: &str, new_id: &str) -> Result<(), DbError> {
         let conn = self.conn.lock();
-        let _ = conn.execute(
+        conn.execute(
             "UPDATE auth_logs SET credential_id = ?1 WHERE credential_id = ?2",
             params![new_id, old_id],
-        );
+        ).map_err(DbError::Sqlite)?;
         Ok(())
     }
 
@@ -353,7 +411,8 @@ impl DbBackend for SqliteBackend {
         if let Some(cid) = credential_id {
             let mut stmt = conn.prepare(
                 "SELECT id, credential_id, rp_id, operation, status, auth_method, details, created_at
-                 FROM auth_logs WHERE credential_id = ?1 ORDER BY id DESC LIMIT ?2",
+                 FROM auth_logs WHERE credential_id = ?1
+                 ORDER BY created_at DESC, (id < 0) DESC, abs(id) DESC LIMIT ?2",
             ).map_err(DbError::Sqlite)?;
             let rows = stmt.query_map(params![cid, limit as i64], map_fn).map_err(DbError::Sqlite)?;
             for r in rows {
@@ -362,7 +421,7 @@ impl DbBackend for SqliteBackend {
         } else {
             let mut stmt = conn.prepare(
                 "SELECT id, credential_id, rp_id, operation, status, auth_method, details, created_at
-                 FROM auth_logs ORDER BY id DESC LIMIT ?1",
+                 FROM auth_logs ORDER BY created_at DESC, (id < 0) DESC, abs(id) DESC LIMIT ?1",
             ).map_err(DbError::Sqlite)?;
             let rows = stmt.query_map(params![limit as i64], map_fn).map_err(DbError::Sqlite)?;
             for r in rows {
@@ -376,7 +435,7 @@ impl DbBackend for SqliteBackend {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT id, level, component, message, created_at
-             FROM debug_logs ORDER BY id DESC LIMIT ?1"
+             FROM debug_logs ORDER BY created_at DESC, (id < 0) DESC, abs(id) DESC LIMIT ?1"
         ).map_err(DbError::Sqlite)?;
 
         let rows = stmt.query_map([limit as i64], |row| {
