@@ -35,7 +35,7 @@ object VrtfidoClient {
 
     fun isRunning(context: Context): Boolean {
         return try {
-            val req = Request.Builder().url("${baseUrl(context)}/api/status").get().build()
+            val req = Request.Builder().url("${baseUrl(context)}/api/health").get().build()
             client.newCall(req).execute().use { resp ->
                 resp.isSuccessful
             }

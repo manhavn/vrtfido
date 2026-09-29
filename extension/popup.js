@@ -246,7 +246,7 @@ async function refreshStatus() {
     statusText.textContent = t("online", computeBaseUrl());
 
     valCredsCount.textContent = status ? `${status.credentials_count || 0}` : "--";
-    valVersion.textContent = status ? (status.version || "v0.3.0") : "--";
+    valVersion.textContent = status ? (status.version || "v0.3.1") : "--";
 
     const hasSensor = status && (status.usb_sensor_connected || status.uhid_connected);
     valSensorStatus.textContent = hasSensor ? t("sensorOk") : t("sensorNone");

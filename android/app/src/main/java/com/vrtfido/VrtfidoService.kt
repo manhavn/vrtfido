@@ -92,7 +92,7 @@ class VrtfidoService : Service() {
                     }
                     delay(250)
                 }
-                check(reachable) { "Server started but ${binding.localUrl}/api/status is unreachable" }
+                check(reachable) { "Server started but ${binding.localUrl}/api/health is unreachable" }
                 if (!isActive) return@launch
                 isRunning = true
                 (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)

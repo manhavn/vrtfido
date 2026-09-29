@@ -276,8 +276,65 @@ pub mod jni_bridge {
             response.clear();
             socket.read_to_string(&mut response).unwrap();
             assert!(response.contains("\"language\":\"vi\""), "{response}");
-            assert_eq!(Db::open(&offline_primary).unwrap().get_app_setting("language").unwrap().as_deref(), Some("vi"));
+            let deadline = std::time::Instant::now() + Duration::from_secs(12);
+            loop {
+                if Db::open(&offline_primary).ok()
+                    .and_then(|primary| primary.get_app_setting("language").ok().flatten())
+                    .as_deref() == Some("vi") {
+                    break;
+                }
+                assert!(std::time::Instant::now() < deadline, "offline write was not replayed");
+                std::thread::sleep(Duration::from_millis(100));
+            }
             stop();
+            // An open but locked primary must not bring down the Android daemon.
+            // The two private SQLite sidecars still accept requests until it unlocks.
+            let locked_primary = format!("{db}.locked.db");
+            let lock = rusqlite::Connection::open(&locked_primary).unwrap();
+            lock.execute_batch("BEGIN EXCLUSIVE; CREATE TABLE blocker (id INTEGER);").unwrap();
+            let mut locked_options = options(&locked_primary, "127.0.0.1", port);
+            locked_options.shadow_db = format!("{db}.locked-shadow.db");
+            locked_options.queue_db = format!("{db}.locked-queue.db");
+            start(locked_options).unwrap();
+            let mut health = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            health.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            health.write_all(b"GET /api/health HTTP/1.0\r\nHost: localhost\r\n\r\n").unwrap();
+            let mut health_response = String::new();
+            health.read_to_string(&mut health_response).unwrap();
+            assert!(health_response.starts_with("HTTP/1.0 200") || health_response.starts_with("HTTP/1.1 200"), "{health_response}");
+            let mut socket = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            socket.write_all(format!(
+                "POST /api/settings HTTP/1.0\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            ).as_bytes()).unwrap();
+            socket.write_all(body).unwrap();
+            response.clear();
+            socket.read_to_string(&mut response).unwrap();
+            assert!(response.contains("\"language\":\"vi\""), "{response}");
+            lock.execute_batch("ROLLBACK").unwrap();
+            let mut socket = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            socket.write_all(b"GET /api/settings HTTP/1.0\r\nHost: localhost\r\n\r\n").unwrap();
+            response.clear();
+            socket.read_to_string(&mut response).unwrap();
+            assert!(response.contains("\"language\":\"vi\""), "{response}");
+            let deadline = std::time::Instant::now() + Duration::from_secs(12);
+            loop {
+                if Db::open(&locked_primary).ok()
+                    .and_then(|primary| primary.get_app_setting("language").ok().flatten())
+                    .as_deref() == Some("vi") {
+                    break;
+                }
+                assert!(std::time::Instant::now() < deadline, "locked primary did not receive queued write");
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            stop();
+            for file in [locked_primary, format!("{db}.locked-shadow.db"), format!("{db}.locked-queue.db")] {
+                let _ = std::fs::remove_file(&file);
+                let _ = std::fs::remove_file(format!("{file}-wal"));
+                let _ = std::fs::remove_file(format!("{file}-shm"));
+            }
             std::fs::remove_dir_all(&offline_dir).unwrap();
             for file in [format!("{db}.offline-shadow.db"), format!("{db}.offline-queue.db")] {
                 let _ = std::fs::remove_file(&file);

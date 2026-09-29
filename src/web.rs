@@ -117,6 +117,8 @@ pub fn create_router(state: AppState) -> Router {
         .route("/", get(index_html))
         .route("/favicon.ico", get(favicon_ico))
         .route("/api/status", get(get_status))
+        // Android must probe the listener without waiting on a stalled primary database.
+        .route("/api/health", get(|| async { axum::http::StatusCode::OK }))
         .route("/api/credentials", get(list_credentials))
         .route("/api/credentials/{id}", put(update_credential))
         .route("/api/credentials/{id}", delete(delete_credential))
