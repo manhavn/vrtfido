@@ -162,7 +162,7 @@ impl ResilientBackend {
         )?;
         let result = Self { spec: spec.into(), db_type: db_type.map(str::to_owned), auth_token: auth_token.map(str::to_owned), client_id, shadow, state: Mutex::new(State { queue, primary: None, last_snapshot: None }) };
         {
-            let mut state = result.state.lock();
+            let state = result.state.lock();
             // Re-materialize every still-pending operation: the queue is durable
             // even if a crash happened before the shadow WAL was made durable.
             let staged: Vec<(i64, String)> = {
@@ -179,21 +179,32 @@ impl ResilientBackend {
                 action.apply(&result.shadow)?;
                 state.queue.execute("UPDATE pending SET ready=1 WHERE seq=?1", [seq])?;
             }
-            result.sync(&mut state)?;
         }
         Ok(result)
     }
 
-    /// Retry queued writes even when no HTTP/FIDO request arrives after reconnection.
+    /// Open/retry the primary off the request path: connecting can outlast Android's
+    /// health-check timeout. Local reads and queued writes stay available meanwhile.
     pub fn start_sync_worker(self: &Arc<Self>) {
         let weak = Arc::downgrade(self);
         std::thread::spawn(move || loop {
-            std::thread::sleep(Duration::from_secs(5));
             let Some(backend) = weak.upgrade() else { break; };
+            if backend.state.lock().primary.is_none() {
+                if let Ok(db) = Db::open_with_options(&backend.spec, backend.db_type.as_deref(), backend.auth_token.as_deref()) {
+                    let mut state = backend.state.lock();
+                    if state.primary.is_none() {
+                        state.primary = Some(db.backend);
+                        state.last_snapshot = None;
+                    }
+                }
+            }
             let mut state = backend.state.lock();
             if let Err(error) = backend.sync(&mut state) {
                 eprintln!("[DB] Pending writes remain queued: {error}");
             }
+            drop(state);
+            drop(backend);
+            std::thread::sleep(Duration::from_secs(5));
         });
     }
 
@@ -207,19 +218,8 @@ impl ResilientBackend {
         -((i64::from_be_bytes(bytes) & i64::MAX).max(1))
     }
 
-    fn connect(&self, state: &mut State) -> Result<()> {
-        if state.primary.is_none() {
-            match Db::open_with_options(&self.spec, self.db_type.as_deref(), self.auth_token.as_deref()) {
-                Ok(db) => state.primary = Some(db.backend),
-                Err(e) if connection_error(&e) => return Ok(()),
-                Err(e) => return Err(e),
-            }
-        }
-        Ok(())
-    }
 
     fn sync(&self, state: &mut State) -> Result<()> {
-        self.connect(state)?;
         let Some(primary) = state.primary.clone() else { return Ok(()); };
         loop {
             let entry: Option<(i64, String)> = state.queue.query_row(
@@ -404,8 +404,17 @@ mod tests {
         assert_eq!(restarted.get_pin_hash_and_salt().unwrap().0.as_deref(), Some("hash"));
         assert!(restarted.get_fingerprints().unwrap().is_empty());
         std::fs::create_dir(dir.0.join("primary")).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(12);
+        let primary = loop {
+            if let Ok(primary) = Db::open(&dir.path("primary/database.db")) {
+                if primary.get_app_setting("theme").unwrap().as_deref() == Some("two") {
+                    break primary;
+                }
+            }
+            assert!(Instant::now() < deadline, "offline writes were not replayed");
+            std::thread::sleep(Duration::from_millis(100));
+        };
         assert_eq!(restarted.get_app_setting("theme").unwrap().as_deref(), Some("two"));
-        let primary = Db::open(&dir.path("primary/database.db")).unwrap();
         assert_eq!(primary.get_app_setting("theme").unwrap().as_deref(), Some("two"));
         assert_eq!(primary.get_credential("key1").unwrap().unwrap().sign_count, 2);
         assert!(primary.get_fingerprints().unwrap().is_empty());
@@ -426,7 +435,13 @@ mod tests {
         let original_fingerprint = primary.add_fingerprint(3, "first").unwrap();
         let backend = Arc::new(ResilientBackend::open(&dir.path("primary/database.db"), Some("sqlite"), None,
             &dir.path("shadow.db"), &dir.path("queue.db")).unwrap());
+        backend.start_sync_worker();
         let resilient = Db { backend: backend.clone() };
+        let deadline = Instant::now() + Duration::from_secs(8);
+        while resilient.get_credential("key1").unwrap().is_none() {
+            assert!(Instant::now() < deadline, "initial primary snapshot was not loaded");
+            std::thread::sleep(Duration::from_millis(100));
+        }
         assert_eq!(resilient.get_credential("key1").unwrap().unwrap().sign_count, 3);
         assert_eq!(resilient.get_pin_hash_and_salt().unwrap().0.as_deref(), Some("remote-hash"));
 
@@ -443,7 +458,11 @@ mod tests {
         std::fs::rename(dir.0.join("disconnected"), dir.0.join("primary")).unwrap();
         assert_eq!(resilient.get_app_setting("theme").unwrap().as_deref(), Some("offline"));
         let primary = Db::open(&dir.path("primary/database.db")).unwrap();
-        assert_eq!(primary.get_app_setting("theme").unwrap().as_deref(), Some("offline"));
+        let deadline = Instant::now() + Duration::from_secs(8);
+        while primary.get_app_setting("theme").unwrap().as_deref() != Some("offline") {
+            assert!(Instant::now() < deadline, "offline writes were not replayed");
+            std::thread::sleep(Duration::from_millis(100));
+        }
         assert_eq!(primary.get_credential("key1").unwrap().unwrap().sign_count, 4);
         assert_eq!(primary.get_fingerprints().unwrap()[0].name, "updated");
     }
@@ -474,7 +493,12 @@ mod tests {
         assert_eq!(recovered.get_auth_logs(Some("new"), 20).unwrap().len(), 1);
         assert_eq!(recovered.get_auth_logs(Some("imported"), 20).unwrap()[0].created_at, "2020-01-02 03:04:05");
         assert_eq!(recovered.get_pin_hash_and_salt().unwrap().0.as_deref(), Some("from-import"));
-        assert_eq!(Db::open(&dir.path("primary/database.db")).unwrap().get_auth_logs(None, 20).unwrap().len(), 2);
+        let primary = Db::open(&dir.path("primary/database.db")).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(8);
+        while primary.get_auth_logs(None, 20).unwrap().len() != 2 {
+            assert!(Instant::now() < deadline, "imported logs were not replayed");
+            std::thread::sleep(Duration::from_millis(100));
+        }
     }
 
     #[test]
