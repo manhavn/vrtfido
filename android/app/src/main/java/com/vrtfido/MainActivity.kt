@@ -10,7 +10,9 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.text.InputType
 import android.widget.EditText
+import android.widget.ImageButton
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
@@ -41,6 +43,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var editHost: EditText
     private lateinit var editPort: EditText
     private lateinit var editDatabase: EditText
+    private lateinit var btnToggleDatabase: ImageButton
     private lateinit var editDbType: EditText
     private lateinit var editAuthToken: EditText
     private lateinit var checkDebug: MaterialCheckBox
@@ -92,6 +95,7 @@ class MainActivity : AppCompatActivity() {
         editHost = findViewById(R.id.edit_host)
         editPort = findViewById(R.id.edit_port)
         editDatabase = findViewById(R.id.edit_database)
+        btnToggleDatabase = findViewById(R.id.btn_toggle_database)
         editDbType = findViewById(R.id.edit_db_type)
         editAuthToken = findViewById(R.id.edit_auth_token)
         checkDebug = findViewById(R.id.check_debug)
@@ -115,6 +119,8 @@ class MainActivity : AppCompatActivity() {
 
         btnLangEn.setOnClickListener { changeLanguage("en") }
         btnLangVi.setOnClickListener { changeLanguage("vi") }
+
+        btnToggleDatabase.setOnClickListener { toggleDatabaseVisibility() }
 
         switchService.setOnCheckedChangeListener { _, checked -> toggleDaemon(checked) }
 
@@ -163,6 +169,37 @@ class MainActivity : AppCompatActivity() {
             unregisterReceiver(statusReceiver)
         } catch (_: Exception) {}
         pollJob?.cancel()
+    }
+
+    /**
+     * The database spec embeds credentials (`mongodb://user:pass@host/db`), so it stays masked
+     * like a password field and is only revealed on request. The reveal state is deliberately
+     * not persisted: every app launch (and every rotation, which recreates the activity) starts
+     * masked again, so the string is not left on screen behind the user's back.
+     */
+    private fun toggleDatabaseVisibility() {
+        val visible =
+            (editDatabase.inputType and InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD) ==
+                InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
+        val reveal = !visible
+        val caret = editDatabase.selectionEnd.coerceAtLeast(0)
+
+        val variation = if (reveal) {
+            InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
+        } else {
+            InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
+        // Keep TYPE_TEXT_FLAG_NO_SUGGESTIONS: the spec is a URL, so a spell checker or an IME
+        // that rewrites the field would corrupt the host or the credentials.
+        editDatabase.inputType =
+            InputType.TYPE_CLASS_TEXT or variation or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+
+        // The icon shows the action the next tap performs.
+        btnToggleDatabase.setImageResource(if (reveal) R.drawable.ic_eye_off else R.drawable.ic_eye)
+        btnToggleDatabase.contentDescription = getString(
+            if (reveal) R.string.database_toggle_hide else R.string.database_toggle_show
+        )
+        editDatabase.setSelection(caret.coerceAtMost(editDatabase.text.length))
     }
 
     private fun toggleDaemon(checked: Boolean) {

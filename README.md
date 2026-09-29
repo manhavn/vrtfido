@@ -2,7 +2,7 @@
 
 **VrtFido** is a **Virtual FIDO2 / WebAuthn Authenticator** hardware emulator running on Linux through the kernel character device `/dev/uhid`.
 
-The application includes an embedded **Web CMS Dashboard** on port **10209**, supports multiple database backends (**SQLite**, **PostgreSQL**, **LibSQL/Turso**, **MySQL**, **MariaDB**), features **100% Data Export / Import to JSON** for migration, and supports multi-factor authentication policies (6-digit passkey PIN, hardware USB fingerprint sensor management, and future biometric modalities).
+The application includes an embedded **Web CMS Dashboard** on port **10209**, supports multiple database backends (**SQLite**, **PostgreSQL**, **LibSQL/Turso**, **MySQL**, **MariaDB**, **MongoDB**), features **100% Data Export / Import to JSON** for migration, and supports multi-factor authentication policies (6-digit passkey PIN, hardware USB fingerprint sensor management, and future biometric modalities).
 
 ---
 
@@ -43,7 +43,7 @@ The application includes an embedded **Web CMS Dashboard** on port **10209**, su
    - Clear logs via `--clean-logs` or `clean-logs` [all|auth|debug].
 
 6. **Multi-Database Support & 100% Data Migration:**
-   - Connects flexibly to **SQLite**, **PostgreSQL**, **LibSQL (Turso Cloud)**, **MySQL**, and **MariaDB**.
+   - Connects flexibly to **SQLite**, **PostgreSQL**, **LibSQL (Turso Cloud)**, **MySQL**, **MariaDB**, and **MongoDB**.
    - Export and Import 100% of data (Credentials, PIN, Fingerprints, Audit Logs, Debug Logs) to a single JSON file.
    - Integrated REST API endpoints `/api/database/export` and `/api/database/import`.
 
@@ -191,7 +191,8 @@ The script installs missing host utilities with apt/dnf/pacman, bootstraps Rust 
 
 **Android 14+ usage:**
    - Install the generated APK, configure **Host (IPv4)** and **Port** before switching ON. Defaults: `0.0.0.0:10209`; settings persist across app restarts. Use `127.0.0.1` if access must stay on the phone.
-   - **Daemon parameters (CLI parity):** the main screen also exposes the desktop CLI options — **Database** (`--database` / `DATABASE_URL`: a file name, `sqlite:…`, or a `postgresql://`, `mysql://`, `mariadb://`, `libsql://` URL), **DB type** (`--db-type`, optional; auto-detected when empty), **Auth token** (`--auth-token` for LibSQL/Turso), plus the boolean flags **--debug** and **--unlimited-fps** as checkboxes. A relative file name resolves inside the app's private storage; the default is `authenticator.db`. Parameters are applied at daemon start and persisted with the rest of the settings.
+   - **Daemon parameters (CLI parity):** the main screen also exposes the desktop CLI options — **Database** (`--database` / `DATABASE_URL`: a file name, `sqlite:…`, or a `postgresql://`, `mysql://`, `mariadb://`, `mongodb://`, `libsql://` URL), **DB type** (`--db-type`, optional; auto-detected when empty), **Auth token** (`--auth-token` for LibSQL/Turso), plus the boolean flags **--debug** and **--unlimited-fps** as checkboxes. A relative file name resolves inside the app's private storage; the default is `authenticator.db`. Parameters are applied at daemon start and persisted with the rest of the settings.
+   - **The Database field is masked.** A connection string can carry credentials (`mongodb://user:password@host/db`), so the field renders like a password box with an eye button that reveals it on demand; every app launch and screen rotation starts masked again.
    - ON turns green only after the native HTTP server responds. On failure the app displays the startup error instead of claiming it is running. OFF stops the server.
    - While ON, an ongoing foreground notification displays the bound address. Tapping the notification returns to the app; closing the app UI or swiping its task away does not intentionally stop the service. Android may still stop foreground services via system controls or battery policies. The notification is optional: denying `POST_NOTIFICATIONS` (Android 13+) or turning the app's notifications off only hides that ongoing notice — the daemon still starts and runs, and the status line then says so while keeping the switch ON.
    - Open the Web Dashboard at the shown local URL; when bound to `0.0.0.0`, other devices on the same network can connect using the phone's LAN IP and configured port.
@@ -209,7 +210,7 @@ The script installs missing host utilities with apt/dnf/pacman, bootstraps Rust 
 
 ## 📂 Database & Data Migration
 
-Supported database backends: **SQLite**, **PostgreSQL**, **LibSQL (Turso)**, **MySQL**, and **MariaDB**.
+Supported database backends: **SQLite**, **PostgreSQL**, **LibSQL (Turso)**, **MySQL**, **MariaDB**, and **MongoDB**.
 
 ### 1. Database Configuration via CLI or Environment Variables
 
@@ -228,6 +229,10 @@ By default, the application uses local SQLite file `authenticator.db`. Configure
 # MySQL / MariaDB:
 ./vrtfido --database "mysql://root:secret@127.0.0.1:3306/vrtfido"
 ./vrtfido --database "mariadb://root:secret@127.0.0.1:3306/vrtfido"
+
+# MongoDB (replica set or standalone; credentials in the URL):
+./vrtfido --database "mongodb://root:secret@127.0.0.1:27017/vrtfido"
+./vrtfido --database "mongodb+srv://user:pass@cluster.example.net/vrtfido"
 
 # Or configure via environment variable:
 export DATABASE_URL="postgresql://postgres:vrtfido@127.0.0.1:5435/postgres"
@@ -262,6 +267,8 @@ Web CMS API endpoints:
 * `security_settings`: PIN configuration (hash + salt) and verification policies.
 * `fingerprints`: Fingerprint slot mappings and labels.
 * `debug_logs`: CTAPHID/CTAP2 packet trace logs and system errors.
+
+For **MongoDB** the same fields live in collections of the same name. The MongoDB auth tokens / TLS material is taken from the connection URL (`mongodb://user:pass@host:port/dbname` or `mongodb+srv://…`). A unique index on `credentials.rp_id + user_name` mirrors the SQL indexes.
 
 ## 📜 License
 MIT

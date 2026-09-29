@@ -140,6 +140,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/settings", get(get_settings))
         .route("/api/settings", post(update_settings))
         .route("/api/database/export", get(export_database))
+        .route("/api/database/export/auth", post(export_database_auth))
         .route("/api/database/import", post(import_database))
         .route("/api/passkey/candidates", post(passkey_candidates))
         .route("/api/passkey/create", post(passkey_create))
@@ -576,6 +577,87 @@ async fn export_database(
     }
 }
 
+/// Body for the authenticated export endpoint. The CMS sends one of these after the user is
+/// verified by PIN or by touching the USB fingerprint sensor (the sensor side is a blocking
+/// 15-second wait that the Web CMS triggers from `Export → Touch sensor now`).
+#[derive(serde::Deserialize)]
+#[serde(tag = "method", rename_all = "UPPERCASE")]
+enum ExportAuthRequest {
+    PIN { pin: String },
+    FINGERPRINT,
+}
+
+async fn export_database_auth(
+    State(state): State<AppState>,
+    Json(payload): Json<ExportAuthRequest>,
+) -> Json<ApiResponse<crate::db::DatabaseExport>> {
+    let sec = state.security.clone();
+    let method = match &payload {
+        ExportAuthRequest::PIN { .. } => "PIN",
+        ExportAuthRequest::FINGERPRINT => "FINGERPRINT",
+    };
+    let auth_method_for_log = method.to_string();
+    let verify_result = match payload {
+        ExportAuthRequest::PIN { pin } => {
+            let pin = pin.trim().to_string();
+            if pin.len() != 6 || !pin.chars().all(|c| c.is_ascii_digit()) {
+                Err("PIN must be exactly 6 digits".to_string())
+            } else {
+                let sec = sec.clone();
+                tokio::task::spawn_blocking(move || sec.verify_pin(&pin).map(|_| ()).map_err(|e| e.to_string()))
+                    .await
+                    .unwrap_or_else(|e| Err(format!("Auth task panicked: {e}")))
+            }
+        }
+        ExportAuthRequest::FINGERPRINT => {
+            match state.db.get_fingerprints() {
+                Ok(fps) if fps.is_empty() => Err("No fingerprints enrolled in the system".to_string()),
+                Ok(fps) => {
+                    let slots: Vec<u32> = fps.iter().map(|f| f.slot_index).collect();
+                    let sec = sec.clone();
+                    tokio::task::spawn_blocking(move || {
+                        sec.verify_fingerprint_blocking(&slots, 15)
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(format!("Auth task panicked: {e}")))
+                }
+                Err(e) => Err(format!("Failed to read enrolled fingerprints: {e}")),
+            }
+        }
+    };
+
+    if let Err(msg) = verify_result {
+        state.db.log_auth(
+            None,
+            "CMS",
+            "DatabaseExport",
+            "FAILED",
+            &auth_method_for_log,
+            Some(&msg),
+        );
+        return Json(ApiResponse::err(msg));
+    }
+
+    match state.db.export_data() {
+        Ok(data) => {
+            state.db.log_auth(
+                None,
+                "CMS",
+                "DatabaseExport",
+                "SUCCESS",
+                &auth_method_for_log,
+                Some(&format!(
+                    "Exported {} credentials, {} fingerprints",
+                    data.credentials.len(),
+                    data.fingerprints.len()
+                )),
+            );
+            Json(ApiResponse::ok(data))
+        }
+        Err(e) => Json(ApiResponse::err(e.to_string())),
+    }
+}
+
 async fn import_database(
     State(state): State<AppState>,
     Json(payload): Json<crate::db::DatabaseExport>,
@@ -873,6 +955,9 @@ async fn index_html() -> Html<&'static str> {
             <div id="debugStatus" class="badge-status badge-debug" style="display: none;" data-i18n="status.debug">
                 CLI DEBUG ACTIVE
             </div>
+            <button class="btn btn-secondary" onclick="openExportModal()" data-i18n="btn.export" style="margin-right: 0.25rem;">
+                📤 Export Database
+            </button>
             <div class="lang-toggle" role="group" aria-label="Language / Ngôn ngữ">
                 <button class="lang-btn" data-lang="en" onclick="setLanguage('en')">EN</button>
                 <button class="lang-btn" data-lang="vi" onclick="setLanguage('vi')">VI</button>
@@ -1137,6 +1222,48 @@ async fn index_html() -> Html<&'static str> {
                     <button class="btn btn-primary" onclick="submitModalApproval('REMEMBERED')" data-i18n="verify.approve">✔️ Approve</button>
                     <button class="btn btn-danger" onclick="submitModalReject()" data-i18n="verify.reject">❌ Reject Request</button>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- DATABASE EXPORT MODAL (PIN or USB fingerprint verification) -->
+    <div id="exportModal" class="modal-overlay" style="display: none;">
+        <div class="modal-box" style="max-width: 460px;">
+            <div class="modal-icon" style="font-size: 3rem;">📤</div>
+            <div class="modal-title" data-i18n="export.title">Authenticate to export database</div>
+            <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.75rem;" data-i18n="export.desc">
+                The export contains every credential, fingerprint, PIN hash and log. Verify yourself first.
+            </p>
+
+            <label class="form-label" data-i18n="export.method.label" style="margin-bottom: 0.35rem;">Verification method</label>
+            <div style="display: flex; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap;">
+                <button id="exportMethodPin" class="btn btn-secondary active" onclick="chooseExportMethod('PIN')" data-i18n="export.method.pin">🔑 6-digit PIN</button>
+                <button id="exportMethodFp" class="btn btn-secondary" onclick="chooseExportMethod('FINGERPRINT')" data-i18n="export.method.fp">🖐️ USB fingerprint sensor</button>
+            </div>
+
+            <!-- PIN view -->
+            <div id="exportPinView" style="margin-top: 0.5rem;">
+                <label class="form-label" for="exportPinInput" data-i18n="export.pin.label">Enter your 6-digit PIN:</label>
+                <input type="password" inputmode="numeric" maxlength="6" id="exportPinInput"
+                       class="form-control" placeholder="••••••"
+                       style="text-align: center; font-size: 1.25rem; letter-spacing: 0.5rem; margin-top: 0.35rem;"
+                       onkeydown="if(event.key === 'Enter') submitExport('PIN')">
+                <div id="exportPinStatus" style="font-size: 0.8rem; color: var(--danger); margin-top: 0.35rem;"></div>
+            </div>
+
+            <!-- Fingerprint view -->
+            <div id="exportFpView" style="display: none; margin-top: 0.5rem;">
+                <p style="font-size: 0.9rem; color: var(--accent); font-weight: 600; margin-bottom: 0.5rem;" data-i18n="export.fp.label">
+                    Touch the USB fingerprint sensor now — release when prompted.
+                </p>
+                <div id="exportFpStatus" style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.5rem;" data-i18n="export.fp.waiting">
+                    Waiting for finger…
+                </div>
+            </div>
+
+            <div class="modal-actions modal-sep" style="margin-top: 1rem;">
+                <button id="exportConfirmBtn" class="btn btn-primary" onclick="submitExport(currentExportMethod)" data-i18n="export.confirm">✔️ Verify & Export</button>
+                <button class="btn btn-danger" onclick="closeExportModal()" data-i18n="export.cancel">❌ Cancel</button>
             </div>
         </div>
     </div>
@@ -1432,7 +1559,23 @@ async fn index_html() -> Html<&'static str> {
                 'debug.clearConfirm': 'Clear all debug logs?',
                 'all.clearConfirm': 'Clear audit logs, debug logs and the audit trail? This cannot be undone.',
                 'common.errorClearing': 'Error clearing logs',
-                'common.confirm': 'Confirm'
+                'common.confirm': 'Confirm',
+                'btn.export': '📤 Export Database',
+                'export.title': 'Authenticate to export database',
+                'export.desc': 'The export contains every credential, fingerprint, PIN hash and log. Verify yourself first.',
+                'export.method.label': 'Verification method',
+                'export.method.pin': '🔑 6-digit PIN',
+                'export.method.fp': '🖐️ USB fingerprint sensor',
+                'export.pin.label': 'Enter your 6-digit PIN:',
+                'export.fp.label': 'Touch the USB fingerprint sensor now — release when prompted.',
+                'export.fp.waiting': 'Waiting for finger…',
+                'export.fp.timedOut': 'Verification timed out (15s). Tap "Verify again" or use the PIN.',
+                'export.confirm': '✔️ Verify & Export',
+                'export.cancel': '❌ Cancel',
+                'export.success': 'Export downloaded',
+                'export.failed': 'Authentication failed',
+                'export.badPin': 'PIN must be exactly 6 digits',
+                'export.noFp': 'No fingerprints enrolled — set up the USB sensor first or use the PIN.'
             },
             vi: {
                 'tab.creds': '🔑 Khoá Passkey',
@@ -1553,7 +1696,23 @@ async fn index_html() -> Html<&'static str> {
                 'debug.clearConfirm': 'Xoá toàn bộ nhật ký gỡ lỗi?',
                 'all.clearConfirm': 'Xoá nhật ký hoạt động và nhật ký gỡ lỗi? Không thể hoàn tác.',
                 'common.errorClearing': 'Lỗi khi xoá nhật ký',
-                'common.confirm': 'Xác nhận'
+                'common.confirm': 'Xác nhận',
+                'btn.export': '📤 Xuất cơ sở dữ liệu',
+                'export.title': 'Xác thực để xuất cơ sở dữ liệu',
+                'export.desc': 'Xuất chứa toàn bộ khoá, vân tay, mã băm PIN và nhật ký. Hãy xác minh trước.',
+                'export.method.label': 'Phương thức xác thực',
+                'export.method.pin': '🔑 Mã PIN 6 số',
+                'export.method.fp': '🖐️ Cảm biến vân tay USB',
+                'export.pin.label': 'Nhập mã PIN 6 số của bạn:',
+                'export.fp.label': 'Chạm cảm biến vân tay USB — nhả ra khi được nhắc.',
+                'export.fp.waiting': 'Đang chờ vân tay…',
+                'export.fp.timedOut': 'Quá thời gian xác minh (15s). Bấm "Xác minh lại" hoặc dùng PIN.',
+                'export.confirm': '✔️ Xác minh & xuất',
+                'export.cancel': '❌ Huỷ',
+                'export.success': 'Đã tải xuống bản sao lưu',
+                'export.failed': 'Xác thực thất bại',
+                'export.badPin': 'PIN phải đúng 6 số',
+                'export.noFp': 'Chưa có vân tay nào — cấu hình cảm biến USB trước hoặc dùng PIN.'
             }
         };
 
@@ -2200,6 +2359,128 @@ async fn index_html() -> Html<&'static str> {
             document.getElementById('verifyModal').style.display = 'none';
             currentPromptId = null;
             loadAuditLogs();
+        }
+
+        // -------- DATABASE EXPORT (auth required) --------
+        let currentExportMethod = 'PIN';
+
+        function chooseExportMethod(method) {
+            currentExportMethod = method;
+            const pinBtn = document.getElementById('exportMethodPin');
+            const fpBtn = document.getElementById('exportMethodFp');
+            const pinView = document.getElementById('exportPinView');
+            const fpView = document.getElementById('exportFpView');
+            const pinInput = document.getElementById('exportPinInput');
+            pinBtn.classList.toggle('active', method === 'PIN');
+            fpBtn.classList.toggle('active', method === 'FINGERPRINT');
+            pinView.style.display = method === 'PIN' ? '' : 'none';
+            fpView.style.display = method === 'FINGERPRINT' ? '' : 'none';
+            document.getElementById('exportPinStatus').textContent = '';
+            document.getElementById('exportFpStatus').textContent = t('export.fp.waiting');
+            if (method === 'PIN') {
+                setTimeout(() => pinInput && pinInput.focus(), 0);
+            }
+        }
+
+        async function openExportModal() {
+            // Decide the default method based on what's actually configured.
+            let pinOk = false;
+            let fpCount = 0;
+            try {
+                const sec = await fetch('/api/security').then(r => r.json());
+                if (sec && sec.success) {
+                    pinOk = !!sec.data.settings.pin_enabled;
+                    fpCount = sec.data.fingerprints ? sec.data.fingerprints.length : 0;
+                    // Some responses put fingerprints under different keys; trust whichever list is populated.
+                    if (!fpCount && Array.isArray(sec.data.fp)) fpCount = sec.data.fp.length;
+                }
+            } catch (e) {
+                // Fall through; both buttons still show.
+            }
+            currentExportMethod = pinOk ? 'PIN' : (fpCount > 0 ? 'FINGERPRINT' : 'PIN');
+            chooseExportMethod(currentExportMethod);
+            if (!pinOk && fpCount === 0) {
+                document.getElementById('exportPinStatus').textContent =
+                    '\u26A0\uFE0F Set a PIN or enroll a fingerprint first.';
+            }
+            document.getElementById('exportModal').style.display = 'flex';
+            if (currentExportMethod === 'PIN') {
+                setTimeout(() => document.getElementById('exportPinInput').focus(), 50);
+            }
+        }
+
+        function closeExportModal() {
+            document.getElementById('exportModal').style.display = 'none';
+            document.getElementById('exportPinInput').value = '';
+            document.getElementById('exportPinStatus').textContent = '';
+            document.getElementById('exportFpStatus').textContent = t('export.fp.waiting');
+            const btn = document.getElementById('exportConfirmBtn');
+            btn.disabled = false;
+            btn.textContent = t('export.confirm');
+        }
+
+        async function submitExport(method) {
+            const btn = document.getElementById('exportConfirmBtn');
+            const statusPin = document.getElementById('exportPinStatus');
+            const statusFp = document.getElementById('exportFpStatus');
+            statusPin.textContent = '';
+            statusFp.textContent = method === 'FINGERPRINT' ? t('export.fp.waiting') : statusFp.textContent;
+
+            let payload;
+            if (method === 'PIN') {
+                const pin = document.getElementById('exportPinInput').value || '';
+                if (!/^\d{6}$/.test(pin)) {
+                    statusPin.textContent = t('export.badPin');
+                    return;
+                }
+                payload = { method: 'PIN', pin };
+            } else {
+                payload = { method: 'FINGERPRINT' };
+                btn.disabled = true;
+                btn.textContent = t('export.fp.waiting');
+            }
+
+            try {
+                const res = await fetch('/api/database/export/auth', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const json = await res.json();
+                if (json.success) {
+                    downloadExport(json.data);
+                    alert(t('export.success'));
+                    closeExportModal();
+                    loadAuditLogs();
+                } else {
+                    const msg = json.message || t('export.failed');
+                    if (method === 'PIN') statusPin.textContent = msg;
+                    else statusFp.textContent = msg;
+                }
+            } catch (e) {
+                const msg = String(e && e.message || e);
+                if (method === 'PIN') statusPin.textContent = msg;
+                else statusFp.textContent = msg;
+            } finally {
+                btn.disabled = false;
+                btn.textContent = t('export.confirm');
+            }
+        }
+
+        function downloadExport(payload) {
+            const dt = new Date();
+            const pad = n => String(n).padStart(2, '0');
+            const stamp = dt.getFullYear() + pad(dt.getMonth() + 1) + pad(dt.getDate())
+                + '-' + pad(dt.getHours()) + pad(dt.getMinutes()) + pad(dt.getSeconds());
+            const filename = 'vrtfido-export-' + stamp + '.json';
+            const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 0);
         }
 
         function escapeHtml(str) {

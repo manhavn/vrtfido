@@ -173,15 +173,35 @@
                     android:layout_height="wrap_content"
                     android:text="@string/database_label"
                     android:textColor="@color/text_secondary" />
-                <EditText
-                    android:id="@+id/edit_database"
+                <!-- The spec carries credentials (mongodb://user:pass@host/db), so it stays
+                     masked like a password field until the eye button reveals it. -->
+                <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:singleLine="true"
-                    android:inputType="textNoSuggestions"
-                    android:textColor="@color/text_primary"
-                    android:hint="@string/database_hint"
-                    android:layout_marginBottom="12dp" />
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:layout_marginBottom="12dp">
+
+                    <EditText
+                        android:id="@+id/edit_database"
+                        android:layout_width="0dp"
+                        android:layout_weight="1"
+                        android:layout_height="wrap_content"
+                        android:singleLine="true"
+                        android:inputType="textPassword|textNoSuggestions"
+                        android:textColor="@color/text_primary"
+                        android:hint="@string/database_hint" />
+
+                    <ImageButton
+                        android:id="@+id/btn_toggle_database"
+                        android:layout_width="48dp"
+                        android:layout_height="48dp"
+                        android:background="?attr/selectableItemBackgroundBorderless"
+                        android:padding="12dp"
+                        android:scaleType="fitCenter"
+                        android:src="@drawable/ic_eye"
+                        android:contentDescription="@string/database_toggle_show" />
+                </LinearLayout>
 
                 <TextView
                     android:layout_width="match_parent"

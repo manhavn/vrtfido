@@ -31,11 +31,13 @@
     <string name="backup_file_name">VrtFido-backup-%1$s.json</string>
     <string name="params_title">Daemon parameters (CLI equivalent)</string>
     <string name="database_label">Database (path or URL, as --database)</string>
-    <string name="database_hint">authenticator.db, postgresql://…, mysql://…, libsql://…</string>
+    <string name="database_hint">authenticator.db, postgresql://…, mysql://…, libsql://…, mongodb://…</string>
+    <string name="database_toggle_show">Show database string</string>
+    <string name="database_toggle_hide">Hide database string</string>
     <string name="db_type_label">DB type (optional, --db-type)</string>
-    <string name="db_type_hint">sqlite, postgresql, mysql, libsql (leave empty to auto-detect)</string>
+    <string name="db_type_hint">sqlite, postgresql, mysql, mariadb, libsql, mongodb (leave empty to auto-detect)</string>
     <string name="auth_token_label">Auth token (LibSQL/Turso, --auth-token)</string>
-    <string name="auth_token_hint">leave empty when unused</string>
+    <string name="auth_token_hint">leave empty when unused (MongoDB creds live in the URL)</string>
     <string name="flag_debug">--debug: log packet details</string>
 
     <!-- Language switch -->

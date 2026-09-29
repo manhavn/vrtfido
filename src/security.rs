@@ -181,6 +181,21 @@ impl SecurityEngine {
         }
     }
 
+    /// Off-modal fingerprint verification used by the Web CMS export flow. Calls the same
+    /// blocking `UsbSensor::verify_fingerprint` that backs the modal, so the user can prove
+    /// presence by touching the chip without re-using the WebAuthn pending-prompt machinery.
+    pub fn verify_fingerprint_blocking(
+        &self,
+        enrolled_slots: &[u32],
+        timeout_secs: u64,
+    ) -> Result<(), String> {
+        match self.sensor.verify_fingerprint(enrolled_slots, timeout_secs) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err("Fingerprint does not match any enrolled template".into()),
+            Err(e) => Err(e),
+        }
+    }
+
     /// Pre-flight check for the Web CMS: rejects the request up front instead of showing a
     /// modal that can only wait, so the dashboard reports why enrollment cannot start.
     pub fn can_enroll_fingerprint(&self) -> Result<(), String> {
