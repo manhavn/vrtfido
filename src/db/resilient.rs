@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 
 use super::{AuthLogRow, CredentialRow, DatabaseExport, Db, DbBackend, DbError, DebugLogRow, FingerprintRow, Result, SecuritySettingsData};
 use super::sqlite::SqliteBackend;
-use parking_lot::Mutex;
+use parking_lot::{Condvar, Mutex};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -77,6 +77,7 @@ struct State {
     queue: Connection,
     primary: Option<Arc<dyn DbBackend>>,
     last_snapshot: Option<Instant>,
+    wake_reason_write: bool,
 }
 
 pub struct ResilientBackend {
@@ -86,6 +87,7 @@ pub struct ResilientBackend {
     client_id: String,
     shadow: SqliteBackend,
     state: Mutex<State>,
+    notify: Condvar,
 }
 
 fn connection_error(e: &DbError) -> bool {
@@ -160,7 +162,20 @@ impl ResilientBackend {
         let client_id: String = queue.query_row(
             "SELECT value FROM resilient_metadata WHERE key='client_id'", [], |r| r.get(0),
         )?;
-        let result = Self { spec: spec.into(), db_type: db_type.map(str::to_owned), auth_token: auth_token.map(str::to_owned), client_id, shadow, state: Mutex::new(State { queue, primary: None, last_snapshot: None }) };
+        let result = Self {
+            spec: spec.into(),
+            db_type: db_type.map(str::to_owned),
+            auth_token: auth_token.map(str::to_owned),
+            client_id,
+            shadow,
+            state: Mutex::new(State {
+                queue,
+                primary: None,
+                last_snapshot: None,
+                wake_reason_write: false,
+            }),
+            notify: Condvar::new(),
+        };
         {
             let state = result.state.lock();
             // Re-materialize every still-pending operation: the queue is durable
@@ -187,33 +202,108 @@ impl ResilientBackend {
     /// health-check timeout. Local reads and queued writes stay available meanwhile.
     pub fn start_sync_worker(self: &Arc<Self>) {
         let weak = Arc::downgrade(self);
-        std::thread::spawn(move || loop {
-            let Some(backend) = weak.upgrade() else { break; };
-            if backend.state.lock().primary.is_none() {
-                if let Ok(db) = Db::open_with_options(&backend.spec, backend.db_type.as_deref(), backend.auth_token.as_deref()) {
+        std::thread::spawn(move || {
+            let mut reconnect_backoff = Duration::from_millis(200);
+            loop {
+                let Some(backend) = weak.upgrade() else { break; };
+
+                // 1. Reset backoff if a new write occurred
+                {
                     let mut state = backend.state.lock();
-                    if state.primary.is_none() {
-                        state.primary = Some(db.backend);
-                        state.last_snapshot = None;
+                    if state.wake_reason_write {
+                        state.wake_reason_write = false;
+                        reconnect_backoff = Duration::from_millis(200);
                     }
                 }
-            }
-            let mut state = backend.state.lock();
-            let sync_res = backend.sync(&mut state);
-            if let Err(error) = &sync_res {
-                eprintln!("[DB] Pending writes remain queued: {error}");
-            }
-            let has_pending: bool = state.queue.query_row(
-                "SELECT 1 FROM pending LIMIT 1", [], |_| Ok(true)
-            ).optional().unwrap_or(Some(true)).unwrap_or(false);
-            if sync_res.is_ok() && !has_pending {
-                if let Err(error) = backend.snapshot(&mut state) {
-                    eprintln!("[DB] Snapshot sync error: {error}");
+
+                // 2. Connect to primary if not currently connected
+                if backend.state.lock().primary.is_none() {
+                    let open_res = Db::open_with_options(
+                        &backend.spec,
+                        backend.db_type.as_deref(),
+                        backend.auth_token.as_deref(),
+                    );
+                    match open_res {
+                        Ok(db) => {
+                            let mut state = backend.state.lock();
+                            if state.primary.is_none() {
+                                state.primary = Some(db.backend);
+                                state.last_snapshot = None;
+                                reconnect_backoff = Duration::from_millis(200);
+                            }
+                        }
+                        Err(_) => {
+                            let mut state = backend.state.lock();
+                            if state.primary.is_none() {
+                                let has_pending: bool = state.queue.query_row(
+                                    "SELECT 1 FROM pending LIMIT 1", [], |_| Ok(true)
+                                ).optional().unwrap_or(Some(true)).unwrap_or(false);
+
+                                let max_backoff = if has_pending {
+                                    Duration::from_secs(3)
+                                } else {
+                                    Duration::from_secs(30)
+                                };
+                                reconnect_backoff = (reconnect_backoff * 2).min(max_backoff);
+                                backend.notify.wait_for(&mut state, reconnect_backoff);
+                                continue;
+                            }
+                        }
+                    }
+                }
+
+                // 3. Process pending writes and snapshot
+                let mut state = backend.state.lock();
+                if state.wake_reason_write {
+                    state.wake_reason_write = false;
+                    reconnect_backoff = Duration::from_millis(200);
+                }
+
+                let sync_res = backend.sync(&mut state);
+                if let Err(error) = &sync_res {
+                    eprintln!("[DB] Pending writes remain queued: {error}");
+                }
+
+                if state.primary.is_none() {
+                    // Connection lost during sync; loop will retry connecting
+                    drop(state);
+                    drop(backend);
+                    continue;
+                }
+
+                let has_pending: bool = state.queue.query_row(
+                    "SELECT 1 FROM pending LIMIT 1", [], |_| Ok(true)
+                ).optional().unwrap_or(Some(true)).unwrap_or(false);
+
+                // Run snapshot if initial (None) or idle interval (300s) elapsed
+                const IDLE_SNAPSHOT_INTERVAL: Duration = Duration::from_secs(300);
+                let need_snapshot = state.last_snapshot.map_or(true, |at| at.elapsed() >= IDLE_SNAPSHOT_INTERVAL);
+
+                if sync_res.is_ok() && !has_pending && need_snapshot {
+                    if let Err(error) = backend.snapshot(&mut state) {
+                        eprintln!("[DB] Snapshot sync error: {error}");
+                    }
+                }
+
+                if state.primary.is_none() {
+                    // Connection lost during snapshot
+                    drop(state);
+                    drop(backend);
+                    continue;
+                }
+
+                // 4. Idle wait
+                if has_pending {
+                    // Unresolved pending writes (e.g. non-connection SQL error); retry after brief pause
+                    backend.notify.wait_for(&mut state, Duration::from_secs(1));
+                } else {
+                    let time_to_next_snapshot = state.last_snapshot.map_or(IDLE_SNAPSHOT_INTERVAL, |at| {
+                        IDLE_SNAPSHOT_INTERVAL.saturating_sub(at.elapsed())
+                    });
+                    let wait_time = time_to_next_snapshot.max(Duration::from_millis(500));
+                    backend.notify.wait_for(&mut state, wait_time);
                 }
             }
-            drop(state);
-            drop(backend);
-            std::thread::sleep(Duration::from_millis(500));
         });
     }
 
@@ -247,9 +337,6 @@ impl ResilientBackend {
 
     fn snapshot(&self, state: &mut State) -> Result<()> {
         let Some(primary) = state.primary.clone() else { return Ok(()); };
-        if state.last_snapshot.is_some_and(|at| at.elapsed() < Duration::from_secs(2)) {
-            return Ok(());
-        }
         // Strict invariant: NEVER snapshot from primary to shadow if ANY task exists in pending queue!
         let has_pending: bool = state.queue.query_row(
             "SELECT 1 FROM pending LIMIT 1", [], |_| Ok(true)
@@ -300,7 +387,24 @@ impl ResilientBackend {
         if state.primary.is_some() {
             let _ = self.sync(&mut state);
         }
+        state.wake_reason_write = true;
+        self.notify.notify_one();
         Ok(value)
+    }
+
+    pub fn sync_now(&self) -> Result<()> {
+        let mut state = self.state.lock();
+        if state.primary.is_none() {
+            if let Ok(db) = Db::open_with_options(&self.spec, self.db_type.as_deref(), self.auth_token.as_deref()) {
+                state.primary = Some(db.backend);
+                state.last_snapshot = None;
+            }
+        }
+        self.sync(&mut state)?;
+        self.snapshot(&mut state)?;
+        state.wake_reason_write = true;
+        self.notify.notify_one();
+        Ok(())
     }
 }
 
@@ -365,6 +469,9 @@ impl DbBackend for ResilientBackend {
     }
     fn insert_debug_log_full(&self, id: i64, level: &str, component: &str, message: &str, created_at: &str) -> Result<()> {
         self.write(|_, _| Ok((Action::DebugLogFull(DebugLogRow { id, level: level.into(), component: component.into(), message: message.into(), created_at: created_at.into() }), ())))
+    }
+    fn sync_now(&self) -> Result<()> {
+        self.sync_now()
     }
 }
 
@@ -468,9 +575,9 @@ mod tests {
         assert_eq!(resilient.get_app_setting("theme").unwrap().as_deref(), Some("offline"));
         let primary = Db::open(&dir.path("primary/database.db")).unwrap();
         let deadline = Instant::now() + Duration::from_secs(8);
-        while primary.get_app_setting("theme").unwrap().as_deref() != Some("offline") {
+        while primary.get_credential("key1").unwrap().map_or(0, |c| c.sign_count) != 4 {
             assert!(Instant::now() < deadline, "offline writes were not replayed");
-            std::thread::sleep(Duration::from_millis(100));
+            std::thread::sleep(Duration::from_millis(50));
         }
         assert_eq!(primary.get_credential("key1").unwrap().unwrap().sign_count, 4);
         assert_eq!(primary.get_fingerprints().unwrap()[0].name, "updated");
@@ -556,5 +663,30 @@ mod tests {
         assert!(resilient.get_app_settings().unwrap().is_empty());
         let pending: i64 = resilient.state.lock().queue.query_row("SELECT count(*) FROM pending", [], |r| r.get(0)).unwrap();
         assert_eq!(pending, 0);
+    }
+
+    #[test]
+    fn sync_now_forces_immediate_primary_pull() {
+        let dir = Workspace::new();
+        std::fs::create_dir(dir.0.join("primary")).unwrap();
+        let primary = Db::open(&dir.path("primary/database.db")).unwrap();
+        primary.set_app_setting("theme", "initial").unwrap();
+        let resilient = dir.resilient();
+
+        // Resilient DB initially synced "initial"
+        let deadline = Instant::now() + Duration::from_secs(8);
+        while resilient.get_app_setting("theme").unwrap().as_deref() != Some("initial") {
+            assert!(Instant::now() < deadline, "initial primary snapshot was not loaded");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        // External change on primary behind resilient's back
+        primary.set_app_setting("theme", "externally_updated").unwrap();
+        // Since periodic polling is idle (5 minutes), shadow still has "initial"
+        assert_eq!(resilient.get_app_setting("theme").unwrap().as_deref(), Some("initial"));
+
+        // On-demand sync_now must immediately pull the update
+        resilient.sync_now().unwrap();
+        assert_eq!(resilient.get_app_setting("theme").unwrap().as_deref(), Some("externally_updated"));
     }
 }

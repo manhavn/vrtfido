@@ -144,6 +144,8 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/database/export", get(export_database))
         .route("/api/database/export/auth", post(export_database_auth))
         .route("/api/database/import", post(import_database))
+        .route("/api/database/sync", post(sync_database))
+        .route("/api/db/sync", post(sync_database))
         .route("/api/passkey/candidates", post(passkey_candidates))
         .route("/api/passkey/create", post(passkey_create))
         .route("/api/passkey/get", post(passkey_get))
@@ -683,6 +685,13 @@ async fn import_database(
     }
 }
 
+async fn sync_database(State(state): State<AppState>) -> Json<ApiResponse<bool>> {
+    match state.db.sync_now() {
+        Ok(()) => Json(ApiResponse::ok(true)),
+        Err(e) => Json(ApiResponse::err(e.to_string())),
+    }
+}
+
 async fn passkey_candidates(
     State(state): State<AppState>,
     Json(payload): Json<crate::passkey::CandidatesRequest>,
@@ -985,7 +994,7 @@ async fn index_html() -> Html<&'static str> {
                         <input type="search" id="credSearchInput" class="form-control search-input" autocomplete="off"
                                placeholder="Search domain, username, display name" data-i18n-placeholder="creds.searchPh"
                                oninput="onCredSearch()">
-                        <button class="btn btn-secondary btn-sm" onclick="loadCredentials()" data-i18n="btn.refresh">🔄 Refresh</button>
+                        <button class="btn btn-secondary btn-sm" onclick="loadCredentials(true)" data-i18n="btn.refresh">🔄 Refresh</button>
                     </div>
                 </div>
                 <div class="table-wrap">
@@ -1097,7 +1106,7 @@ async fn index_html() -> Html<&'static str> {
                     <div class="action-bar">
                         <button class="btn btn-danger btn-sm" onclick="cleanAuditLogs()" data-i18n="btn.clearLogs">🗑️ Clear Logs</button>
                         <button class="btn btn-secondary btn-sm" onclick="cleanAllLogs()" data-i18n="btn.clearAll">🧹 Clear All</button>
-                        <button class="btn btn-secondary btn-sm" onclick="loadAuditLogs()" data-i18n="btn.refresh">🔄 Refresh</button>
+                        <button class="btn btn-secondary btn-sm" onclick="loadAuditLogs(true)" data-i18n="btn.refresh">🔄 Refresh</button>
                     </div>
                 </div>
                 <div class="table-wrap">
@@ -1126,7 +1135,7 @@ async fn index_html() -> Html<&'static str> {
                     <div class="action-bar">
                         <button class="btn btn-danger btn-sm" onclick="cleanDebugLogs()" data-i18n="btn.clearLogs">🗑️ Clear Logs</button>
                         <button class="btn btn-secondary btn-sm" onclick="cleanAllLogs()" data-i18n="btn.clearAll">🧹 Clear All</button>
-                        <button class="btn btn-secondary btn-sm" onclick="loadDebugLogs()" data-i18n="btn.refresh">🔄 Refresh</button>
+                        <button class="btn btn-secondary btn-sm" onclick="loadDebugLogs(true)" data-i18n="btn.refresh">🔄 Refresh</button>
                     </div>
                 </div>
                 <div class="table-wrap scroll-y">
@@ -1873,7 +1882,10 @@ async fn index_html() -> Html<&'static str> {
             });
         }
 
-        async function loadCredentials() {
+        async function loadCredentials(sync) {
+            if (sync) {
+                try { await fetch('/api/database/sync', { method: 'POST' }); } catch (_) {}
+            }
             const tbody = document.getElementById('credTableBody');
             try {
                 const res = await fetch('/api/credentials');
@@ -2108,7 +2120,10 @@ async fn index_html() -> Html<&'static str> {
             }
         }
 
-        async function loadAuditLogs() {
+        async function loadAuditLogs(sync) {
+            if (sync) {
+                try { await fetch('/api/database/sync', { method: 'POST' }); } catch (_) {}
+            }
             const tbody = document.getElementById('auditTableBody');
             try {
                 const res = await fetch('/api/logs');
@@ -2136,7 +2151,10 @@ async fn index_html() -> Html<&'static str> {
             }
         }
 
-        async function loadDebugLogs() {
+        async function loadDebugLogs(sync) {
+            if (sync) {
+                try { await fetch('/api/database/sync', { method: 'POST' }); } catch (_) {}
+            }
             const tbody = document.getElementById('debugTableBody');
             try {
                 const res = await fetch('/api/debug-logs');
@@ -2503,7 +2521,26 @@ async fn index_html() -> Html<&'static str> {
             fetchStatus();
             loadCredentials();
         })();
-        setInterval(fetchStatus, 3000);
+        let statusPollInterval = null;
+        function startStatusPolling() {
+            if (statusPollInterval) clearInterval(statusPollInterval);
+            statusPollInterval = setInterval(fetchStatus, 4000);
+        }
+        function stopStatusPolling() {
+            if (statusPollInterval) {
+                clearInterval(statusPollInterval);
+                statusPollInterval = null;
+            }
+        }
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) {
+                stopStatusPolling();
+            } else {
+                fetchStatus();
+                startStatusPolling();
+            }
+        });
+        startStatusPolling();
         setInterval(pollPendingVerification, 1000);
     </script>
 </body>
@@ -2754,6 +2791,16 @@ mod tests {
         assert_eq!(state.db.get_auth_logs(None, 10).unwrap().len(), 0);
         assert_eq!(state.db.get_debug_logs(10).unwrap().len(), 0);
 
+
+        // Test POST /api/database/sync
+        let (status, body) = send_http_request(addr, "POST", "/api/database/sync", "").await;
+        assert!(status.contains("200 OK"));
+        assert!(body.contains("\"success\":true"));
+
+        // Test POST /api/db/sync
+        let (status, body) = send_http_request(addr, "POST", "/api/db/sync", "").await;
+        assert!(status.contains("200 OK"));
+        assert!(body.contains("\"success\":true"));
         // Test GET /favicon.ico
         let (status, _body) = send_http_request(addr, "GET", "/favicon.ico", "").await;
         assert!(status.contains("200 OK"));

@@ -258,6 +258,10 @@ pub trait DbBackend: Send + Sync {
         message: &str,
         created_at: &str,
     ) -> Result<()>;
+
+    fn sync_now(&self) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
@@ -707,6 +711,10 @@ impl Db {
         let json = std::fs::read_to_string(path).map_err(DbError::Io)?;
         let export: DatabaseExport = serde_json::from_str(&json).map_err(DbError::Json)?;
         self.import_data(&export)
+    }
+
+    pub fn sync_now(&self) -> Result<()> {
+        self.backend.sync_now()
     }
 }
 
