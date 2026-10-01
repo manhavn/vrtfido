@@ -10,6 +10,10 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.os.PowerManager
+import android.view.View
+import com.google.android.material.card.MaterialCardView
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import android.text.InputType
 import android.widget.EditText
 import android.widget.ImageButton
@@ -56,6 +60,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnSettings: MaterialButton
     private lateinit var btnExport: MaterialButton
     private lateinit var btnImport: MaterialButton
+    private lateinit var cardBatteryWarning: MaterialCardView
+    private lateinit var btnBatterySettings: MaterialButton
 
     private val exportLauncher = registerForActivityResult(
         ActivityResultContracts.CreateDocument("application/json")
@@ -101,6 +107,12 @@ class MainActivity : AppCompatActivity() {
         checkDebug = findViewById(R.id.check_debug)
         btnLangEn = findViewById(R.id.btn_lang_en)
         btnLangVi = findViewById(R.id.btn_lang_vi)
+        cardBatteryWarning = findViewById(R.id.card_battery_warning)
+        btnBatterySettings = findViewById(R.id.btn_battery_settings)
+        btnBatterySettings.setOnClickListener {
+            showBatterySettingsDialog()
+        }
+        checkBatteryOptimizationStatus()
         ServerSettings.load(this).let { binding ->
             editHost.setText(binding.host)
             editPort.setText(binding.port.toString())
@@ -161,6 +173,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         startPollingStatus()
+        checkBatteryOptimizationStatus()
     }
 
     override fun onPause() {
@@ -494,6 +507,56 @@ class MainActivity : AppCompatActivity() {
         } catch (_: Exception) {
             val intent = Intent(Settings.ACTION_SETTINGS)
             startActivity(intent)
+        }
+    }
+
+    private fun isIgnoringBatteryOptimizations(): Boolean {
+        val pm = getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return true
+        return pm.isIgnoringBatteryOptimizations(packageName)
+    }
+
+    private fun checkBatteryOptimizationStatus() {
+        if (!::cardBatteryWarning.isInitialized) return
+        cardBatteryWarning.visibility = if (isIgnoringBatteryOptimizations()) View.GONE else View.VISIBLE
+    }
+
+    private fun showBatterySettingsDialog() {
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.battery_dialog_title)
+            .setMessage(R.string.battery_dialog_message)
+            .setPositiveButton(R.string.battery_action_whitelist) { _, _ ->
+                requestIgnoreBatteryOptimizations()
+            }
+            .setNeutralButton(R.string.battery_action_app_settings) { _, _ ->
+                openAppDetailsSettings()
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun requestIgnoreBatteryOptimizations() {
+        try {
+            val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                data = Uri.parse("package:$packageName")
+            }
+            startActivity(intent)
+        } catch (_: Exception) {
+            try {
+                startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+            } catch (_: Exception) {
+                openAppDetailsSettings()
+            }
+        }
+    }
+
+    private fun openAppDetailsSettings() {
+        try {
+            val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                data = Uri.parse("package:$packageName")
+            }
+            startActivity(intent)
+        } catch (_: Exception) {
+            Toast.makeText(this, "Could not open settings", Toast.LENGTH_SHORT).show()
         }
     }
 }

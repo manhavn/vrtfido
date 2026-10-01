@@ -13,6 +13,8 @@
     <string name="invalid_database">Database must not be empty</string>
     <string name="notification_running">Serving at %1$s</string>
     <string name="notification_starting">Opening port %1$s</string>
+    <string name="notification_action_stop">Stop Server</string>
+    <string name="server_stopped_unexpectedly">VrtFido daemon stopped unexpectedly</string>
     <string name="open_web_ui">Open Web Dashboard (%1$s)</string>
     <string name="enable_passkey_settings">Android passkey provider settings</string>
     <string name="status_label">Service status</string>
@@ -55,4 +57,13 @@
     <string name="create_title">Create a passkey for %1$s</string>
     <string name="create_description">Use your fingerprint, face or screen lock to create the passkey</string>
     <string name="create_error">Could not create the new passkey</string>
+
+    <!-- Battery optimization & background execution -->
+    <string name="battery_warning_title">Background Battery Restriction Active</string>
+    <string name="battery_warning_desc">Battery optimization is active. Remote database connections (PostgreSQL/MySQL/MongoDB) may disconnect when the screen turns off or the app is minimized.</string>
+    <string name="battery_settings_btn">Configure Battery &amp; Background Usage</string>
+    <string name="battery_dialog_title">Background Battery Usage</string>
+    <string name="battery_dialog_message">To maintain remote database connectivity when the app is in the background:\n\n1. Exemption from battery optimization (Doze Whitelist).\n2. On Vivo/Xiaomi/Samsung devices: open App Info → Battery → enable \"Allow background battery usage\" (or \"No restrictions\").</string>
+    <string name="battery_action_whitelist">Request Exemption</string>
+    <string name="battery_action_app_settings">Open App Info</string>
 </resources>

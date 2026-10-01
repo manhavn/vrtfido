@@ -199,12 +199,21 @@ impl ResilientBackend {
                 }
             }
             let mut state = backend.state.lock();
-            if let Err(error) = backend.sync(&mut state) {
+            let sync_res = backend.sync(&mut state);
+            if let Err(error) = &sync_res {
                 eprintln!("[DB] Pending writes remain queued: {error}");
+            }
+            let has_pending: bool = state.queue.query_row(
+                "SELECT 1 FROM pending LIMIT 1", [], |_| Ok(true)
+            ).optional().unwrap_or(Some(true)).unwrap_or(false);
+            if sync_res.is_ok() && !has_pending {
+                if let Err(error) = backend.snapshot(&mut state) {
+                    eprintln!("[DB] Snapshot sync error: {error}");
+                }
             }
             drop(state);
             drop(backend);
-            std::thread::sleep(Duration::from_secs(5));
+            std::thread::sleep(Duration::from_millis(500));
         });
     }
 
@@ -237,11 +246,15 @@ impl ResilientBackend {
     }
 
     fn snapshot(&self, state: &mut State) -> Result<()> {
-        self.sync(state)?;
         let Some(primary) = state.primary.clone() else { return Ok(()); };
-        // Mirroring every credential and log on every request is prohibitively
-        // expensive; keep the last usable snapshot and periodically refresh it.
         if state.last_snapshot.is_some_and(|at| at.elapsed() < Duration::from_secs(2)) {
+            return Ok(());
+        }
+        // Strict invariant: NEVER snapshot from primary to shadow if ANY task exists in pending queue!
+        let has_pending: bool = state.queue.query_row(
+            "SELECT 1 FROM pending LIMIT 1", [], |_| Ok(true)
+        ).optional()?.unwrap_or(false);
+        if has_pending {
             return Ok(());
         }
         let export = (|| -> Result<DatabaseExport> {
@@ -265,17 +278,11 @@ impl ResilientBackend {
     }
 
     fn read<T>(&self, f: impl FnOnce(&SqliteBackend) -> Result<T>) -> Result<T> {
-        let mut state = self.state.lock();
-        self.snapshot(&mut state)?;
         f(&self.shadow)
     }
 
     fn write<T>(&self, make: impl FnOnce(&SqliteBackend, i64) -> Result<(Action, T)>) -> Result<T> {
         let mut state = self.state.lock();
-        self.sync(&mut state)?;
-        // Never import stale primary state over unsynced local writes.
-        // Refresh when online, before preparing an operation dependent on local state.
-        self.snapshot(&mut state)?;
         state.queue.execute("INSERT INTO pending(payload,ready) VALUES('',0)", [])?;
         let seq = state.queue.last_insert_rowid();
         let prepared = make(&self.shadow, seq);
@@ -290,7 +297,9 @@ impl ResilientBackend {
             return Err(e);
         }
         state.queue.execute("UPDATE pending SET ready=1 WHERE seq=?1", [seq])?;
-        self.sync(&mut state)?;
+        if state.primary.is_some() {
+            let _ = self.sync(&mut state);
+        }
         Ok(value)
     }
 }

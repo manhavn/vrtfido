@@ -107,6 +107,12 @@ fn bson_to_i64(v: Option<&Bson>) -> i64 {
         Some(Bson::Int64(n)) => *n,
         Some(Bson::Int32(n)) => *n as i64,
         Some(Bson::Double(n)) => *n as i64,
+        Some(Bson::ObjectId(oid)) => {
+            let bytes = oid.bytes();
+            let mut b = [0u8; 8];
+            b.copy_from_slice(&bytes[4..12]);
+            (i64::from_be_bytes(b) & i64::MAX).max(1)
+        }
         _ => 0,
     }
 }
@@ -252,8 +258,13 @@ fn auth_log_to_doc(log: &AuthLogRow) -> Document {
 }
 
 fn doc_to_auth_log(d: &Document) -> Result<AuthLogRow, DbError> {
+    let id = d.get("id").and_then(|v| match v {
+        Bson::Int64(n) => Some(*n),
+        Bson::Int32(n) => Some(*n as i64),
+        _ => None,
+    }).unwrap_or_else(|| bson_to_i64(d.get("_id")));
     Ok(AuthLogRow {
-        id: bson_to_i64(d.get("_id")),
+        id,
         credential_id: bson_to_optional_string(d.get("credential_id")),
         rp_id: d.get_str("rp_id").map_err(mongo_err)?.to_string(),
         operation: d.get_str("operation").map_err(mongo_err)?.to_string(),
@@ -276,8 +287,13 @@ fn debug_log_to_doc(log: &DebugLogRow) -> Document {
 }
 
 fn doc_to_debug_log(d: &Document) -> Result<DebugLogRow, DbError> {
+    let id = d.get("id").and_then(|v| match v {
+        Bson::Int64(n) => Some(*n),
+        Bson::Int32(n) => Some(*n as i64),
+        _ => None,
+    }).unwrap_or_else(|| bson_to_i64(d.get("_id")));
     Ok(DebugLogRow {
-        id: bson_to_i64(d.get("_id")),
+        id,
         level: d.get_str("level").map_err(mongo_err)?.to_string(),
         component: d.get_str("component").map_err(mongo_err)?.to_string(),
         message: d.get_str("message").map_err(mongo_err)?.to_string(),

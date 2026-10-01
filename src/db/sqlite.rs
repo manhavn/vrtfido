@@ -156,15 +156,17 @@ impl SqliteBackend {
             tx.execute("INSERT INTO fingerprints (id,slot_index,name,enrolled_at) VALUES (?1,?2,?3,?4)",
                 params![f.id,f.slot_index,f.name,f.enrolled_at]).map_err(DbError::Sqlite)?;
         }
-        for l in &data.auth_logs {
-            tx.execute("INSERT INTO auth_logs (id,credential_id,rp_id,operation,status,auth_method,details,created_at)
+        for (idx, l) in data.auth_logs.iter().enumerate() {
+            let id = if l.id == 0 { (idx + 1) as i64 } else { l.id };
+            tx.execute("INSERT OR REPLACE INTO auth_logs (id,credential_id,rp_id,operation,status,auth_method,details,created_at)
                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
-                params![l.id,l.credential_id,l.rp_id,l.operation,l.status,l.auth_method,l.details,l.created_at])
+                params![id,l.credential_id,l.rp_id,l.operation,l.status,l.auth_method,l.details,l.created_at])
                 .map_err(DbError::Sqlite)?;
         }
-        for l in &data.debug_logs {
-            tx.execute("INSERT INTO debug_logs (id,level,component,message,created_at) VALUES (?1,?2,?3,?4,?5)",
-                params![l.id,l.level,l.component,l.message,l.created_at]).map_err(DbError::Sqlite)?;
+        for (idx, l) in data.debug_logs.iter().enumerate() {
+            let id = if l.id == 0 { (idx + 1) as i64 } else { l.id };
+            tx.execute("INSERT OR REPLACE INTO debug_logs (id,level,component,message,created_at) VALUES (?1,?2,?3,?4,?5)",
+                params![id,l.level,l.component,l.message,l.created_at]).map_err(DbError::Sqlite)?;
         }
         for (key, value) in &data.app_settings {
             tx.execute("INSERT INTO app_settings (setting_key,value) VALUES (?1,?2)", params![key,value])
