@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import android.os.PowerManager
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.CancellationException
@@ -26,6 +27,7 @@ import java.security.MessageDigest
 
 class VrtfidoService : Service() {
 
+    private var wakeLock: PowerManager.WakeLock? = null
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     companion object {
@@ -54,12 +56,33 @@ class VrtfidoService : Service() {
         private external fun startVrtfidoDaemon(optionsJson: String): String?
         @JvmStatic
         private external fun stopVrtfidoDaemon()
+        @JvmStatic
+        private external fun isDaemonRunning(): Boolean
     }
 
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
     }
+    private fun acquireWakeLock() {
+        if (wakeLock == null) {
+            val pm = getSystemService(Context.POWER_SERVICE) as? PowerManager
+            wakeLock = pm?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "vrtfido:daemon")?.apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+        }
+    }
+
+    private fun releaseWakeLock() {
+        try {
+            wakeLock?.let {
+                if (it.isHeld) it.release()
+            }
+        } catch (_: Exception) {}
+        wakeLock = null
+    }
+
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
@@ -94,6 +117,7 @@ class VrtfidoService : Service() {
                 }
                 check(reachable) { "Server started but ${binding.localUrl}/api/health is unreachable" }
                 if (!isActive) return@launch
+                acquireWakeLock()
                 isRunning = true
                 (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
                     .notify(NOTIFICATION_ID, buildNotification(binding, starting = false))
@@ -113,9 +137,9 @@ class VrtfidoService : Service() {
             }
             if (isRunning) {
                 while (isActive) {
-                    delay(2000)
-                    if (!VrtfidoClient.isRunning(this@VrtfidoService)) {
-                        lastError = "Máy chủ tại ${binding.localUrl} đã dừng"
+                    delay(3000)
+                    if (loadError == null && !isDaemonRunning()) {
+                        lastError = getString(R.string.server_stopped_unexpectedly)
                         isRunning = false
                         broadcastStatus(false)
                         stopSelf()
@@ -186,6 +210,7 @@ class VrtfidoService : Service() {
     }
 
     private fun stopDaemon() {
+        releaseWakeLock()
         isRunning = false
         isStarting = false
         serviceScope.cancel()
@@ -231,6 +256,12 @@ class VrtfidoService : Service() {
         val mainPendingIntent = PendingIntent.getActivity(
             this, 1, mainIntent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
+        val stopIntent = Intent(this, VrtfidoService::class.java).apply {
+            action = ACTION_STOP
+        }
+        val stopPendingIntent = PendingIntent.getService(
+            this, 2, stopIntent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
         val address = "http://${binding.host}:${binding.port}"
         val message = getString(
             if (starting) R.string.notification_starting else R.string.notification_running,
@@ -244,6 +275,8 @@ class VrtfidoService : Service() {
             .setContentIntent(mainPendingIntent)
             .addAction(android.R.drawable.ic_menu_view,
                 getString(R.string.open_web_ui, binding.localUrl), openWebPendingIntent)
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel,
+                getString(R.string.notification_action_stop), stopPendingIntent)
             .setOngoing(true)
             .setAutoCancel(false)
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
@@ -254,6 +287,7 @@ class VrtfidoService : Service() {
 
     override fun onDestroy() {
         stopDaemon()
+        releaseWakeLock()
         stopForeground(STOP_FOREGROUND_REMOVE)
         super.onDestroy()
     }

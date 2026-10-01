@@ -70,7 +70,7 @@ fn server_router(options: &DaemonOptions) -> Result<axum::Router, db::DbError> {
 pub mod jni_bridge {
     use super::*;
     use jni::objects::{JClass, JString};
-    use jni::sys::jstring;
+    use jni::sys::{jboolean, jstring};
     use jni::JNIEnv;
     use parking_lot::Mutex;
     use std::sync::{mpsc, LazyLock};
@@ -177,6 +177,11 @@ pub mod jni_bridge {
             let _ = daemon.thread.join();
         }
     }
+    fn is_running() -> bool {
+        let current = DAEMON.lock();
+        current.as_ref().map_or(false, |d| !d.thread.is_finished())
+    }
+
 
     #[no_mangle]
     pub extern "C" fn Java_com_vrtfido_VrtfidoService_startVrtfidoDaemon(
@@ -206,6 +211,18 @@ pub mod jni_bridge {
     ) {
         stop();
     }
+    #[no_mangle]
+    pub extern "C" fn Java_com_vrtfido_VrtfidoService_isDaemonRunning(
+        _env: JNIEnv,
+        _class: JClass,
+    ) -> jboolean {
+        if is_running() {
+            jni::sys::JNI_TRUE
+        } else {
+            jni::sys::JNI_FALSE
+        }
+    }
+
 
     #[cfg(test)]
     mod tests {
@@ -228,12 +245,14 @@ pub mod jni_bridge {
 
         #[test]
         fn serves_status_then_releases_port() {
+            assert!(!is_running());
             let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let port = probe.local_addr().unwrap().port();
             drop(probe);
             let path = std::env::temp_dir().join(format!("vrtfido-{}-{port}.db", std::process::id()));
             let db = path.to_str().unwrap().to_string();
             start(options(&db, "0.0.0.0", port)).unwrap();
+            assert!(is_running());
             let mut socket = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
             socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
             socket.write_all(b"GET /api/status HTTP/1.0\r\nHost: localhost\r\n\r\n").unwrap();
@@ -244,6 +263,7 @@ pub mod jni_bridge {
             assert!(response.contains(&format!("\"port\":{port}")), "{response}");
             drop(socket);
             stop();
+            assert!(!is_running());
             let listener = std::net::TcpListener::bind(("127.0.0.1", port)).unwrap();
             assert!(start(options(&db, "0.0.0.0", port)).is_err());
             drop(listener);

@@ -35,6 +35,9 @@ fn pg_err(e: postgres::Error) -> DbError {
 struct PgWorker {
     sender: mpsc::Sender<Box<dyn FnOnce(&mut Client) + Send>>,
 }
+fn connect_pg(url: &str) -> Result<Client, DbError> {
+    Client::connect(url, NoTls).map_err(pg_err)
+}
 
 impl PgWorker {
     fn new(url: &str) -> Result<Self, DbError> {
@@ -43,10 +46,10 @@ impl PgWorker {
         let url_owned = url.to_string();
 
         std::thread::spawn(move || {
-            let mut client = match Client::connect(&url_owned, NoTls) {
+            let mut client = match connect_pg(&url_owned) {
                 Ok(c) => c,
                 Err(e) => {
-                    let _ = init_tx.send(Err(pg_err(e)));
+                    let _ = init_tx.send(Err(e));
                     return;
                 }
             };
@@ -120,7 +123,17 @@ impl PgWorker {
             let _ = init_tx.send(Ok(()));
 
             while let Ok(job) = rx.recv() {
+                if client.is_closed() {
+                    if let Ok(new_client) = connect_pg(&url_owned) {
+                        client = new_client;
+                    }
+                }
                 job(&mut client);
+                if client.is_closed() {
+                    if let Ok(new_client) = connect_pg(&url_owned) {
+                        client = new_client;
+                    }
+                }
             }
         });
 
@@ -786,5 +799,18 @@ impl DbBackend for PostgresBackend {
             );
             Ok(())
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn invalid_url_fails_gracefully() {
+        let res = PostgresBackend::open("postgresql://invalid-host-that-does-not-exist:5432/vrtfido");
+        assert!(res.is_err());
+        let err = res.err().unwrap();
+        assert!(matches!(err, DbError::Postgres(_)));
     }
 }
