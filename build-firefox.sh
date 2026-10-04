@@ -5,12 +5,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EXT_DIR="$SCRIPT_DIR/extension"
 DIST_DIR="$SCRIPT_DIR/dist"
 FIREFOX_DIST="$DIST_DIR/firefox"
+ZIP_FILE="$DIST_DIR/vrtfido-firefox.zip"
 
-echo "=== [1/3] Chuẩn bị thư mục build Firefox ==="
-rm -rf "$FIREFOX_DIST" "$DIST_DIR/vrtfido-firefox.zip"
+echo "=== [1/4] Chuẩn bị thư mục build Firefox ==="
+rm -rf "$FIREFOX_DIST" "$ZIP_FILE"
 mkdir -p "$FIREFOX_DIST"
 
-echo "=== [2/3] Sao chép tệp nguồn extension ==="
+echo "=== [2/4] Sao chép tệp nguồn extension ==="
 cp "$EXT_DIR/popup.html" "$FIREFOX_DIST/"
 cp "$EXT_DIR/popup.js" "$FIREFOX_DIST/"
 cp "$EXT_DIR/background.js" "$FIREFOX_DIST/"
@@ -34,21 +35,27 @@ manifest.content_scripts = [
     all_frames: true
   }
 ];
-// Đảm bảo gecko ID hợp lệ
+// Đảm bảo gecko ID hợp lệ + khai báo dữ liệu bắt buộc cho addons.mozilla.org
 manifest.browser_specific_settings = {
   gecko: {
     id: "vrtfido@local",
-    strict_min_version: "109.0"
+    strict_min_version: "140.0",
+    data_collection_permissions: {
+      required: ["authenticationInfo"]
+    }
+  },
+  gecko_android: {
+    strict_min_version: "142.0"
   }
 };
 fs.writeFileSync("'"$FIREFOX_DIST"'/manifest.json", JSON.stringify(manifest, null, 2));
 '
 
-echo "=== [3/3] Đóng gói ZIP Firefox: $DIST_DIR/vrtfido-firefox.zip ==="
+echo "=== [3/4] Đóng gói ZIP Firefox: $ZIP_FILE ==="
 python3 -c '
 import zipfile, os
 dist = "'"$FIREFOX_DIST"'"
-out_zip = "'"$DIST_DIR"'/vrtfido-firefox.zip"
+out_zip = "'"$ZIP_FILE"'"
 with zipfile.ZipFile(out_zip, "w", zipfile.ZIP_DEFLATED) as z:
     for root, dirs, files in os.walk(dist):
         for f in files:
@@ -56,6 +63,23 @@ with zipfile.ZipFile(out_zip, "w", zipfile.ZIP_DEFLATED) as z:
             z.write(p, os.path.relpath(p, dist))
 '
 
+echo "=== [4/4] Kiểm tra bằng addons-linter (mozilla/addons-linter) ==="
+if [ "${SKIP_LINT:-0}" = "1" ]; then
+  echo "  (bỏ qua: SKIP_LINT=1)"
+elif command -v npx >/dev/null 2>&1; then
+  set +e
+  npx --yes addons-linter@latest "$ZIP_FILE"
+  lint_rc=$?
+  set -e
+  if [ "$lint_rc" -ne 0 ]; then
+    echo "✗ addons-linter phát hiện lỗi (exit $lint_rc) — sửa trước khi public." >&2
+    exit "$lint_rc"
+  fi
+else
+  echo "  ! Không tìm thấy npx (Node.js); bỏ qua addons-linter." >&2
+fi
+
+echo
 echo "✓ Build Firefox Extension thành công!"
 echo "  - Thư mục nạp trực tiếp: $FIREFOX_DIST"
-echo "  - Tệp zip đóng gói: $DIST_DIR/vrtfido-firefox.zip"
+echo "  - Tệp zip đóng gói: $ZIP_FILE"

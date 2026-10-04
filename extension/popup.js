@@ -53,6 +53,17 @@ const txtExportJson = document.getElementById("txtExportJson");
 const txtImportJson = document.getElementById("txtImportJson");
 const txtPasskeysTitle = document.getElementById("txtPasskeysTitle");
 const txtLoadingPasskeys = document.getElementById("txtLoadingPasskeys");
+const txtActionsTitle = document.getElementById("txtActionsTitle");
+const txtHelpTitle = document.getElementById("txtHelpTitle");
+const txtHelpDesc = document.getElementById("txtHelpDesc");
+const txtHelpStep1 = document.getElementById("txtHelpStep1");
+const txtHelpStep2 = document.getElementById("txtHelpStep2");
+const txtHelpStep3 = document.getElementById("txtHelpStep3");
+const txtHelpNote = document.getElementById("txtHelpNote");
+const txtHelpOpenBtn = document.getElementById("txtHelpOpenBtn");
+const btnOpenGitHub = document.getElementById("btnOpenGitHub");
+
+const REPO_URL = "https://github.com/manhavn/vrtfido";
 
 // I18N dictionary
 const TRANSLATIONS = {
@@ -104,7 +115,14 @@ const TRANSLATIONS = {
     deleteConfirm: (domain, user) => `Bạn có chắc muốn xóa Passkey cho ${domain} (${user}) không?`,
     deleted: "✓ Đã xóa Passkey thành công",
     sensorOk: "Sẵn sàng",
-    sensorNone: "Không có"
+    sensorNone: "Không có",
+    helpTitle: "🖥️ Cài máy chủ VrtFido (local)",
+    helpDesc: "Tiện ích cần app CLI vrtfido chạy nền trên máy này để tạo và đăng nhập passkey.",
+    helpStep1: "Cài CLI bằng mise:",
+    helpStep2: "Chạy máy chủ ở chế độ nền:",
+    helpStep3: "Giữ Host 127.0.0.1 · Port 10209 rồi bấm “Lưu cấu hình”.",
+    helpNote: "Ubuntu: cấp quyền /dev/uhid một lần để tránh hỏi mật khẩu (tùy chọn):",
+    helpOpenBtn: "Mở GitHub — hướng dẫn đầy đủ"
   },
   en: {
     tagline: "Virtual Passkey Provider",
@@ -148,7 +166,14 @@ const TRANSLATIONS = {
     deleteConfirm: (domain, user) => `Are you sure you want to delete passkey for ${domain} (${user})?`,
     deleted: "✓ Passkey deleted successfully",
     sensorOk: "Ready",
-    sensorNone: "None"
+    sensorNone: "None",
+    helpTitle: "🖥️ Install VrtFido server (local)",
+    helpDesc: "The extension needs the vrtfido CLI running in the background on this machine to create and sign in with passkeys.",
+    helpStep1: "Install the CLI with mise:",
+    helpStep2: "Run the server in the background:",
+    helpStep3: "Keep Host 127.0.0.1 · Port 10209, then click “Save Settings”.",
+    helpNote: "Ubuntu: grant /dev/uhid access once to avoid password prompts (optional):",
+    helpOpenBtn: "Open GitHub — full instructions"
   }
 };
 
@@ -170,6 +195,13 @@ function showToast(msg) {
   setTimeout(() => {
     toastMsg.classList.remove("show");
   }, 2500);
+}
+
+function setEmptyState(container, text) {
+  const div = document.createElement("div");
+  div.className = "empty-state";
+  div.textContent = text;
+  container.replaceChildren(div);
 }
 
 function applyLanguage(lang) {
@@ -204,6 +236,15 @@ function applyLanguage(lang) {
   txtPasskeysTitle.textContent = t("passkeysTitle");
   searchPasskeys.placeholder = t("searchPlaceholder");
   if (txtLoadingPasskeys) txtLoadingPasskeys.textContent = t("loading");
+  if (txtActionsTitle) txtActionsTitle.textContent = t("actionsTitle");
+  if (txtHelpTitle) txtHelpTitle.textContent = t("helpTitle");
+  if (txtHelpDesc) txtHelpDesc.textContent = t("helpDesc");
+  if (txtHelpStep1) txtHelpStep1.textContent = t("helpStep1");
+  if (txtHelpStep2) txtHelpStep2.textContent = t("helpStep2");
+  if (txtHelpStep3) txtHelpStep3.textContent = t("helpStep3");
+  if (txtHelpNote) txtHelpNote.textContent = t("helpNote");
+  if (txtHelpOpenBtn) txtHelpOpenBtn.textContent = t("helpOpenBtn");
+  if (btnOpenGitHub) btnOpenGitHub.title = t("helpOpenBtn");
   document.title = "VrtFido Passkey CMS - " + t("tagline");
 }
 function computeBaseUrl() {
@@ -264,11 +305,11 @@ async function refreshStatus() {
 function renderPasskeys(items) {
   passkeyBadgeCount.textContent = items.length;
   if (!items || items.length === 0) {
-    passkeysList.innerHTML = `<div class="empty-state">${t("empty")}</div>`;
+    setEmptyState(passkeysList, t("empty"));
     return;
   }
 
-  passkeysList.innerHTML = "";
+  passkeysList.replaceChildren();
   items.forEach((item) => {
     const el = document.createElement("div");
     el.className = "passkey-item";
@@ -326,7 +367,7 @@ async function loadPasskeys() {
     filterPasskeys();
   } catch (err) {
     allCredentials = [];
-    passkeysList.innerHTML = `<div class="empty-state">${t("empty")}</div>`;
+    setEmptyState(passkeysList, t("empty"));
     passkeyBadgeCount.textContent = "0";
   }
 }
@@ -345,7 +386,7 @@ function filterPasskeys() {
     );
   });
   if (filtered.length === 0) {
-    passkeysList.innerHTML = `<div class="empty-state">${t("searchEmpty")}</div>`;
+    setEmptyState(passkeysList, t("searchEmpty"));
     passkeyBadgeCount.textContent = "0";
   } else {
     renderPasskeys(filtered);
@@ -469,6 +510,15 @@ btnOpenWeb.addEventListener("click", () => {
     runtime.tabs.create({ url });
   } else {
     window.open(url, "_blank");
+  }
+});
+
+// Help: open the project repository (CLI install + server instructions)
+btnOpenGitHub.addEventListener("click", () => {
+  if (runtime.tabs && runtime.tabs.create) {
+    runtime.tabs.create({ url: REPO_URL });
+  } else {
+    window.open(REPO_URL, "_blank");
   }
 });
 

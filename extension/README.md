@@ -103,3 +103,65 @@ Safari packages Web Extensions inside a native macOS/iOS application wrapper via
    - Click **Export JSON** to download a backup file of your credentials.
    - Click **Import JSON** to restore a backup file to the server.
    - Use the search bar in the **Stored Passkeys** card to quickly filter credentials by domain or username, with one-click deletion.
+
+---
+
+## 5. Publishing the Firefox Build (addons.mozilla.org)
+
+`dist/vrtfido-firefox.zip` cannot be installed permanently in release Firefox until Mozilla signs it, so "public" means a signed build on [addons.mozilla.org](https://addons.mozilla.org) (AMO) or a self-hosted signed `.xpi`.
+
+**One command (interactive).** From the repository root:
+
+```bash
+./publish-firefox.sh             # hỏi lần lượt: kênh, version, license, API key -> ký -> public
+./publish-firefox.sh --dry-run   # build + lint, KHÔNG gọi AMO
+./publish-firefox.sh --channel unlisted --version 0.3.4 --yes   # không tương tác
+```
+
+The script verifies the toolchain, asks for the channel (`listed` = public AMO listing, `unlisted` = signed `.xpi` you host), optionally bumps the version, runs `build-firefox.sh` (which enforces addons-linter), prompts for the AMO license (listed only) and API key/secret (offer to cache them under `~/.config/vrtfido/amo.env`, `chmod 600`), signs, and finally publishes (AMO submission for `listed`; GitHub Release via `gh` when available for `unlisted`). The manual steps below are what it automates.
+
+**AMO metadata (required for `listed`).** AMO rejects listed versions without a license, so the script writes/updates `amo-metadata.json` (repo root) and passes it with `--amo-metadata`. Default license is `MIT` (override with `--license SLUG`, or supply your own file with `--amo-metadata FILE`). A user-supplied file is validated but never rewritten. For the *first* listed version AMO also requires `name`, `summary`, and `categories` for every compatible application — these live in `amo-metadata.json`:
+
+```json
+{
+  "name": { "en-US": "VrtFido Passkey Provider", "vi": "VrtFido Passkey Provider" },
+  "summary": { "en-US": "…", "vi": "…" },
+  "categories": { "firefox": ["privacy-security"], "android": ["privacy-security"] },
+  "version": { "license": "MIT" }
+}
+```
+
+Valid category slugs: <https://addons.mozilla.org/api/v5/addons/categories/>.
+
+**Validation (`mozilla/addons-linter`).** `./build-firefox.sh` runs the official linter on the packaged zip and aborts on errors (`SKIP_LINT=1` skips it, useful offline). Run it standalone with:
+
+```bash
+npx --yes addons-linter@latest dist/vrtfido-firefox.zip
+```
+
+**Prerequisites.** An AMO account and API credentials from <https://addons.mozilla.org/developers/addon/api/key/>, exported as `WEB_EXT_API_KEY` and `WEB_EXT_API_SECRET`.
+
+**Listed (public store listing).** Create the listing once through the web submission flow at <https://addons.mozilla.org/developers/addon/submit/>, then upload later versions by signing with the `listed` channel (or drag-and-drop the zip on the AMO version page):
+
+```bash
+npx --yes web-ext sign \
+  --source-dir dist/firefox \
+  --api-key "$WEB_EXT_API_KEY" \
+  --api-secret "$WEB_EXT_API_SECRET" \
+  --amo-metadata amo-metadata.json \
+  --channel listed
+```
+
+**Unlisted (self-distribution).** Returns a signed `.xpi` you host yourself (for example as a GitHub Release asset):
+
+```bash
+npx --yes web-ext sign \
+  --source-dir dist/firefox \
+  --api-key "$WEB_EXT_API_KEY" \
+  --api-secret "$WEB_EXT_API_SECRET" \
+  --channel unlisted
+```
+
+Signed artifacts are written to `web-ext-artifacts/`. The extension ID (`vrtfido@local`) and the pinned `key` keep the ID stable across versions. When self-hosting, add `browser_specific_settings.gecko.update_url` pointing at your update manifest so installed copies receive new versions.
+
+**Data collection declaration.** The manifest sets `browser_specific_settings.gecko.data_collection_permissions.required: ["authenticationInfo"]` because the extension transmits WebAuthn/passkey data to the configured VrtFido backend, which may be remote. Since AMO requires this key for new submissions, removing it will block signing. If the backend is restricted to the local machine only, change the value to `["none"]`. The key is honored by desktop Firefox 140+ and Android 142+, which is why the manifest pins `strict_min_version` to `140.0` and `gecko_android.strict_min_version` to `142.0` — versions older than that are not supported, so no unsupported-key warnings are emitted.

@@ -103,3 +103,65 @@ Safari đóng gói Web Extension dưới dạng một ứng dụng macOS native 
    - Bấm **Xuất JSON** để tải tệp backup passkeys về máy tính.
    - Bấm **Nhập JSON** để nạp tệp backup vào cơ sở dữ liệu.
    - Ô tìm kiếm danh sách Passkeys cho phép gõ tên miền hoặc tài khoản để lọc nhanh, có nút xóa kèm hộp thoại xác nhận.
+
+---
+
+## 5. Phát hành bản build Firefox (addons.mozilla.org)
+
+`dist/vrtfido-firefox.zip` **chưa cài vĩnh viễn được trên Firefox release cho tới khi Mozilla ký** — nên "lên public" nghĩa là bản đã ký trên [addons.mozilla.org](https://addons.mozilla.org) (AMO), hoặc tệp `.xpi` đã ký do bạn tự host.
+
+**Một lệnh duy nhất (tương tác).** Chạy từ thư mục gốc repo:
+
+```bash
+./publish-firefox.sh             # hỏi lần lượt: kênh, version, license, API key -> ký -> public
+./publish-firefox.sh --dry-run   # build + lint, KHÔNG gọi AMO
+./publish-firefox.sh --channel unlisted --version 0.3.4 --yes   # không tương tác
+```
+
+Script kiểm tra môi trường, hỏi kênh (`listed` = public trên AMO, `unlisted` = `.xpi` đã ký tự host), cho tăng version, chạy `build-firefox.sh` (đã ép addons-linter), hỏi giấy phép (chỉ kênh listed) và API key/secret của AMO (có thể lưu tại `~/.config/vrtfido/amo.env`, `chmod 600`), ký, rồi public (submit AMO với `listed`; tạo GitHub Release bằng `gh` nếu có với `unlisted`). Các bước thủ công bên dưới chính là những gì script tự động hoá.
+
+**Metadata AMO (bắt buộc với `listed`).** AMO từ chối bản listed nếu thiếu license, nên script ghi/cập nhật `amo-metadata.json` (ở gốc repo) rồi truyền qua `--amo-metadata`. Mặc định license `MIT` (đổi bằng `--license SLUG`, hoặc dùng file riêng qua `--amo-metadata FILE`). File do bạn cung cấp chỉ được kiểm tra, không bị ghi đè. Với bản listed **đầu tiên**, AMO còn cần `name`, `summary` và `categories` cho mọi ứng dụng tương thích — các field này nằm trong `amo-metadata.json`:
+
+```json
+{
+  "name": { "en-US": "VrtFido Passkey Provider", "vi": "VrtFido Passkey Provider" },
+  "summary": { "en-US": "…", "vi": "…" },
+  "categories": { "firefox": ["privacy-security"], "android": ["privacy-security"] },
+  "version": { "license": "MIT" }
+}
+```
+
+Slug category hợp lệ: <https://addons.mozilla.org/api/v5/addons/categories/>.
+
+**Kiểm tra (`mozilla/addons-linter`).** `./build-firefox.sh` tự chạy linter chính thức trên file zip và dừng nếu có lỗi (`SKIP_LINT=1` để bỏ qua, hữu ích khi offline). Chạy lẻ:
+
+```bash
+npx --yes addons-linter@latest dist/vrtfido-firefox.zip
+```
+
+**Điều kiện.** Tài khoản AMO và API key tại <https://addons.mozilla.org/developers/addon/api/key/>, xuất thành biến `WEB_EXT_API_KEY` và `WEB_EXT_API_SECRET`.
+
+**Listed (hiện công khai trên store).** Tạo listing một lần qua web tại <https://addons.mozilla.org/developers/addon/submit/>, các bản sau ký với channel `listed` (hoặc kéo-thả zip lên trang version của add-on):
+
+```bash
+npx --yes web-ext sign \
+  --source-dir dist/firefox \
+  --api-key "$WEB_EXT_API_KEY" \
+  --api-secret "$WEB_EXT_API_SECRET" \
+  --amo-metadata amo-metadata.json \
+  --channel listed
+```
+
+**Unlisted (tự phân phối).** Trả về `.xpi` đã ký để bạn tự host (ví dụ gắn vào GitHub Releases):
+
+```bash
+npx --yes web-ext sign \
+  --source-dir dist/firefox \
+  --api-key "$WEB_EXT_API_KEY" \
+  --api-secret "$WEB_EXT_API_SECRET" \
+  --channel unlisted
+```
+
+Tệp đã ký nằm trong `web-ext-artifacts/`. ID extension (`vrtfido@local`) cùng trường `key` giữ ID ổn định giữa các phiên bản. Nếu tự host, thêm `browser_specific_settings.gecko.update_url` trỏ tới update manifest để bản đã cài nhận được cập nhật.
+
+**Khai báo thu thập dữ liệu.** Manifest đặt `browser_specific_settings.gecko.data_collection_permissions.required: ["authenticationInfo"]` vì tiện ích truyền dữ liệu WebAuthn/passkey tới backend VrtFido đã cấu hình (có thể ở xa). AMO bắt buộc key này với submission mới — xóa đi sẽ bị chặn ký. Nếu backend chỉ chạy nội bộ máy, đổi thành `["none"]`. Key được hỗ trợ từ Firefox desktop 140+ / Android 142+, nên manifest đặt `strict_min_version` = `140.0` và `gecko_android.strict_min_version` = `142.0` — bản cũ hơn không được hỗ trợ, nhờ đó không còn warning về key không tương thích.
