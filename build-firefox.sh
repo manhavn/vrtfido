@@ -41,7 +41,7 @@ manifest.browser_specific_settings = {
     id: "vrtfido@local",
     strict_min_version: "140.0",
     data_collection_permissions: {
-      required: ["authenticationInfo"]
+      required: ["authenticationInfo", "personallyIdentifyingInfo"]
     }
   },
   gecko_android: {

@@ -164,4 +164,32 @@ npx --yes web-ext sign \
 
 Tệp đã ký nằm trong `web-ext-artifacts/`. ID extension (`vrtfido@local`) cùng trường `key` giữ ID ổn định giữa các phiên bản. Nếu tự host, thêm `browser_specific_settings.gecko.update_url` trỏ tới update manifest để bản đã cài nhận được cập nhật.
 
-**Khai báo thu thập dữ liệu.** Manifest đặt `browser_specific_settings.gecko.data_collection_permissions.required: ["authenticationInfo"]` vì tiện ích truyền dữ liệu WebAuthn/passkey tới backend VrtFido đã cấu hình (có thể ở xa). AMO bắt buộc key này với submission mới — xóa đi sẽ bị chặn ký. Nếu backend chỉ chạy nội bộ máy, đổi thành `["none"]`. Key được hỗ trợ từ Firefox desktop 140+ / Android 142+, nên manifest đặt `strict_min_version` = `140.0` và `gecko_android.strict_min_version` = `142.0` — bản cũ hơn không được hỗ trợ, nhờ đó không còn warning về key không tương thích.
+**Khai báo thu thập dữ liệu.** Manifest đặt `browser_specific_settings.gecko.data_collection_permissions.required: ["authenticationInfo", "personallyIdentifyingInfo"]` vì tiện ích truyền dữ liệu WebAuthn/passkey — bao gồm user name / display name do trang web cung cấp — tới backend VrtFido đã cấu hình (có thể ở xa). AMO bắt buộc key này với submission mới — xóa đi sẽ bị chặn ký. Nếu backend chỉ chạy nội bộ máy, có thể rút gọn thành `["none"]`. Key được hỗ trợ từ Firefox desktop 140+ / Android 142+, nên manifest đặt `strict_min_version` = `140.0` và `gecko_android.strict_min_version` = `142.0` — bản cũ hơn không được hỗ trợ, nhờ đó không còn warning về key không tương thích.
+
+**Tuân thủ store.** Privacy policy công khai nằm ở `PRIVACY.md` (dùng làm URL privacy policy cho cả hai store); `store/REVIEW-CHECKLIST.md` chứa câu trả lời sẵn để dán vào mọi field duyệt của Chrome Web Store và AMO — single purpose, justification từng permission, checkbox data usage, chứng nhận Limited Use và hướng dẫn test cho reviewer.
+
+---
+
+## 6. Phát hành lên Chrome Web Store
+
+Chrome không có công cụ tương đương `web-ext`: [Chrome Web Store API v2](https://developer.chrome.com/docs/webstore/using-api) cần OAuth, và item **đầu tiên** phải tạo thủ công trên [Developer Dashboard](https://chrome.google.com/webstore/devconsole/) (upload `dist/vrtfido-chrome.zip`, điền tab **Store listing** và **Privacy**). Sau đó có thể tự động hoá các bản cập nhật:
+
+```bash
+./publish-chrome.sh                      # hỏi lần lượt: version, OAuth, Publisher/Extension ID -> upload -> publish
+./publish-chrome.sh --dry-run            # build + in lệnh API, không gọi mạng
+./publish-chrome.sh --no-publish --yes   # chỉ upload, giữ ở bản nháp
+```
+
+Chuẩn bị:
+
+1. Đăng ký tài khoản developer Chrome Web Store (phí một lần US$5) và bật **2-Step Verification** cho tài khoản Google.
+2. Trong [Google Cloud Console](https://console.developers.google.com): bật **Chrome Web Store API**, cấu hình OAuth consent screen, rồi tạo **OAuth client ID** loại *Web application* với redirect URI `https://developers.google.com/oauthplayground`.
+3. Lấy refresh token ở [OAuth 2.0 Playground](https://developers.google.com/oauthplayground) bằng client ID/secret của bạn với scope `https://www.googleapis.com/auth/chromewebstore`.
+4. Ghi lại **Publisher ID** (Dashboard → Publisher → Settings) và **Item ID** của extension.
+
+Script đọc `CWS_CLIENT_ID`, `CWS_CLIENT_SECRET`, `CWS_REFRESH_TOKEN`, `CWS_PUBLISHER_ID`, `CWS_EXTENSION_ID` từ biến môi trường hoặc `~/.config/vrtfido/cws.env` (có thể lưu tại đó với `chmod 600`). Nó làm mới access token, kiểm tra `fetchStatus`, upload zip rồi gọi `publish`.
+
+Lưu ý:
+- Mỗi lần upload phải dùng `version` **cao hơn** bản đang publish — script có sẵn lựa chọn tăng patch/minor/major.
+- Item luôn được publish theo visibility đang đặt.
+- Vì tiện ích truyền dữ liệu xác thực tới backend VrtFido đã cấu hình, tab **Privacy practices** trên Dashboard cần khai báo data usage và URL privacy policy.

@@ -164,4 +164,32 @@ npx --yes web-ext sign \
 
 Signed artifacts are written to `web-ext-artifacts/`. The extension ID (`vrtfido@local`) and the pinned `key` keep the ID stable across versions. When self-hosting, add `browser_specific_settings.gecko.update_url` pointing at your update manifest so installed copies receive new versions.
 
-**Data collection declaration.** The manifest sets `browser_specific_settings.gecko.data_collection_permissions.required: ["authenticationInfo"]` because the extension transmits WebAuthn/passkey data to the configured VrtFido backend, which may be remote. Since AMO requires this key for new submissions, removing it will block signing. If the backend is restricted to the local machine only, change the value to `["none"]`. The key is honored by desktop Firefox 140+ and Android 142+, which is why the manifest pins `strict_min_version` to `140.0` and `gecko_android.strict_min_version` to `142.0` — versions older than that are not supported, so no unsupported-key warnings are emitted.
+**Data collection declaration.** The manifest sets `browser_specific_settings.gecko.data_collection_permissions.required: ["authenticationInfo", "personallyIdentifyingInfo"]` because the extension transmits WebAuthn/passkey data — including the user name / display name a website supplies — to the configured VrtFido backend, which may be remote. Since AMO requires this key for new submissions, removing it will block signing. If the backend is restricted to the local machine only, you may reduce it to `["none"]`. The key is honored by desktop Firefox 140+ and Android 142+, which is why the manifest pins `strict_min_version` to `140.0` and `gecko_android.strict_min_version` to `142.0` — versions older than that are not supported, so no unsupported-key warnings are emitted.
+
+**Store compliance.** The public privacy policy is `PRIVACY.md` (used as the privacy policy URL on both stores); `store/REVIEW-CHECKLIST.md` contains paste-ready answers for every Chrome Web Store and AMO review field — single purpose, permission justifications, data-usage checkboxes, Limited Use certifications and reviewer test instructions.
+
+---
+
+## 6. Publishing to the Chrome Web Store
+
+Chrome has no `web-ext` equivalent: the [Chrome Web Store API v2](https://developer.chrome.com/docs/webstore/using-api) needs OAuth, and the very first item must be created in the [Developer Dashboard](https://chrome.google.com/webstore/devconsole/) (upload `dist/vrtfido-chrome.zip`, fill the **Store listing** and **Privacy** tabs). After that, updates can be automated:
+
+```bash
+./publish-chrome.sh                      # hỏi lần lượt: version, OAuth, Publisher/Extension ID -> upload -> publish
+./publish-chrome.sh --dry-run            # build + in lệnh API, không gọi mạng
+./publish-chrome.sh --no-publish --yes   # chỉ upload, giữ ở bản nháp
+```
+
+Prerequisites:
+
+1. Register a Chrome Web Store developer account (one-time US$5 fee) and enable **2-Step Verification** for the Google account.
+2. In [Google Cloud Console](https://console.developers.google.com): enable **Chrome Web Store API**, configure an OAuth consent screen, then create an **OAuth client ID** of type *Web application* with `https://developers.google.com/oauthplayground` as an authorized redirect URI.
+3. Obtain a refresh token from the [OAuth 2.0 Playground](https://developers.google.com/oauthplayground) using your own client ID/secret and the scope `https://www.googleapis.com/auth/chromewebstore`.
+4. Note your **Publisher ID** (Dashboard → Publisher → Settings) and the extension's **Item ID**.
+
+The script reads `CWS_CLIENT_ID`, `CWS_CLIENT_SECRET`, `CWS_REFRESH_TOKEN`, `CWS_PUBLISHER_ID`, `CWS_EXTENSION_ID` from the environment or from `~/.config/vrtfido/cws.env` (it offers to save them there with `chmod 600`). It refreshes the access token, checks `fetchStatus`, uploads the zip, then calls `publish`.
+
+Notes:
+- Every upload must use a **higher `version`** than the published one — the script offers a patch/minor/major bump.
+- Items are always published with the existing visibility settings.
+- Because the extension transmits authentication data to the configured VrtFido backend, the Dashboard **Privacy practices** tab needs a declared data usage and a privacy policy URL.

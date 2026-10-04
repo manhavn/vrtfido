@@ -36,7 +36,9 @@
       processing: "Đang xử lý...",
       approved: "✓ Đã xác nhận!",
       cancelError: "Người dùng đã hủy yêu cầu Passkey.",
-      noCredsError: "Không có thông tin xác thực nào cho tên miền này."
+      noCredsError: "Không có thông tin xác thực nào cho tên miền này.",
+      serverLabel: "Máy chủ xử lý",
+      privacyNotice: "Khi bấm Xác nhận, dữ liệu passkey của trang web này sẽ được gửi tới máy chủ VrtFido bạn đã cấu hình ở trên."
     },
     en: {
       appName: "VrtFido Passkey",
@@ -57,7 +59,9 @@
       processing: "Processing...",
       approved: "✓ Approved!",
       cancelError: "User cancelled the passkey request.",
-      noCredsError: "No credentials found for this domain."
+      noCredsError: "No credentials found for this domain.",
+      serverLabel: "Processed by",
+      privacyNotice: "When you press Approve, this site's passkey data is sent to the VrtFido server configured above."
     }
   };
 
@@ -73,7 +77,7 @@
   // Active prompt reference to ensure only one dialog is open at a time
   let activePrompt = null;
 
-  function showApprovalDialog(type, options, candidates, candidatesError, langCode) {
+  function showApprovalDialog(type, options, candidates, candidatesError, langCode, serverUrl) {
     return new Promise((resolve, reject) => {
       if (activePrompt) {
         activePrompt.cancel("Superseded by new request");
@@ -260,6 +264,12 @@
             align-items: center;
             gap: 6px;
           }
+          .vrtfido-privacy {
+            font-size: 10.5px;
+            color: #64748b;
+            margin: 0;
+            line-height: 1.4;
+          }
           /* Account Selector Cards */
           .vrtfido-accounts-group {
             display: flex;
@@ -443,6 +453,11 @@
       websiteItem.appendChild(el("span", "vrtfido-info-value", "🌐 " + (rpName || rpId)));
       infoBox.appendChild(websiteItem);
 
+      const serverItem = el("div", "vrtfido-info-item");
+      serverItem.appendChild(el("span", "vrtfido-info-label", t.serverLabel));
+      serverItem.appendChild(el("span", "vrtfido-info-value", serverUrl || "127.0.0.1:10209"));
+      infoBox.appendChild(serverItem);
+
       if (isGetWithMultiple) {
         const accountsItem = el("div", "vrtfido-info-item");
         accountsItem.appendChild(el("span", "vrtfido-info-label", t.chooseAccount));
@@ -476,6 +491,7 @@
         infoBox.appendChild(accountItem);
       }
       card.appendChild(infoBox);
+      card.appendChild(el("p", "vrtfido-privacy", t.privacyNotice));
 
       const errorBox = el("div", "vrtfido-error");
       errorBox.id = "errorBox";
@@ -645,6 +661,7 @@
     const cfg = await getStoredSettings();
     const requireApproval = cfg.requireApproval !== false;
     const langCode = cfg.language || (navigator.language && navigator.language.startsWith("vi") ? "vi" : "en");
+    const serverUrl = cfg.apiBaseUrl || `${cfg.protocol || "http"}://${cfg.host || "127.0.0.1"}:${cfg.port || 10209}`;
 
     // For GET: always query candidates to know accounts available on this domain
     let candidates = [];
@@ -657,7 +674,7 @@
 
     // ALWAYS display interactive approval prompt modal (never auto-approve)
     try {
-      const response = await showApprovalDialog(type, options, candidates, candidatesError, langCode);
+      const response = await showApprovalDialog(type, options, candidates, candidatesError, langCode, serverUrl);
       window.postMessage({
         source: "VRTFIDO_EXT",
         requestId,
