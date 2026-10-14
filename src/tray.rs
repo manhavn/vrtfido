@@ -118,7 +118,7 @@ impl Tray for VrtfidoTray {
                 icon_name: "application-exit".into(),
                 activate: Box::new(|_| {
                     println!("[TRAY] Quit requested from tray menu. Shutting down...");
-                    unsafe { libc::kill(std::process::id() as i32, libc::SIGTERM) };
+                    crate::platform::terminate(std::process::id());
                 }),
                 ..Default::default()
             }

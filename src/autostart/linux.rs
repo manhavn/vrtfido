@@ -1,3 +1,4 @@
+use super::{quote_arg, startup_exe};
 use std::path::{Path, PathBuf};
 
 pub const AUTOSTART_DESKTOP_FILENAME: &str = "vrtfido.desktop";
@@ -27,7 +28,7 @@ pub fn get_autostart_desktop_path() -> Option<PathBuf> {
 }
 
 /// Check if autostart is currently enabled for vrtfido.
-pub fn is_autostart_enabled() -> bool {
+pub(crate) fn is_enabled() -> bool {
     let path = match get_autostart_desktop_path() {
         Some(p) => p,
         None => return false,
@@ -73,24 +74,11 @@ pub fn is_desktop_file_enabled(path: &Path) -> bool {
 
 /// Generate the content of the .desktop autostart entry.
 pub fn generate_desktop_entry(exe_path: &Path, extra_args: &[String]) -> String {
-    let exe_str = exe_path.display().to_string();
-    let quoted_exe = if exe_str.contains(' ') {
-        format!("\"{}\"", exe_str)
-    } else {
-        exe_str
-    };
-
-    let mut args_str = String::new();
-    for arg in extra_args {
-        args_str.push(' ');
-        if arg.contains(' ') {
-            args_str.push('"');
-            args_str.push_str(arg);
-            args_str.push('"');
-        } else {
-            args_str.push_str(arg);
-        }
-    }
+    let quoted_exe = quote_arg(&exe_path.display().to_string());
+    let args_str: String = extra_args
+        .iter()
+        .map(|arg| format!(" {}", quote_arg(arg)))
+        .collect();
 
     format!(
         "[Desktop Entry]\n\
@@ -108,59 +96,8 @@ pub fn generate_desktop_entry(exe_path: &Path, extra_args: &[String]) -> String 
     )
 }
 
-/// Filter command-line arguments to preserve configuration options for autostart,
-/// excluding one-off commands like `--quit`, `--export`, `--import`, or `--help`.
-pub fn get_retained_startup_args() -> Vec<String> {
-    let raw_args: Vec<String> = std::env::args().skip(1).collect();
-    let mut retained = Vec::new();
-    let mut i = 0;
-
-    while i < raw_args.len() {
-        let arg = &raw_args[i];
-
-        // Skip transient / one-off commands
-        if matches!(
-            arg.as_str(),
-            "--daemon"
-                | "-b"
-                | "--quit"
-                | "-q"
-                | "--stop"
-                | "--help"
-                | "-h"
-                | "--exit-after-import"
-                | "clean-logs"
-                | "--clean-logs"
-                | "--clear-logs"
-        ) || arg.starts_with("--clean-logs=")
-            || arg.starts_with("--clear-logs=")
-        {
-            i += 1;
-            continue;
-        }
-
-        // Skip export / import commands and their file targets
-        if matches!(arg.as_str(), "--export" | "--import") {
-            i += 1;
-            if i < raw_args.len() && !raw_args[i].starts_with('-') {
-                i += 1;
-            }
-            continue;
-        }
-        if arg.starts_with("--export=") || arg.starts_with("--import=") {
-            i += 1;
-            continue;
-        }
-
-        retained.push(arg.clone());
-        i += 1;
-    }
-
-    retained
-}
-
 /// Enable or disable autostart by writing or removing the desktop file.
-pub fn set_autostart_enabled(enabled: bool) -> std::io::Result<()> {
+pub(crate) fn set_enabled(enabled: bool) -> std::io::Result<()> {
     let desktop_path = get_autostart_desktop_path().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::NotFound,
@@ -168,7 +105,7 @@ pub fn set_autostart_enabled(enabled: bool) -> std::io::Result<()> {
         )
     })?;
 
-    let retained_args = get_retained_startup_args();
+    let retained_args = super::get_retained_startup_args();
     set_autostart_at_path(&desktop_path, enabled, None, &retained_args)
 }
 
@@ -186,10 +123,7 @@ pub fn set_autostart_at_path(
 
         let exe_path = match custom_exe {
             Some(p) => p.to_path_buf(),
-            None => {
-                let current = std::env::current_exe()?;
-                std::fs::canonicalize(&current).unwrap_or(current)
-            }
+            None => startup_exe()?,
         };
 
         let content = generate_desktop_entry(&exe_path, extra_args);
@@ -227,7 +161,8 @@ mod tests {
 
     #[test]
     fn test_enable_disable_autostart_lifecycle() {
-        let temp_dir = std::env::temp_dir().join(format!("vrtfido_autostart_test_{}", std::process::id()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("vrtfido_autostart_test_{}", std::process::id()));
         let desktop_file = temp_dir.join(AUTOSTART_DESKTOP_FILENAME);
 
         // Ensure clean state

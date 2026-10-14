@@ -6,7 +6,12 @@ set -euo pipefail
 #
 #   extensions -> build-extension.sh (Chrome + Firefox + Safari)
 #   android    -> build-android.sh (release APK)
-#   linux      -> build-cross.sh  (gnu packages with the GTK window, static musl packages)
+#   linux      -> build-cross.sh  (gnu packages with the prompt window, static musl packages)
+#
+# The macOS and Windows packages are not built here: they need their own operating system
+# (the Apple SDK may not be used off Apple hardware, and the MSVC targets need a Windows C
+# toolchain), so each of those four archives is built once on the machine it targets - the
+# commands and the file names to use are in release-build.md.
 #
 # Every step stages its own publish-ready files in releases/, so when this command
 # finishes that single directory holds the whole release set. Each step prepares

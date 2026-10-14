@@ -121,6 +121,25 @@ static USB_CONTEXT_AVAILABLE: std::sync::LazyLock<bool> = std::sync::LazyLock::n
     }
 });
 
+/// The step that can only fail for host-specific reasons, so the message carries the fix
+/// instead of leaving the operator with a bare libusb error code.
+fn claim_interface_hint() -> &'static str {
+    #[cfg(windows)]
+    {
+        " (on Windows libusb can only claim a device that is bound to WinUSB: rebind 3274:8012 \
+         to the WinUSB driver - Zadig, or the .inf shipped with the release - then replug it)"
+    }
+    #[cfg(target_os = "macos")]
+    {
+        " (on macOS the interface is held by a kernel driver or another process: quit anything \
+         else using the sensor and replug it)"
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        ""
+    }
+}
+
 #[derive(Clone)]
 pub struct UsbSensor {
     inner: Arc<Mutex<Option<DeviceHandle<GlobalContext>>>>,
@@ -228,6 +247,13 @@ impl UsbSensor {
         self.enroll_progress.lock().clone()
     }
 
+    /// Opens the dongle and claims its interface, retrying is the caller's job.
+    ///
+    /// Claiming is the one step that differs per host: on Linux the interface may be held by
+    /// the kernel driver (`uhid`/`usbfs`), which libusb can detach; on macOS libusb can seize
+    /// it the same way; on Windows libusb has no such call and can only claim a device whose
+    /// driver *is* WinUSB, so a dongle bound to its original driver fails here with "access
+    /// denied" no matter what this code does. The failure message therefore carries the fix.
     pub fn try_connect(&self) -> Result<(), String> {
         if !*USB_CONTEXT_AVAILABLE {
             return Err("this host has no USB context".to_string());
@@ -257,7 +283,9 @@ impl UsbSensor {
             }
         }
 
-        handle.claim_interface(0).map_err(|e| format!("Failed to claim interface 0: {}", e))?;
+        handle
+            .claim_interface(0)
+            .map_err(|e| format!("Failed to claim interface 0: {}{}", e, claim_interface_hint()))?;
 
         // The chip only reports touches after it answered this handshake, so arm it on every
         // (re)connect. The confirmation is drained here and the reply is not required: a

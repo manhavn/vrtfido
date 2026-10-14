@@ -1,19 +1,22 @@
-//! Entry point for `vrtfido-gui`, the GTK verification window.
+//! Entry point for `vrtfido-gui`, the VrtFido prompt window.
 //!
-//! The window is a separate process on purpose: the daemon binary then links no GTK at
-//! all, so one package runs on a desktop (the window appears) and on a headless server
-//! (this client exits at once and the daemon logs that the window is unavailable). It
-//! talks to the daemon over its local HTTP API, the same one the Web CMS uses.
+//! The window is a separate process on purpose: the daemon binary then links no windowing stack
+//! at all, so one package runs on a desktop (the window appears) and on a headless server (this
+//! client exits at once and the daemon logs that the window is unavailable). It talks to the
+//! daemon over its local HTTP API, the same one the Web CMS uses.
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
     if args.iter().any(|a| a == "--help" || a == "-h") {
-        println!("Usage: vrtfido-gui [--host <HOST>] [--port <PORT>]");
+        println!("Usage: vrtfido-gui [--host <HOST>] [--port <PORT>] [--no-tray]");
         println!();
         println!("Renders the VrtFido verification window and drives it through the daemon's");
         println!("local API (default 127.0.0.1:10209). The daemon starts this client itself,");
         println!("so running it by hand is only useful for debugging.");
+        println!();
+        println!("  --no-tray   Do not add the menu-bar / notification-area icon (macOS and");
+        println!("              Windows; the daemon passes this on when it runs with --no-tray).");
         return;
     }
 
@@ -21,8 +24,11 @@ fn main() {
     let port = value_of(&args, "--port")
         .and_then(|value| value.parse::<u16>().ok())
         .unwrap_or(10209);
+    // The daemon owns the system tray on Linux, so the flag only reaches this process on the
+    // platforms whose tray icon lives in the window (see `src/gui.rs`).
+    let tray = !args.iter().any(|a| a == "--no-tray");
 
-    std::process::exit(vrtfido::gui::run(&host, port));
+    std::process::exit(vrtfido::gui::run(&host, port, tray));
 }
 
 fn value_of(args: &[String], flag: &str) -> Option<String> {

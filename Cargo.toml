@@ -1,6 +1,6 @@
 [package]
 name = "vrtfido"
-version = "0.3.5"
+version = "0.3.6"
 edition = "2021"
 
 [lib]
@@ -12,8 +12,9 @@ crate-type = ["lib", "cdylib"]
 name = "vrtfido"
 path = "src/main.rs"
 
-# The GTK prompt window runs in its own process so the daemon binary never links
-# GTK: a host without the GTK3 runtime keeps working, the window simply never starts.
+# The prompt window runs in its own process so the daemon binary never links the windowing
+# stack: a host without a display or an OpenGL driver keeps working, the window simply never
+# starts.
 [[bin]]
 name = "vrtfido-gui"
 path = "src/gui_main.rs"
@@ -43,15 +44,52 @@ ksni = "0.3.6"
 open = "5.4.4"
 base64 = "0.22"
 jni = { version = "0.21", optional = true }
-# GTK3 is used by the desktop GUI module alone. Android and musl targets have no GTK to
-# link against, so it stays behind the `gui` feature, which the `gnu` packages built by
-# build-cross.sh enable; every other build compiles the library without it.
-gtk = { version = "0.19.0", optional = true }
-# The GTK client is a separate process that talks to the daemon over its local HTTP
-# API, so the `gui` feature pulls a small blocking HTTP client with it.
+# eframe draws through winit + OpenGL/EGL and ships its own fonts and widgets: the client
+# process then needs no toolkit development package at build time and no toolkit runtime on
+# any of the release targets, so one source tree produces the window for all of them. The
+# default feature set is not used because it selects the wgpu renderer, which drags in a
+# whole GPU abstraction stack for a three-widget dialog; `glow` (OpenGL 3.3 / GLES 3.0) is
+# enough and still gets a surface on every desktop these packages target. The renderer
+# stays behind the `gui` feature because the daemon binary must not link a windowing stack:
+# a headless host then runs without one, and Android builds skip it.
+eframe = { version = "0.36.2", optional = true, default-features = false, features = [
+    "accesskit",
+    "default_fonts",
+    "glow",
+    "wayland",
+    "x11",
+] }
+# The prompt-window client is a separate process that talks to the daemon over its local
+# HTTP API, so the `gui` feature pulls a small blocking HTTP client with it.
 ureq = { version = "2", optional = true, features = ["json"] }
+
+# Menu-bar (macOS) / notification-area (Windows) icon. Both platforms render the icon
+# inside the prompt-window process, whose winit event loop owns the main thread those
+# APIs require; Linux keeps the daemon-side `ksni` item, which needs no window at all.
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+tray-icon = "0.26.1"
+# `tray_icon::Icon` takes raw RGBA, so the PNG shipped in the release has to be decoded
+# first; the decoder stays target-gated because the Linux tray path feeds ksni directly.
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+
+# Naming winit is the only way to reach `EventLoopBuilderExtMacOS::with_activation_policy`:
+# eframe exposes the event-loop builder hook but not the trait, and a bare unbundled binary
+# otherwise claims a Dock slot for a dialog. The version matches eframe's own requirement, so
+# this unifies with the crate eframe already links rather than adding a second copy.
+[target.'cfg(target_os = "macos")'.dependencies]
+winit = { version = "0.30.13", default-features = false, features = ["rwh_06"] }
+
+# Autostart on Windows is the HKCU "Run" key; on Linux it stays the FreeDesktop
+# `~/.config/autostart` entry and on macOS a per-user LaunchAgent property list.
+[target.'cfg(windows)'.dependencies]
+winreg = "0.56.0"
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Threading",
+] }
 
 [features]
 default = []
 jni-bridge = ["dep:jni"]
-gui = ["dep:gtk", "dep:ureq"]
+gui = ["dep:eframe", "dep:ureq"]

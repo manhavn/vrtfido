@@ -115,7 +115,7 @@ Safari packages Web Extensions inside a native macOS/iOS application wrapper via
 ```bash
 ./publish-firefox.sh             # hỏi lần lượt: kênh, version, license, API key -> ký -> public
 ./publish-firefox.sh --dry-run   # build + lint, KHÔNG gọi AMO
-./publish-firefox.sh --channel unlisted --version 0.3.5 --yes   # không tương tác
+./publish-firefox.sh --channel unlisted --version 0.3.6 --yes   # không tương tác
 ```
 
 The script verifies the toolchain, asks for the channel (`listed` = public AMO listing, `unlisted` = signed `.xpi` you host), optionally bumps the version, runs `build-firefox.sh` (which enforces addons-linter), prompts for the AMO license (listed only) and API key/secret (offer to cache them under `~/.config/vrtfido/amo.env`, `chmod 600`), signs, and finally publishes (AMO submission for `listed`; GitHub Release via `gh` when available for `unlisted`). The manual steps below are what it automates.

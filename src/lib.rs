@@ -1,8 +1,12 @@
 pub mod autostart;
 pub mod db;
 pub mod passkey;
+pub mod platform;
 pub mod security;
 pub mod sensor;
+// Linux/Android only: the StatusNotifier item needs D-Bus, and the two udev helpers below
+// configure `/dev/uhid`. The macOS and Windows tray icon is owned by the prompt window.
+#[cfg(any(target_os = "linux", target_os = "android"))]
 pub mod tray;
 pub mod web;
 #[cfg(feature = "gui")]
@@ -409,70 +413,78 @@ pub mod jni_bridge {
     }
 }
 
-use std::fs::OpenOptions;
-use std::path::Path;
-use std::process::Command;
+/// The two udev helpers the tray uses when "Start with the system" is turned on. Both are
+/// meaningless off Linux: there is no /dev/uhid node, no module-load entry and no udev rule
+/// to write, so the whole block disappears from a Windows or macOS build.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+mod uhid_udev {
+    use std::fs::OpenOptions;
+    use std::path::Path;
+    use std::process::Command;
 
-/// Checks whether permanent udev and module-load configurations exist for /dev/uhid.
-pub fn has_permanent_uhid_rule() -> bool {
-    Path::new("/etc/udev/rules.d/99-uhid.rules").exists()
-        && Path::new("/etc/modules-load.d/uhid.conf").exists()
-}
+    /// Checks whether permanent udev and module-load configurations exist for /dev/uhid.
+    pub fn has_permanent_uhid_rule() -> bool {
+        Path::new("/etc/udev/rules.d/99-uhid.rules").exists()
+            && Path::new("/etc/modules-load.d/uhid.conf").exists()
+    }
 
-/// Execute elevated commands to permanently configure /dev/uhid udev rule,
-/// load kernel module at boot, and set permissions for the current session.
-pub fn ensure_permanent_uhid_permission() -> bool {
-    println!("[UHID] [*] Requesting permission to configure permanent /dev/uhid udev rule...");
+    /// Execute elevated commands to permanently configure /dev/uhid udev rule,
+    /// load kernel module at boot, and set permissions for the current session.
+    pub fn ensure_permanent_uhid_permission() -> bool {
+        println!("[UHID] [*] Requesting permission to configure permanent /dev/uhid udev rule...");
 
-    let cmd_str = "mkdir -p /etc/modules-load.d /etc/udev/rules.d && \
-                   echo 'uhid' > /etc/modules-load.d/uhid.conf && \
-                   echo 'KERNEL==\"uhid\", MODE=\"0666\"' > /etc/udev/rules.d/99-uhid.rules && \
-                   modprobe uhid 2>/dev/null || true; \
-                   chmod 666 /dev/uhid 2>/dev/null || true; \
-                   udevadm control --reload-rules 2>/dev/null || true; \
-                   udevadm trigger 2>/dev/null || true";
+        let cmd_str = "mkdir -p /etc/modules-load.d /etc/udev/rules.d && \
+                       echo 'uhid' > /etc/modules-load.d/uhid.conf && \
+                       echo 'KERNEL==\"uhid\", MODE=\"0666\"' > /etc/udev/rules.d/99-uhid.rules && \
+                       modprobe uhid 2>/dev/null || true; \
+                       chmod 666 /dev/uhid 2>/dev/null || true; \
+                       udevadm control --reload-rules 2>/dev/null || true; \
+                       udevadm trigger 2>/dev/null || true";
 
-    // 1. Try sudo (works well in terminal)
-    let sudo_status = Command::new("sudo")
-        .args(["sh", "-c", cmd_str])
-        .status();
-
-    let mut success = match sudo_status {
-        Ok(s) if s.success() => true,
-        _ => false,
-    };
-
-    // 2. If sudo fails or running in GUI environment (no TTY), try graphical elevation
-    if !success && (std::env::var("DISPLAY").is_ok() || std::env::var("WAYLAND_DISPLAY").is_ok()) {
-        if let Ok(pk_status) = Command::new("pkexec")
+        // 1. Try sudo (works well in terminal)
+        let sudo_status = Command::new("sudo")
             .args(["sh", "-c", cmd_str])
-            .status()
-        {
-            if pk_status.success() {
-                success = true;
-            }
-        }
+            .status();
 
-        if !success && Command::new("which").arg("zenity").output().map(|o| o.status.success()).unwrap_or(false) {
-            let zenity_cmd = format!(
-                "zenity --password --title=\"vrtfido - Cấp quyền /dev/uhid vĩnh viễn\" | sudo -S sh -c '{}'",
-                cmd_str
-            );
-            if let Ok(z_status) = Command::new("sh").args(["-c", &zenity_cmd]).status() {
-                if z_status.success() {
+        let mut success = match sudo_status {
+            Ok(s) if s.success() => true,
+            _ => false,
+        };
+
+        // 2. If sudo fails or running in GUI environment (no TTY), try graphical elevation
+        if !success && (std::env::var("DISPLAY").is_ok() || std::env::var("WAYLAND_DISPLAY").is_ok()) {
+            if let Ok(pk_status) = Command::new("pkexec")
+                .args(["sh", "-c", cmd_str])
+                .status()
+            {
+                if pk_status.success() {
                     success = true;
                 }
             }
-        }
-    }
 
-    if success {
-        if OpenOptions::new().read(true).write(true).open("/dev/uhid").is_ok() {
-            println!("[UHID] [+] Granted permanent /dev/uhid access permission successfully!");
-            return true;
+            if !success && Command::new("which").arg("zenity").output().map(|o| o.status.success()).unwrap_or(false) {
+                let zenity_cmd = format!(
+                    "zenity --password --title=\"vrtfido - Cấp quyền /dev/uhid vĩnh viễn\" | sudo -S sh -c '{}'",
+                    cmd_str
+                );
+                if let Ok(z_status) = Command::new("sh").args(["-c", &zenity_cmd]).status() {
+                    if z_status.success() {
+                        success = true;
+                    }
+                }
+            }
         }
-    }
 
-    eprintln!("[UHID] [-] Failed to automatically acquire permanent /dev/uhid permission.");
-    false
+        if success {
+            if OpenOptions::new().read(true).write(true).open("/dev/uhid").is_ok() {
+                println!("[UHID] [+] Granted permanent /dev/uhid access permission successfully!");
+                return true;
+            }
+        }
+
+        eprintln!("[UHID] [-] Failed to automatically acquire permanent /dev/uhid permission.");
+        false
+    }
 }
+#[cfg(any(target_os = "linux", target_os = "android"))]
+pub use uhid_udev::{ensure_permanent_uhid_permission, has_permanent_uhid_rule};

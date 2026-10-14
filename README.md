@@ -1,6 +1,6 @@
 # VrtFido
 
-**VrtFido** is a **Virtual FIDO2 / WebAuthn Authenticator** hardware emulator running on Linux through the kernel character device `/dev/uhid`.
+**VrtFido** is a **Virtual FIDO2 / WebAuthn Authenticator** hardware emulator for **Linux, macOS and Windows**. On Linux it presents itself to browsers as a real USB security key through the kernel character device `/dev/uhid`; on macOS and Windows it runs as the daemon, the Web CMS and the prompt window, without a virtual device (see **Platform support** under the installation section).
 
 The application includes an embedded **Web CMS Dashboard** on port **10209**, supports multiple database backends (**SQLite**, **PostgreSQL**, **LibSQL/Turso**, **MySQL**, **MariaDB**, **MongoDB**), features **100% Data Export / Import to JSON** for migration, and supports multi-factor authentication policies (6-digit passkey PIN, hardware USB fingerprint sensor management, and future biometric modalities).
 
@@ -47,12 +47,12 @@ The application includes an embedded **Web CMS Dashboard** on port **10209**, su
    - Export and Import 100% of data (Credentials, PIN, Fingerprints, Audit Logs, Debug Logs) to a single JSON file.
    - Integrated REST API endpoints `/api/database/export` and `/api/database/import`.
 
-7. **System Tray & Autostart (FreeDesktop / KDE / GNOME):**
+7. **System Tray & Autostart:**
    - Integrated system tray icon with direct access to the Web CMS Dashboard.
    - Click the tray icon or select **Dashboard** from the tray menu to open your default browser.
-   - Toggle **Start with the system** directly in the tray menu (with checkmark status) to enable or disable automatic startup upon system login (`~/.config/autostart/vrtfido.desktop`).
+   - Toggle **Start with the system** directly in the tray menu (with checkmark status) to enable or disable automatic startup upon system login — `~/.config/autostart/vrtfido.desktop` on Linux, `~/Library/LaunchAgents/dev.vrtfido.daemon.plist` on macOS, `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` on Windows.
    - Option `--no-tray` to disable system tray on headless/server systems.
-   - The native GTK verification window ships as the companion binary `vrtfido-gui`, which the daemon starts by itself: a machine that can run GTK shows the window, a headless VPS keeps running without it (the Web CMS prompt modal still works). No flag is needed — GTK is never a startup requirement of the daemon.
+   - The native verification window ships as the companion binary `vrtfido-gui`, an egui/eframe process that renders on its own (winit + OpenGL/EGL, own fonts and widgets) and needs no system toolkit installed. The daemon starts it by itself and it talks to the daemon over the same local API as the Web CMS: a headless VPS keeps running without it (the Web CMS prompt modal still works), and no flag is needed anywhere. On macOS and Windows the tray icon lives in this process, because the menu-bar and notification-area APIs there require the event loop that owns the main thread; on Linux the tray item stays in the daemon.
 
 8. **Android System Passkey Provider (Android 14+):**
    - Acts as a system-level Passkey / Credential Provider via Android Credential Manager API.
@@ -65,7 +65,7 @@ The application includes an embedded **Web CMS Dashboard** on port **10209**, su
 
 ### 1. Install via [mise](https://mise.jdx.dev/) (Recommended)
 
-You can install and update the `vrtfido` binary directly from GitHub Releases on any Linux machine with `mise`:
+You can install and update the `vrtfido` binaries directly from GitHub Releases on **Linux, macOS and Windows** with `mise`:
 
 ```bash
 # Global install
@@ -85,9 +85,30 @@ Or add to your `mise.toml`:
 "github:manhavn/vrtfido" = "latest"
 ```
 
-### 2. Granting `/dev/uhid` Access Permissions
+`mise` reads the operating system, the CPU architecture and the C library from the file name, so the release assets carry them explicitly:
 
-The virtual FIDO2 device is **opt-in**: only a run started with `--uhid` opens `/dev/uhid`, and only then does VrtFido check the node and request elevated access via `sudo`/`pkexec` when it is not writable. A run without the flag serves the Web CMS only and never touches `/dev/uhid`, so it never prompts for a password.
+| Machine | Asset |
+|---|---|
+| Linux x86_64 (glibc) | `vrtfido-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux aarch64 (glibc) | `vrtfido-aarch64-unknown-linux-gnu.tar.gz` |
+| Linux x86_64 (musl) | `vrtfido-x86_64-unknown-linux-musl.tar.gz` |
+| Linux aarch64 (musl) | `vrtfido-aarch64-unknown-linux-musl.tar.gz` |
+| macOS Intel | `vrtfido-x86_64-apple-darwin.tar.gz` |
+| macOS Apple silicon | `vrtfido-aarch64-apple-darwin.tar.gz` |
+| Windows x86_64 | `vrtfido-x86_64-pc-windows-msvc.zip` |
+| Windows arm64 | `vrtfido-aarch64-pc-windows-msvc.zip` |
+
+Every archive unpacks to binaries at its root: `vrtfido` (the daemon) plus `vrtfido-gui` (the prompt window, `.exe` on Windows) in the `gnu`, macOS and Windows archives, and the statically linked daemon alone in the `musl` ones. Each archive is published together with its `<archive>.sha256` checksum. The Linux archives are built by `build-cross.sh`, the macOS and Windows ones on their own machines; see [release-build.md](release-build.md).
+
+**Platform support**
+
+- **Linux** — everything: the daemon, the Web CMS on port **10209**, PIN and passkey management, the fingerprint sensor, the tray icon, the `vrtfido-gui` prompt window, and the virtual FIDO2 USB key that `--uhid` creates on `/dev/uhid`.
+- **macOS** and **Windows** — the daemon, the Web CMS on port **10209**, PIN and passkey management, fingerprint management, the tray icon and the `vrtfido-gui` prompt window. The USB sensor is driven through libusb, so on Windows the `3274:8012` dongle has to be bound to **WinUSB** first (Zadig can do that): its own driver claims the device and locks libusb out.
+- **No kernel virtual device on macOS or Windows.** `/dev/uhid` has no equivalent on those systems, and publishing a virtual USB HID authenticator there requires a signed kernel driver — which a `mise` install can neither ship nor install. Browsers on macOS and Windows can still be served by the bundled browser extension, which talks to the daemon over its local API and shows the passkey prompt itself.
+
+### 2. Granting `/dev/uhid` Access Permissions (Linux)
+
+On Linux, the virtual FIDO2 device is **opt-in**: only a run started with `--uhid` opens `/dev/uhid`, and only then does VrtFido check the node and request elevated access via `sudo`/`pkexec` when it is not writable. A run without the flag serves the Web CMS only and never touches `/dev/uhid`, so it never prompts for a password. macOS and Windows have no such device and need no step here.
 
 To configure a permanent udev rule (avoiding password prompts):
 
@@ -101,6 +122,10 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 ```bash
 # Build release binary
 cargo build --release
+
+# Build the daemon plus the prompt window (`gui` adds the `vrtfido-gui` binary; this is
+# what the release archives do):
+cargo build --release --features gui
 
 # Run normally (default 10 fingerprints limit)
 ./target/release/vrtfido
@@ -140,12 +165,23 @@ tail -f /tmp/vrtfido.log
 ./target/release/vrtfido --uhid --google-aaguid
 ```
 
-### 4. Local Cross-Compilation for GitHub Releases
+### 4. Release Builds
 
-The repository includes `build-cross.sh` (using `cargo-zigbuild`) to compile release binaries across architectures (x86_64 GNU/musl, aarch64 GNU/musl) locally:
+Release targets are built with `--features gui` — that feature adds the `vrtfido-gui` prompt-window binary next to the daemon, so one archive serves the desktop — except the static `musl` archives, which stay CLI-only.
+
+**macOS and Windows are built on their own machines.** The four assets a Linux host cannot produce — the Apple SDK may not be used off Apple hardware, and the MSVC targets need a Windows C toolchain for the C code that the bundled SQLite and the vendored libusb compile — come from a `cargo build --release --features gui --target <triple>` on the matching OS, packaged as `vrtfido-<triple>.tar.gz` on macOS or `.zip` on Windows with both binaries at the root of the archive and a `<archive>.sha256` beside it. The exact commands are in [release-build.md](release-build.md). The asset names are fixed, because `mise` picks an archive by the OS and CPU it reads in that name:
+
+| Target | Asset |
+|---|---|
+| `x86_64-apple-darwin` | `vrtfido-x86_64-apple-darwin.tar.gz` |
+| `aarch64-apple-darwin` | `vrtfido-aarch64-apple-darwin.tar.gz` |
+| `x86_64-pc-windows-msvc` | `vrtfido-x86_64-pc-windows-msvc.zip` |
+| `aarch64-pc-windows-msvc` | `vrtfido-aarch64-pc-windows-msvc.zip` |
+
+**Linux comes from the local script.** The repository includes `build-cross.sh` (using `cargo-zigbuild`) to compile release binaries across architectures (x86_64 GNU/musl, aarch64 GNU/musl) locally:
 
 ```bash
-# Install cross-build prerequisites:
+# Cross-build prerequisites (the script installs both itself when they are missing):
 cargo install cargo-zigbuild --locked
 mise use -g zig
 
@@ -162,14 +198,14 @@ Release packages (`.tar.gz`) and checksums (`.sha256`) are moved into `releases/
 - `vrtfido-aarch64-unknown-linux-gnu.tar.gz`
 - `vrtfido-aarch64-unknown-linux-musl.tar.gz`
 
-The `gnu` archives carry the GTK window as well, and `build-cross.sh` makes them inside a container, so the host needs no GTK3 development files at all:
+The `gnu` archives carry the prompt window and the `musl` archives do not, so one run serves both a desktop and a server:
 
-- `vrtfido-<target>.tar.gz` (`gnu`): `vrtfido` (daemon, links no GTK) plus `vrtfido-gui` (the GTK window)
+- `vrtfido-<target>.tar.gz` (`gnu`): `vrtfido` (daemon) plus `vrtfido-gui` (the prompt window)
 - `vrtfido-<target>.tar.gz` (`musl`): `vrtfido` only, statically linked
 
-That container image is why the `gnu` targets need a working `podman` or `docker`, installed from your distribution's package manager — a podman installed through mise is a client-only build and cannot run a local daemon, and the script prints the right command for your OS when the engine is missing. The `musl` targets need nothing beyond zig, so `TARGETS=x86_64-unknown-linux-musl ./build-cross.sh` still works on a machine without a container engine. Missing CLI tools (rust, zig, cargo-zigbuild) are installed through [mise](https://mise.jdx.dev/) whenever its registry ships them.
+All four are cross-built by cargo-zigbuild, whose zig brings its own C compiler for the bundled SQLite and the vendored libusb, so the host needs neither a container engine nor a cross toolchain nor any foreign development package: `zig` and `cargo-zigbuild` are the only prerequisites, and the script installs both itself through [mise](https://mise.jdx.dev/) when they are missing. The `gnu` packages pin an explicit glibc floor (`GLIBC_FLOOR`, default `2.17` — e.g. `GLIBC_FLOOR=2.28 ./build-cross.sh`), because linking against whatever the build machine happens to ship silently raises the minimum libc every user needs.
 
-The daemon starts the window itself and falls back to headless mode whenever the host cannot run it — no GTK3 runtime, no display, or a failed start — so one archive serves a desktop laptop and a headless VPS with no flag and no per-machine configuration. Installing `libgtk-3-0` is only what a machine needs to actually get the window.
+The daemon starts the window itself and falls back to headless mode whenever the host cannot run it — no display, or a failed start — so one archive serves a desktop laptop and a headless VPS with no flag and no per-machine configuration. The window is self-contained as far as toolkits go: `vrtfido-gui` draws through egui/eframe (winit + OpenGL 3.3 / GLES 3.0) and ships its own fonts and widgets, so no GTK or Qt has to be present, and it can also be started by hand for debugging. What it does need at runtime is a display, a GL driver, and `libxkbcommon` (both Wayland and X11) — plus `libxkbcommon-x11` on an X11 session, which every X11 desktop already has. When one of those is missing the daemon says so and keeps running headless.
 
 Every release package (browser extensions, Android APK, CLI and GUI) can be built with a single command instead:
 

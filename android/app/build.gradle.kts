@@ -11,8 +11,10 @@ android {
         applicationId = "com.vrtfido"
         minSdk = 28
         targetSdk = 35
-        versionCode = 19
-        versionName = "0.3.5"
+        // Android rejects an APK that keeps the versionCode of an installed one, so the integer
+        // follows the name: 20 pairs with 0.3.6.
+        versionCode = 20
+        versionName = "0.3.6"
 
         ndk {
             abiFilters += listOf("arm64-v8a", "x86_64")

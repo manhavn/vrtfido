@@ -51,6 +51,10 @@ pub struct PendingPrompt {
 #[derive(Clone, Debug)]
 pub struct VerificationSuccess {
     pub method: String,
+    /// Which account the operator picked, when the request needed a choice. Only the Linux
+    /// virtual-device path reads it, to answer the CTAP2 request; the Windows and macOS builds
+    /// carry the field for the shared API but have no kernel authenticator to answer with.
+    #[cfg_attr(not(any(target_os = "linux", target_os = "android")), allow(dead_code))]
     pub selected_credential_id: Option<String>,
 }
 
@@ -768,7 +772,7 @@ mod prompt_tests {
     }
 
     /// Polls until the request is registered: the engine stores it before the requester starts
-    /// waiting, and both UI surfaces (Web CMS and GTK client) read it through this query.
+    /// waiting, and both UI surfaces (Web CMS and prompt window) read it through this query.
     async fn wait_for_prompt(security: &SecurityEngine) -> PendingPrompt {
         for _ in 0..100 {
             if let Some(prompt) = security.get_pending_prompt() {
@@ -868,7 +872,7 @@ mod prompt_tests {
         assert!(res.unwrap_err().contains("Dismissed by user"));
     }
 
-    /// A request served while another surface (Web CMS or GTK client) follows it: the pending
+    /// A request served while another surface (Web CMS or prompt window) follows it: the pending
     /// query, the "remember" toggle and the approval all have to agree.
     #[tokio::test]
     async fn test_parallel_web_and_gui_sync() {
@@ -884,7 +888,7 @@ mod prompt_tests {
                 .await
         });
 
-        // The query the Web CMS and the GTK client poll (/api/verify/pending).
+        // The query the Web CMS and the prompt window poll (/api/verify/pending).
         let prompt = wait_for_prompt(&security).await;
         let req_id = prompt.request_id;
         assert_eq!(prompt.rp_id, "login.github.com");
