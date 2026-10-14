@@ -8,10 +8,9 @@ set -euo pipefail
 #   android    -> build-android.sh (release APK)
 #   linux      -> build-cross.sh  (gnu packages with the prompt window, static musl packages)
 #
-# The macOS and Windows packages are not built here: they need their own operating system
-# (the Apple SDK may not be used off Apple hardware, and the MSVC targets need a Windows C
-# toolchain), so each of those four archives is built once on the machine it targets - the
-# commands and the file names to use are in release-build.md.
+# The Windows packages are part of the linux step: build-cross.sh builds them here with
+# cargo-xwin. The macOS packages are the exception - no other host may use the Apple SDK - so
+# run build-cross.sh once on the Mac too and attach its two archives to the same tag.
 #
 # Every step stages its own publish-ready files in releases/, so when this command
 # finishes that single directory holds the whole release set. Each step prepares

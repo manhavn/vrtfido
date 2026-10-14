@@ -1,15 +1,32 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Standalone local release builder for vrtfido: every Linux package in one run. The `gnu`
-# archives carry the daemon plus the prompt window, the `musl` archives are static CLI-only,
-# and all four come out of cargo-zigbuild, so a run needs neither a container engine nor a
-# host toolchain for the second architecture. Missing tools are installed automatically and
-# the finished archives are moved from dist/packages/ into releases/.
+# Standalone local release builder for vrtfido: one run produces every package the machine it
+# runs on can contribute to the release. On Linux that is the four Linux archives plus the two
+# Windows ones; on macOS it is the two macOS ones (the Apple SDK may only be used on Apple
+# hardware, so no other host can build them).
+#
+# Linux: the `gnu` archives carry the daemon plus the prompt window and come out of
+# cargo-zigbuild, so neither a container engine nor a foreign toolchain is needed; the `musl`
+# archives are static CLI-only. The Windows packages are built with cargo-xwin, which needs
+# clang-cl, lld-link, llvm-lib and nasm - mise does not carry those, so they are installed
+# through the system package manager (apt/dnf/... with sudo). `*-pc-windows-gnu` and
+# `*-pc-windows-gnullvm` need nothing extra, because zig carries the whole toolchain, and they
+# are the fallback when no LLVM can be installed.
+#
+# macOS: the two `*-apple-darwin` packages are built natively, one for each architecture. What
+# has to be present is the Apple command line tools (clang + SDK headers), which the script
+# starts installing through `xcode-select --install` when they are missing; the Windows LLVM
+# packages would come from Homebrew if a windows-msvc target were requested on a Mac.
+#
+# Missing tools are installed automatically and the finished archives are moved from
+# dist/packages/ into releases/.
 #
 # Usage:
 #   ./build-cross.sh
 #   TARGETS=x86_64-unknown-linux-gnu,aarch64-unknown-linux-musl ./build-cross.sh
+#   TARGETS=x86_64-pc-windows-gnu ./build-cross.sh   # Windows without the LLVM/nasm install
+#   TARGETS=x86_64-unknown-linux-musl ./build-cross.sh   # on a Mac, to add Linux packages
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
@@ -21,11 +38,50 @@ fi
 
 PROJECT_NAME="vrtfido"
 BIN_NAME="vrtfido"
+# The script runs on Linux and on macOS, and the host decides what it can build and where its
+# extra packages come from: Linux produces the four Linux archives plus the two Windows ones,
+# a Mac produces the two macOS ones (the Apple SDK is only usable on Apple hardware) and can add
+# the other six through TARGETS=. A Windows shell (MSYS/Git Bash) is refused: it has neither the
+# package manager nor the toolchain this script drives.
+HOST_OS="$(uname -s)"
+case "$HOST_OS" in
+  Linux*) HOST_KIND="linux" ;;
+  Darwin*) HOST_KIND="macos" ;;
+  *)
+    echo "error: the release packages are built on Linux and macOS; $HOST_OS is not supported." >&2
+    echo "       Use WSL (Ubuntu) or a Linux/macOS machine." >&2
+    exit 1
+    ;;
+esac
+
+# Homebrew installs into /opt/homebrew (Apple silicon) or /usr/local (Intel), and an unattended
+# script does not inherit the login shell's PATH with them. They go at the end, so a Homebrew
+# tool can never shadow the system one; the keg-only LLVM is added separately, where it is used.
+if [[ "$HOST_KIND" == "macos" ]]; then
+  export PATH="$PATH:/opt/homebrew/bin:/usr/local/bin"
+fi
 # The prompt window is a second binary (`vrtfido-gui`) inside the `gnu` packages, so one
 # build produces the daemon and its window together. The static `musl` packages stay
 # CLI-only: they target servers and containers, where a window has no display to open on.
 GUI_BIN_NAME="vrtfido-gui"
-DEFAULT_TARGETS="x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu,x86_64-unknown-linux-musl,aarch64-unknown-linux-musl"
+LINUX_TARGETS="x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu,x86_64-unknown-linux-musl,aarch64-unknown-linux-musl"
+# x86_64 uses the MSVC ABI, which is the flavour mise prefers in a Windows asset name, and it
+# links the C runtime statically so the Visual C++ redistributable is not a prerequisite.
+# arm64 uses zig's toolchain instead: cargo-xwin hands the aarch64 target's C sources to clang in
+# GNU mode together with MSVC-style `/imsvc` include flags, which fails inside ring/libz-sys
+# (cargo-xwin 0.23.1), while gnullvm builds the same ARM64 binaries with no extra package.
+WINDOWS_TARGETS="x86_64-pc-windows-msvc,aarch64-pc-windows-gnullvm"
+MACOS_TARGETS="x86_64-apple-darwin,aarch64-apple-darwin"
+
+# The default is "what this machine can add to the release": both flavours of Linux plus the two
+# Windows packages on Linux, the two macOS packages on a Mac. TARGETS= replaces the list - a Mac
+# can also build the Linux and the Windows ones (zig and cargo-xwin run there too), and narrowing
+# it is how a Linux run avoids the MSVC toolchain install.
+if [[ "$HOST_KIND" == "macos" ]]; then
+  DEFAULT_TARGETS="$MACOS_TARGETS"
+else
+  DEFAULT_TARGETS="$LINUX_TARGETS,$WINDOWS_TARGETS"
+fi
 TARGETS_CSV="${TARGETS:-$DEFAULT_TARGETS}"
 
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -66,11 +122,16 @@ if ! have zig; then
 
   # Fallback to direct official binary download if still missing
   if ! have zig; then
+    # zig publishes per-host archives (linux-x86_64, linux-aarch64, macos-x86_64,
+    # macos-aarch64), while `uname -m` reports arm64 on Apple silicon.
     ARCH="$(uname -m)"
-    echo "[SETUP] Downloading official zig 0.13.0 binary for $ARCH..."
+    [[ "$ARCH" == "arm64" ]] && ARCH="aarch64"
+    ZIG_PLATFORM="linux"
+    [[ "$HOST_KIND" == "macos" ]] && ZIG_PLATFORM="macos"
+    echo "[SETUP] Downloading official zig 0.13.0 binary for $ZIG_PLATFORM-$ARCH..."
     mkdir -p "$HOME/.local/bin" "$HOME/.local/opt"
-    curl -sSL "https://ziglang.org/download/0.13.0/zig-linux-${ARCH}-0.13.0.tar.xz" | tar -xJ -C "$HOME/.local/opt/"
-    ln -sf "$HOME/.local/opt/zig-linux-${ARCH}-0.13.0/zig" "$HOME/.local/bin/zig"
+    curl -sSL "https://ziglang.org/download/0.13.0/zig-${ZIG_PLATFORM}-${ARCH}-0.13.0.tar.xz" | tar -xJ -C "$HOME/.local/opt/"
+    ln -sf "$HOME/.local/opt/zig-${ZIG_PLATFORM}-${ARCH}-0.13.0/zig" "$HOME/.local/bin/zig"
     export PATH="${HOME}/.local/bin:${PATH}"
   fi
 
@@ -95,6 +156,121 @@ if ! have cargo-zigbuild; then
 else
   echo "[SETUP] [+] Found cargo-zigbuild: $(cargo-zigbuild --version)"
 fi
+# 3. The Windows MSVC targets are compiled with cargo-xwin, which drives clang-cl, lld-link and
+#    llvm-lib from LLVM, and ring assembles its x86_64 backend with nasm. mise carries none of
+#    those four, so they come from the system package manager - apt/dnf/... with sudo on Linux
+#    (sudo is what prompts for the password), Homebrew on macOS. Everything here is skipped
+#    unless a windows-msvc target is being built, so a Linux-only run never asks for a package.
+MSVC_PACKAGES_LINUX="clang lld llvm nasm"
+MSVC_PACKAGES_MACOS="llvm nasm"
+msvc_tools_ready() {
+  have clang-cl && have lld-link && have llvm-lib && have nasm
+}
+
+# The Apple command line tools carry clang and the SDK headers, and `xcode-select --install` is
+# the only way to get them - a GUI installer, so the script starts it and stops there; the next
+# run finds the tools in place.
+ensure_macos_command_line_tools() {
+  xcode-select -p >/dev/null 2>&1 && return 0
+  echo "[SETUP] The Apple command line tools are missing: no clang, no SDK headers."
+  echo "[SETUP] Starting the installer; finish it and run this script again."
+  xcode-select --install 2>/dev/null || true
+  exit 1
+}
+
+install_system_packages() { # install_system_packages "pkg pkg ..."
+  local packages="$1" manager
+  if [[ "$HOST_KIND" == "macos" ]]; then
+    if ! have brew; then
+      # Homebrew is a multi-gigabyte, sometimes interactive system change, so the script prints
+      # its installer instead of running it.
+      echo "error: Homebrew is needed to install '$packages' on macOS." >&2
+      echo "       Install it, then run this script again:" >&2
+      echo '         /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"' >&2
+      exit 1
+    fi
+    brew install $packages
+    return $?
+  fi
+  for manager in apt-get dnf yum pacman zypper apk; do
+    have "$manager" || continue
+    case "$manager" in
+      apt-get) sudo apt-get update -qq && sudo apt-get install -y $packages ;;
+      dnf | yum) sudo "$manager" install -y $packages ;;
+      pacman) sudo pacman -S --noconfirm $packages ;;
+      zypper) sudo zypper --non-interactive install $packages ;;
+      apk) sudo apk add $packages ;;
+    esac
+    return $?
+  done
+  return 1
+}
+
+# Several distributions ship the LLVM tools only under versioned names (llvm-lib-18,
+# /usr/lib/llvm-18/bin/lld-link) and Homebrew keeps LLVM in a keg outside PATH, while cargo-xwin
+# and the C compilers look for the bare names. Link whatever is missing into ~/.local/bin. clang
+# can act as clang-cl - the driver is chosen by the program name - so a box whose clang has no
+# clang-cl entry point gets one the same way.
+link_missing_msvc_tools() {
+  local tool path llvm_bin=""
+  mkdir -p "$HOME/.local/bin"
+  if have brew; then
+    llvm_bin="$(brew --prefix llvm 2>/dev/null)/bin"
+    if [[ -d "$llvm_bin" ]]; then
+      export PATH="$llvm_bin:$PATH"
+    fi
+  fi
+  for tool in llvm-lib lld-link clang-cl; do
+    have "$tool" && continue
+    if [[ -n "$llvm_bin" && -x "$llvm_bin/$tool" ]]; then
+      ln -sf "$llvm_bin/$tool" "$HOME/.local/bin/$tool"
+      continue
+    fi
+    # Linux packages keep the versioned LLVM trees under /usr/lib/llvm-*; `sort -V` is GNU-only,
+    # so it is used here and nowhere a Mac run reaches.
+    path="$(ls -d /usr/lib/llvm-*/bin 2>/dev/null | sort -V | tail -1)"
+    [[ -n "$path" && -x "$path/$tool" ]] && ln -sf "$path/$tool" "$HOME/.local/bin/$tool"
+  done
+  if ! have clang-cl && have clang; then
+    ln -sf "$(command -v clang)" "$HOME/.local/bin/clang-cl"
+  fi
+}
+
+ensure_windows_msvc_toolchain() {
+  if ! msvc_tools_ready; then
+    local packages="$MSVC_PACKAGES_LINUX"
+    [[ "$HOST_KIND" == "macos" ]] && packages="$MSVC_PACKAGES_MACOS"
+    echo "[SETUP] The windows-msvc targets need clang-cl, lld-link, llvm-lib and nasm."
+    echo "[SETUP] Installing what is missing with the system package manager: $packages"
+    if ! install_system_packages "$packages"; then
+      echo "error: could not install '$packages' automatically." >&2
+      echo "       Install them and run this script again:" >&2
+      if [[ "$HOST_KIND" == "macos" ]]; then
+        echo "         brew install $packages" >&2
+      else
+        echo "         sudo apt install -y $packages   (or: sudo dnf install -y $packages)" >&2
+      fi
+      echo "       Or build the same two targets without extra tooling:" >&2
+      echo "         TARGETS=x86_64-pc-windows-gnu,aarch64-pc-windows-gnullvm ./build-cross.sh" >&2
+      exit 1
+    fi
+    link_missing_msvc_tools
+    if ! msvc_tools_ready; then
+      echo "error: '$packages' are installed, but clang-cl, lld-link, llvm-lib and nasm are still not on PATH." >&2
+      exit 1
+    fi
+    echo "[SETUP] [+] MSVC toolchain ready: clang-cl, lld-link, llvm-lib, nasm"
+  fi
+
+  if ! have cargo-xwin; then
+    echo "[SETUP] 'cargo-xwin' not found. Installing automatically..."
+    cargo install cargo-xwin --locked
+    export PATH="${HOME}/.cargo/bin:${PATH}"
+    have cargo-xwin || { echo "error: Failed to install cargo-xwin automatically." >&2; exit 1; }
+    echo "[SETUP] [+] Successfully installed cargo-xwin"
+  fi
+}
+
 IFS=',' read -r -a BUILD_TARGETS <<< "$TARGETS_CSV"
 
 # releases/ holds only finished packages. Every target that is about to be rebuilt
@@ -105,7 +281,8 @@ mkdir -p "$ROOT/dist/packages" "$RELEASES"
 for target in "${BUILD_TARGETS[@]}"; do
   target="$(echo "$target" | xargs)"
   [[ -n "$target" ]] || continue
-  rm -f "$RELEASES/${PROJECT_NAME}-${target}.tar.gz" "$RELEASES/${PROJECT_NAME}-${target}.tar.gz.sha256"
+  rm -f "$RELEASES/${PROJECT_NAME}-${target}.tar.gz" "$RELEASES/${PROJECT_NAME}-${target}.tar.gz.sha256" \
+        "$RELEASES/${PROJECT_NAME}-${target}.zip" "$RELEASES/${PROJECT_NAME}-${target}.zip.sha256"
 done
 
 # rustc links every artifact with -Wl,-O1 and the lld that zig ships deprecates that value, so each
@@ -135,6 +312,48 @@ for target in "${BUILD_TARGETS[@]}"; do
   rustup target add "$target" >/dev/null 2>&1 || true
 
   case "$target" in
+    *apple-ios*)
+      # An iOS app is a separate project (a credential provider extension), not another row in
+      # this list: no part of the daemon's model - kernel device, local HTTP CMS, autostart -
+      # survives on iOS.
+      echo "error: $target is not part of this release; an iOS app would be a separate project." >&2
+      exit 1
+      ;;
+    *apple-darwin*)
+      if [[ "$HOST_KIND" != "macos" ]]; then
+        # A deliberate refusal instead of a confusing link error late in the build: these targets
+        # need the Apple SDK, which may only be used on Apple hardware.
+        echo "error: $target can only be built on macOS: it needs the Apple SDK, which may not be used off Apple hardware." >&2
+        echo "       Run this script on the Mac, or narrow TARGETS to what this host can build." >&2
+        exit 1
+      fi
+      # A native build: Xcode carries the SDK for both architectures, so one Mac produces the
+      # Intel and the Apple silicon package, with only `rustup target add` (done above) for the
+      # other one.
+      ensure_macos_command_line_tools
+      export RUSTFLAGS="$CROSS_RUSTFLAGS"
+      cargo build --release --features gui --target "$target"
+      ;;
+    *windows*msvc*)
+      # The MSVC ABI is what the Windows release archives carry, because mise prefers it when it
+      # picks an asset there. cargo-xwin downloads the Microsoft CRT and the Windows SDK headers
+      # and libraries once (into ~/.cache/cargo-xwin) and drives clang-cl + lld-link with them.
+      ensure_windows_msvc_toolchain
+      # The C runtime is linked statically: without +crt-static the binaries import
+      # VCRUNTIME140.dll, which would make the Visual C++ redistributable a prerequisite on every
+      # machine that installs the daemon with mise. The flag goes into RUSTFLAGS rather than into
+      # this target's own variable, because cargo-xwin merges RUSTFLAGS into the flags it hands to
+      # the target - and because a set RUSTFLAGS wins over a target-specific variable in the cargo
+      # it spawns, so putting it only there would have it ignored.
+      export RUSTFLAGS="$CROSS_RUSTFLAGS -C target-feature=+crt-static"
+      cargo xwin build --release --features gui --target "$target"
+      ;;
+    *windows*)
+      # gnu / gnullvm: zig carries compiler, assembler and linker, so this flavour needs no
+      # system package at all, and its binaries import only DLLs that ship with Windows.
+      export RUSTFLAGS="$CROSS_RUSTFLAGS"
+      cargo zigbuild --release --features gui --target "$target"
+      ;;
     *musl*)
       # A musl build additionally drops `cdylib` (only the Android JNI library needs that crate type
       # and Cargo cannot scope [lib] crate-type per target), and that notice carries no lint name of
@@ -178,15 +397,38 @@ for target in "${BUILD_TARGETS[@]}"; do
 
   # Package from a private staging directory and publish atomically: packaging straight out of
   # dist/<target> raced with the linker rewriting the binary and produced corrupt archives.
-  archive="$ROOT/dist/packages/${PROJECT_NAME}-${target}.tar.gz"
-  stage_dir="$(mktemp -d)"
+  # The template is explicit because BSD/macOS `mktemp` refuses to run without one.
+  stage_dir="$(mktemp -d "${TMPDIR:-/tmp}/vrtfido-package.XXXXXX")"
   cp -f "${stage_bins[@]}" "$stage_dir/"
-  tar -C "$stage_dir" -czf "${archive}.tmp" .
-  mv -f "${archive}.tmp" "$archive"
+  if [[ "$target" == *windows* ]]; then
+    # Windows gets a .zip so it opens with a double click there, with the members at the archive
+    # root like the Linux ones. The archive is written by python3, which the repository's publish
+    # scripts already require, so no zip tool has to be installed next to the LLVM packages.
+    have python3 || { echo "error: python3 is required to package the Windows archive." >&2; exit 1; }
+    archive="$ROOT/dist/packages/${PROJECT_NAME}-${target}.zip"
+    rm -f "${archive}.tmp"
+    python3 - "${archive}.tmp" "${stage_bins[@]}" <<'PY'
+import os, sys, zipfile
+
+with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as archive:
+    for path in sys.argv[2:]:
+        archive.write(path, os.path.basename(path))
+PY
+    mv -f "${archive}.tmp" "$archive"
+  else
+    archive="$ROOT/dist/packages/${PROJECT_NAME}-${target}.tar.gz"
+    tar -C "$stage_dir" -czf "${archive}.tmp" .
+    mv -f "${archive}.tmp" "$archive"
+  fi
   rm -rf "$stage_dir"
   # The checksum is written only after the archive is final, and both files travel
-  # together into releases/ so a staged package is never there without its checksum.
-  (cd "$ROOT/dist/packages" && sha256sum "$(basename "$archive")" > "$(basename "$archive").sha256")
+  # together into releases/ so a staged package is never there without its checksum. macOS has no
+  # sha256sum, and `shasum -a 256` writes the same "<hash>  <file>" line the Linux releases use.
+  if have sha256sum; then
+    (cd "$ROOT/dist/packages" && sha256sum "$(basename "$archive")" > "$(basename "$archive").sha256")
+  else
+    (cd "$ROOT/dist/packages" && shasum -a 256 "$(basename "$archive")" > "$(basename "$archive").sha256")
+  fi
   mv -f "$archive" "${archive}.sha256" "$RELEASES/"
   built+=("$target")
   echo "    [+] Package completed: $RELEASES/$(basename "$archive")"

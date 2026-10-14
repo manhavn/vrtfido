@@ -25,43 +25,30 @@ Every build script stages its publish-ready files (`.zip`, `.tar.gz`, `.sha256`,
 
 The window is an egui/eframe process that draws through winit + OpenGL/EGL and ships its own fonts and widgets, so the build host needs no toolkit development package and the machine that runs it needs no toolkit runtime.
 
-- macOS and Windows packages (built on the target OS)
+- Windows packages (built here on Linux)
 
-Neither platform can be cross-built from Linux: the Apple SDK may not be used off Apple hardware, and the MSVC targets need a Windows C toolchain for the C code that the bundled SQLite and the vendored libusb compile. Each of the four packages is therefore built once on the machine it targets, and the asset name is fixed, because `mise` picks an archive by the OS and CPU it reads in that name:
+`build-cross.sh` also builds the two Windows archives, from this machine, with `cargo-xwin` for the MSVC ABI — the flavour `mise` expects to read in a Windows asset name. That needs `clang-cl`, `lld-link`, `llvm-lib` and `nasm`; mise does not carry them, so the script installs what is missing through the system package manager (`sudo apt install -y clang lld llvm nasm` on Debian/Ubuntu, `brew install llvm nasm` on macOS) — the only place a run asks for a password, and only when a `windows-msvc` target is in the list. `cargo-xwin` downloads Microsoft's CRT and Windows SDK headers and libraries into `~/.cache/cargo-xwin` the first time.
+
+| architecture | target | asset |
+|---|---|---|
+| Windows x64 | `x86_64-pc-windows-msvc` | `vrtfido-x86_64-pc-windows-msvc.zip` |
+| Windows arm64 | `aarch64-pc-windows-gnullvm` | `vrtfido-aarch64-pc-windows-gnullvm.zip` |
+
+Both binaries sit at the root of the ZIP (`vrtfido.exe` and `vrtfido-gui.exe`), exactly like the Linux ones, and each archive is published together with its `<archive>.sha256`. The x64 package links the C runtime statically, so it needs no Visual C++ redistributable. arm64 is built with zig's toolchain (`gnullvm`) rather than MSVC: cargo-xwin 0.23 hands the aarch64 target's C sources to clang in GNU mode together with MSVC-style include flags, which fails inside `ring` and `libz-sys`, while `gnullvm` produces the same ARM64 binaries with no extra package — `aarch64-pc-windows-msvc` still works for anyone who wants to try it through `TARGETS=`. Asking for `TARGETS=x86_64-pc-windows-gnu,aarch64-pc-windows-gnullvm` builds both targets with zig's toolchain, needing no extra package at all.
+
+- macOS packages (built on a Mac)
+
+The two macOS archives are the only ones no other host can produce, because the Apple SDK may not be used off Apple hardware. `build-cross.sh` knows that (it refuses `*-apple-darwin*` on Linux), and running it on the Mac builds both architectures natively:
 
 | architecture | target | asset |
 |---|---|---|
 | macOS Intel | `x86_64-apple-darwin` | `vrtfido-x86_64-apple-darwin.tar.gz` |
 | macOS Apple silicon | `aarch64-apple-darwin` | `vrtfido-aarch64-apple-darwin.tar.gz` |
-| Windows x64 | `x86_64-pc-windows-msvc` | `vrtfido-x86_64-pc-windows-msvc.zip` |
-| Windows arm64 | `aarch64-pc-windows-msvc` | `vrtfido-aarch64-pc-windows-msvc.zip` |
 
-On macOS (the example is Apple silicon; an Intel Mac uses the other triple, and either Mac can build both, since Xcode ships the SDK for both — `rustup target add x86_64-apple-darwin` first when the host is the other architecture):
-
-```shell
-cargo build --release --features gui --target aarch64-apple-darwin
-stage="$(mktemp -d)"
-cp target/aarch64-apple-darwin/release/vrtfido target/aarch64-apple-darwin/release/vrtfido-gui "$stage/"
-tar -C "$stage" -czf releases/vrtfido-aarch64-apple-darwin.tar.gz .
-rm -rf "$stage"
-shasum -a 256 releases/vrtfido-aarch64-apple-darwin.tar.gz \
-  > releases/vrtfido-aarch64-apple-darwin.tar.gz.sha256
-```
-
-On Windows (PowerShell; `arm64` needs the arm64 MSVC toolchain, the x64 one cannot produce it):
-
-```powershell
-cargo build --release --features gui --target x86_64-pc-windows-msvc
-Compress-Archive -Force -DestinationPath dist\vrtfido-x86_64-pc-windows-msvc.zip `
-  -Path target\x86_64-pc-windows-msvc\release\vrtfido.exe, target\x86_64-pc-windows-msvc\release\vrtfido-gui.exe
-$hash = (Get-FileHash -Algorithm SHA256 dist\vrtfido-x86_64-pc-windows-msvc.zip).Hash.ToLower()
-"$hash  vrtfido-x86_64-pc-windows-msvc.zip" | Set-Content dist\vrtfido-x86_64-pc-windows-msvc.zip.sha256
-```
-
-Both binaries sit at the root of each archive (`vrtfido.exe` and `vrtfido-gui.exe` inside the ZIP), exactly like the Linux ones, and each archive is published together with its `<archive>.sha256`.
+The Mac needs the Apple command line tools — clang and the SDK headers — and the script starts `xcode-select --install` by itself when they are missing (that installer is a GUI one, so the next run finishes the job). Nothing else: Xcode ships the SDK for both architectures, so either Mac produces both packages, and the per-architecture packages are `cargo build --release --features gui --target <triple>` under the hood. The default target list on a Mac is these two; `TARGETS=` can add the Linux and Windows ones, which a Mac can build as well (the script installs zig, cargo-zigbuild, cargo-xwin and the LLVM packages for them). The checksum is written with `shasum -a 256`, since macOS has no `sha256sum`.
 
 - Publish
 
 One tag per version (`v0.3.6`) with every file from `releases/` attached to it. The former `-gui` variants are gone: since the `gnu` package already contains the window as well as the daemon, there is nothing left to split by tag.
 
-The release is put together by hand: create the tag, attach `releases/*.tar.gz`, `releases/*.zip`, `releases/*.apk` and their `.sha256` files from the release page or with `gh release upload <tag> releases/… --clobber`, and build the macOS and Windows archives on their own machines first (above). Nothing is attached automatically, so a half-finished release is just a release with fewer files.
+The release is put together by hand: run `./build-cross.sh` on the Linux machine (Linux + Windows packages) and on the Mac (macOS packages), then create the tag and attach `releases/*.tar.gz`, `releases/*.zip`, `releases/*.apk` and their `.sha256` files from the release page or with `gh release upload <tag> releases/… --clobber`. Nothing is attached automatically, so a half-finished release is just a release with fewer files.

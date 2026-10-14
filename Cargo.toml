@@ -40,7 +40,6 @@ mongodb = { version = "3.9", default-features = false, features = ["compat-3-3-0
 libsql = { version = "0.9.30", default-features = false, features = ["remote", "tls"] }
 chrono = "0.4.45"
 libc = "0.2.189"
-ksni = "0.3.6"
 open = "5.4.4"
 base64 = "0.22"
 jni = { version = "0.21", optional = true }
@@ -62,6 +61,12 @@ eframe = { version = "0.36.2", optional = true, default-features = false, featur
 # The prompt-window client is a separate process that talks to the daemon over its local
 # HTTP API, so the `gui` feature pulls a small blocking HTTP client with it.
 ureq = { version = "2", optional = true, features = ["json"] }
+
+# The StatusNotifierItem tray is D-Bus, so `ksni` is linked only where it exists: Linux and
+# Android (the daemon's tray, and the library's copy of it). macOS and Windows render their tray
+# inside the prompt window from `tray-icon`, declared for those two targets below.
+[target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
+ksni = "0.3.6"
 
 # Menu-bar (macOS) / notification-area (Windows) icon. Both platforms render the icon
 # inside the prompt-window process, whose winit event loop owns the main thread those

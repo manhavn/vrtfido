@@ -96,9 +96,9 @@ Or add to your `mise.toml`:
 | macOS Intel | `vrtfido-x86_64-apple-darwin.tar.gz` |
 | macOS Apple silicon | `vrtfido-aarch64-apple-darwin.tar.gz` |
 | Windows x86_64 | `vrtfido-x86_64-pc-windows-msvc.zip` |
-| Windows arm64 | `vrtfido-aarch64-pc-windows-msvc.zip` |
+| Windows arm64 | `vrtfido-aarch64-pc-windows-gnullvm.zip` |
 
-Every archive unpacks to binaries at its root: `vrtfido` (the daemon) plus `vrtfido-gui` (the prompt window, `.exe` on Windows) in the `gnu`, macOS and Windows archives, and the statically linked daemon alone in the `musl` ones. Each archive is published together with its `<archive>.sha256` checksum. The Linux archives are built by `build-cross.sh`, the macOS and Windows ones on their own machines; see [release-build.md](release-build.md).
+Every archive unpacks to binaries at its root: `vrtfido` (the daemon) plus `vrtfido-gui` (the prompt window, `.exe` on Windows) in the `gnu`, macOS and Windows archives, and the statically linked daemon alone in the `musl` ones. Each archive is published together with its `<archive>.sha256` checksum. The Linux and Windows archives are built by `build-cross.sh`, the macOS ones on a Mac; see [release-build.md](release-build.md).
 
 **Platform support**
 
@@ -169,41 +169,38 @@ tail -f /tmp/vrtfido.log
 
 Release targets are built with `--features gui` — that feature adds the `vrtfido-gui` prompt-window binary next to the daemon, so one archive serves the desktop — except the static `musl` archives, which stay CLI-only.
 
-**macOS and Windows are built on their own machines.** The four assets a Linux host cannot produce — the Apple SDK may not be used off Apple hardware, and the MSVC targets need a Windows C toolchain for the C code that the bundled SQLite and the vendored libusb compile — come from a `cargo build --release --features gui --target <triple>` on the matching OS, packaged as `vrtfido-<triple>.tar.gz` on macOS or `.zip` on Windows with both binaries at the root of the archive and a `<archive>.sha256` beside it. The exact commands are in [release-build.md](release-build.md). The asset names are fixed, because `mise` picks an archive by the OS and CPU it reads in that name:
-
-| Target | Asset |
-|---|---|
-| `x86_64-apple-darwin` | `vrtfido-x86_64-apple-darwin.tar.gz` |
-| `aarch64-apple-darwin` | `vrtfido-aarch64-apple-darwin.tar.gz` |
-| `x86_64-pc-windows-msvc` | `vrtfido-x86_64-pc-windows-msvc.zip` |
-| `aarch64-pc-windows-msvc` | `vrtfido-aarch64-pc-windows-msvc.zip` |
-
-**Linux comes from the local script.** The repository includes `build-cross.sh` (using `cargo-zigbuild`) to compile release binaries across architectures (x86_64 GNU/musl, aarch64 GNU/musl) locally:
+**Linux and Windows come from the local script.** `build-cross.sh` cross-builds all six packages with `cargo-zigbuild` (Linux) and `cargo-xwin` (Windows MSVC), so one run on this machine produces them:
 
 ```bash
-# Cross-build prerequisites (the script installs both itself when they are missing):
-cargo install cargo-zigbuild --locked
-mise use -g zig
-
-# Build all targets:
+# Build everything (the script installs its own prerequisites):
 ./build-cross.sh
 
-# Or build specific targets:
+# Linux only:
 TARGETS=x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu ./build-cross.sh
+
+# Or the Windows packages without the LLVM/nasm install, using zig's toolchain:
+TARGETS=x86_64-pc-windows-gnu,aarch64-pc-windows-gnullvm ./build-cross.sh
 ```
 
-Release packages (`.tar.gz`) and checksums (`.sha256`) are moved into `releases/`:
+`zig` and `cargo-zigbuild`/`cargo-xwin` are installed through [mise](https://mise.jdx.dev/) and `cargo install` when they are missing. The Windows MSVC targets additionally need `clang-cl`, `lld-link`, `llvm-lib` and `nasm`, which mise does not carry: the script installs those with the system package manager — `sudo apt install -y clang lld llvm nasm` on Debian/Ubuntu — the one place it asks for a password. `cargo-xwin` downloads Microsoft's CRT and Windows SDK headers once into `~/.cache/cargo-xwin`.
+
+Release packages (`.tar.gz`/`.zip`) and checksums (`.sha256`) are moved into `releases/`:
 - `vrtfido-x86_64-unknown-linux-gnu.tar.gz`
 - `vrtfido-x86_64-unknown-linux-musl.tar.gz`
 - `vrtfido-aarch64-unknown-linux-gnu.tar.gz`
 - `vrtfido-aarch64-unknown-linux-musl.tar.gz`
+- `vrtfido-x86_64-pc-windows-msvc.zip`
+- `vrtfido-aarch64-pc-windows-gnullvm.zip`
 
-The `gnu` archives carry the prompt window and the `musl` archives do not, so one run serves both a desktop and a server:
+The `gnu`, macOS and Windows archives carry the prompt window and the `musl` archives do not, so one run serves both a desktop and a server:
 
 - `vrtfido-<target>.tar.gz` (`gnu`): `vrtfido` (daemon) plus `vrtfido-gui` (the prompt window)
 - `vrtfido-<target>.tar.gz` (`musl`): `vrtfido` only, statically linked
+- `vrtfido-<target>.zip` (Windows): `vrtfido.exe` plus `vrtfido-gui.exe`
 
-All four are cross-built by cargo-zigbuild, whose zig brings its own C compiler for the bundled SQLite and the vendored libusb, so the host needs neither a container engine nor a cross toolchain nor any foreign development package: `zig` and `cargo-zigbuild` are the only prerequisites, and the script installs both itself through [mise](https://mise.jdx.dev/) when they are missing. The `gnu` packages pin an explicit glibc floor (`GLIBC_FLOOR`, default `2.17` — e.g. `GLIBC_FLOOR=2.28 ./build-cross.sh`), because linking against whatever the build machine happens to ship silently raises the minimum libc every user needs.
+The `gnu` packages pin an explicit glibc floor (`GLIBC_FLOOR`, default `2.17` — e.g. `GLIBC_FLOOR=2.28 ./build-cross.sh`), because linking against whatever the build machine happens to ship silently raises the minimum libc every user needs.
+
+**macOS is built on a Mac**, which is the one platform no other host can produce: the Apple SDK may not be used off Apple hardware. `build-cross.sh` refuses `*-apple-darwin*` on Linux for that reason, and on a Mac it builds both architectures natively — its default target list there is exactly the two macOS packages, and it starts `xcode-select --install` by itself when the command line tools are missing. `TARGETS=` can add the Linux and Windows packages to a Mac run, since zig and cargo-xwin work there too. The asset names are fixed, because `mise` picks an archive by the OS and CPU it reads in that name.
 
 The daemon starts the window itself and falls back to headless mode whenever the host cannot run it — no display, or a failed start — so one archive serves a desktop laptop and a headless VPS with no flag and no per-machine configuration. The window is self-contained as far as toolkits go: `vrtfido-gui` draws through egui/eframe (winit + OpenGL 3.3 / GLES 3.0) and ships its own fonts and widgets, so no GTK or Qt has to be present, and it can also be started by hand for debugging. What it does need at runtime is a display, a GL driver, and `libxkbcommon` (both Wayland and X11) — plus `libxkbcommon-x11` on an X11 session, which every X11 desktop already has. When one of those is missing the daemon says so and keeps running headless.
 
