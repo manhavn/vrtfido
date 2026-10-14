@@ -8,7 +8,7 @@ Tiện ích mở rộng đa trình duyệt (**Google Chrome**, **Chromium**, **B
 
 - **Không phụ thuộc USB hay Native Messaging Host**: Tiện ích gọi trực tiếp qua HTTP REST API tới backend `vrtfido` (`/api/passkey/create`, `/api/passkey/get`).
 - **Linh hoạt vị trí máy chủ**: Bạn có thể chạy VrtFido trên máy cục bộ (`http://127.0.0.1:10209`) hoặc deploy lên VPS/Cloud từ xa và cấu hình Host/Port linh hoạt.
-- **Bypass giới hạn Platform Passkey**: Giả lập hoàn hảo định danh Google Password Manager (GPM AAGUID: `ea9b8d66-4d01-1d21-3ce4-b6b48cb575d4`) và thuật toán `ES256` ECDSA P-256, cho phép đăng ký trên cả các website khắt khe như Nvidia, Google hay webauthn.io.
+- **Bypass giới hạn Platform Passkey**: Giả lập định danh Google Password Manager (GPM AAGUID: `ea9b8d66-4d01-1d21-3ce4-b6b48cb575d4`) khi backend được chạy kèm `--google-aaguid` (nếu không, backend ký bằng AAGUID riêng `e672fbec-badd-58f1-a951-dcfa1a7f2b43`) và dùng thuật toán `ES256` ECDSA P-256, cho phép đăng ký trên cả các website khắt khe như Nvidia, Google hay webauthn.io khi bật định danh GPM.
 - **Hộp thoại xác thực bắt buộc (Approve / Cancel Prompt)**:
   - Khi có yêu cầu tạo hoặc đăng nhập Passkey từ trang web, tiện ích luôn hiển thị một **Modal Popup** nổi (sử dụng Shadow DOM cách ly CSS hoàn toàn khỏi website).
   - Tuyệt đối không tự động duyệt ngầm: người dùng bắt buộc phải bấm **Xác nhận (Approve)** hoặc **Hủy (Cancel)** (hỗ trợ phím tắt `Escape` để hủy, `Enter` để xác nhận).

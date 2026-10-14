@@ -8,25 +8,70 @@ use p256::ecdsa::SigningKey;
 use p256::elliptic_curve::Generate;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub fn b64url_encode(data: &[u8]) -> String {
     URL_SAFE_NO_PAD.encode(data)
 }
 
 /// Authenticator Attestation GUID that every VrtFido surface reports - the CTAP2 GetInfo response
-/// and the authData of every credential it creates.
+/// and the authData of every credential it creates. A non-zero value lets clients attribute the
+/// credential instead of rendering "AAGUID: 00000000-0000-0000-0000-000000000000" with no provider
+/// name, and lets relying parties allow-list the authenticator.
 ///
-/// Derivation: `uuid5(NAMESPACE_URL, "https://vrtfido.local/webauthn-cms")`, so the value is stable
-/// across releases but still globally unique. Regenerate it with your own domain if you fork this
-/// project. Emitting 16 zero bytes (the previous behaviour) leaves clients unable to attribute the
-/// credential - they render "AAGUID: 00000000-0000-0000-0000-000000000000" with no provider name -
-/// and relying parties cannot allow-list the authenticator.
-/// AAGUID for Google Password Manager (ea9b8d66-4d01-1d21-3ce4-b6b48cb575d4).
-/// Using GPM's official FIDO MDS AAGUID allows relying parties with strict platform provider allow-lists (such as Nvidia)
-/// to recognize the authenticator as an authorized Passkey provider.
-pub const AAGUID: [u8; 16] = [
+/// `PROJECT_AAGUID` is the default identity. Derivation:
+/// `uuid5(NAMESPACE_URL, "https://vrtfido.local/webauthn-cms")`, so the value is stable across
+/// releases but still globally unique. Regenerate it with your own domain if you fork this project.
+pub const PROJECT_AAGUID: [u8; 16] = [
+    0xe6, 0x72, 0xfb, 0xec, 0xba, 0xdd, 0x58, 0xf1, 0xa9, 0x51, 0xdc, 0xfa, 0x1a, 0x7f, 0x2b, 0x43,
+];
+
+/// Google Password Manager's FIDO MDS AAGUID (`ea9b8d66-4d01-1d21-3ce4-b6b48cb575d4`), reported
+/// only when `--google-aaguid` / `DaemonOptions::google_aaguid` asks for it. Impersonating GPM is
+/// what lets relying parties with strict platform-provider allow-lists (such as Nvidia) accept the
+/// authenticator as an authorized Passkey provider, so it stays opt-in and off by default.
+pub const GOOGLE_AAGUID: [u8; 16] = [
     0xea, 0x9b, 0x8d, 0x66, 0x4d, 0x01, 0x1d, 0x21, 0x3c, 0xe4, 0xb6, 0xb4, 0x8c, 0xb5, 0x75, 0xd4,
 ];
+
+/// `--google-aaguid` / `DaemonOptions::google_aaguid`, process-wide because every surface of a run
+/// must report one identity: a credential stores the AAGUID only at creation time, so a per-request
+/// switch would hand the same RP two different providers.
+static GOOGLE_AAGUID_ENABLED: AtomicBool = AtomicBool::new(false);
+
+pub fn set_google_aaguid(enabled: bool) {
+    GOOGLE_AAGUID_ENABLED.store(enabled, Ordering::SeqCst);
+}
+
+pub fn google_aaguid_enabled() -> bool {
+    GOOGLE_AAGUID_ENABLED.load(Ordering::SeqCst)
+}
+
+/// AAGUID for the rest of this run: Google's only when explicitly enabled, the project's otherwise.
+pub fn aaguid() -> [u8; 16] {
+    if google_aaguid_enabled() {
+        GOOGLE_AAGUID
+    } else {
+        PROJECT_AAGUID
+    }
+}
+
+/// `aaguid()` in canonical 8-4-4-4-12 form, for the CLI banner and logs.
+pub fn aaguid_string() -> String {
+    aaguid_string_of(aaguid())
+}
+
+fn aaguid_string_of(bytes: [u8; 16]) -> String {
+    let hex: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
+    format!(
+        "{}-{}-{}-{}-{}",
+        &hex[0..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..32]
+    )
+}
 
 pub fn b64url_decode(s: &str) -> Result<Vec<u8>, String> {
     let clean = s.trim().trim_end_matches('=');
@@ -321,7 +366,7 @@ pub async fn create_passkey(
     auth_data.extend_from_slice(&rp_id_hash);
     auth_data.push(flags);
     auth_data.extend_from_slice(&sign_count.to_be_bytes());
-    auth_data.extend_from_slice(&AAGUID);
+    auth_data.extend_from_slice(&aaguid());
     auth_data.extend_from_slice(&(cred_id.len() as u16).to_be_bytes());
     auth_data.extend_from_slice(&cred_id);
     auth_data.extend_from_slice(&cose_bytes);
@@ -636,21 +681,40 @@ mod tests {
         .await
         .expect("create_passkey failed");
 
-        assert_ne!(AAGUID, [0u8; 16], "AAGUID must identify VrtFido");
+        assert_ne!(PROJECT_AAGUID, [0u8; 16], "AAGUID must identify VrtFido");
 
         // authenticatorData layout: rpIdHash(32) | flags(1) | signCount(4) | AAGUID(16)
         let auth_data = b64url_decode(&create_res.response.authenticator_data).unwrap();
         assert!(auth_data.len() > 53, "authData must contain the attested credential data");
         assert_eq!(auth_data[32], 0x01 | 0x04 | 0x40, "UP | UV | AT");
-        assert_eq!(&auth_data[37..53], &AAGUID, "authData must report the project AAGUID");
+        assert_eq!(
+            &auth_data[37..53],
+            &PROJECT_AAGUID,
+            "without --google-aaguid authData must report the project AAGUID"
+        );
 
         // The attestation object embeds the very same authData, so clients deriving the provider
         // from the attestation see the same identifier.
         let attestation = b64url_decode(&create_res.response.attestation_object).unwrap();
         assert!(
-            attestation.windows(AAGUID.len()).any(|w| w == AAGUID),
+            attestation.windows(PROJECT_AAGUID.len()).any(|w| w == PROJECT_AAGUID),
             "attestation object must embed the project AAGUID"
         );
+    }
+
+    /// The two identities are allow-listed by relying parties, so the exact values (and the string
+    /// form the CLI prints) are part of the contract. No other test toggles the switch, so the
+    /// default asserted here stays stable.
+    #[test]
+    fn aaguid_identity_defaults_and_strings_are_pinned() {
+        assert!(
+            !google_aaguid_enabled(),
+            "Google's AAGUID must stay opt-in (--google-aaguid)"
+        );
+        assert_eq!(aaguid(), PROJECT_AAGUID);
+        assert_eq!(aaguid_string_of(PROJECT_AAGUID), "e672fbec-badd-58f1-a951-dcfa1a7f2b43");
+        assert_eq!(aaguid_string_of(GOOGLE_AAGUID), "ea9b8d66-4d01-1d21-3ce4-b6b48cb575d4");
+        assert_ne!(PROJECT_AAGUID, GOOGLE_AAGUID, "the two identities must stay distinguishable");
     }
 
     #[tokio::test]

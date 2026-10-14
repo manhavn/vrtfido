@@ -5,14 +5,18 @@ use ksni::{Tray, TrayMethods};
 pub struct VrtfidoTray {
     pub port: u16,
     pub autostart_enabled: bool,
+    /// `--uhid`: without the virtual device there is nothing that needs `/dev/uhid` access, so
+    /// enabling autostart must not configure the udev rule.
+    pub uhid_enabled: bool,
 }
 
 impl VrtfidoTray {
-    pub fn new(port: u16) -> Self {
+    pub fn new(port: u16, uhid_enabled: bool) -> Self {
         let autostart_enabled = autostart::is_autostart_enabled();
         Self {
             port,
             autostart_enabled,
+            uhid_enabled,
         }
     }
 
@@ -93,7 +97,7 @@ impl Tray for VrtfidoTray {
                                 "[TRAY] Autostart with system {}",
                                 if new_state { "enabled" } else { "disabled" }
                             );
-                            if new_state && !crate::has_permanent_uhid_rule() {
+                            if new_state && this.uhid_enabled && !crate::has_permanent_uhid_rule() {
                                 println!("[TRAY] Setting up permanent /dev/uhid udev rule for system autostart...");
                                 std::thread::spawn(|| {
                                     let _ = crate::ensure_permanent_uhid_permission();
@@ -179,8 +183,8 @@ pub fn create_tray_icon_pixmap() -> ksni::Icon {
 
 /// Spawn the system tray service in the background.
 /// Gracefully handles headless environments where D-Bus or StatusNotifierWatcher is absent.
-pub async fn spawn_tray(port: u16) -> Option<ksni::Handle<VrtfidoTray>> {
-    let tray = VrtfidoTray::new(port);
+pub async fn spawn_tray(port: u16, uhid_enabled: bool) -> Option<ksni::Handle<VrtfidoTray>> {
+    let tray = VrtfidoTray::new(port, uhid_enabled);
     println!("[TRAY] Initializing system tray icon (Port: {})...", port);
 
     match tray.assume_sni_available(true).spawn().await {
@@ -213,7 +217,7 @@ mod tests {
 
     #[test]
     fn test_tray_urls_and_titles() {
-        let tray = VrtfidoTray::new(10209);
+        let tray = VrtfidoTray::new(10209, true);
         assert_eq!(tray.dashboard_url(), "http://localhost:10209");
         assert_eq!(tray.id(), "vrtfido");
         assert_eq!(tray.title(), "VrtFido");
@@ -222,7 +226,7 @@ mod tests {
 
     #[test]
     fn test_tray_menu_structure() {
-        let tray = VrtfidoTray::new(10209);
+        let tray = VrtfidoTray::new(10209, false);
         let menu = tray.menu();
         // Menu should have at least: Dashboard, Start with the system, Separator, Quit
         assert_eq!(menu.len(), 4);

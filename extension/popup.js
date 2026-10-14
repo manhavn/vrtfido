@@ -121,7 +121,7 @@ const TRANSLATIONS = {
     helpStep1: "Cài CLI bằng mise:",
     helpStep2: "Chạy máy chủ ở chế độ nền:",
     helpStep3: "Giữ Host 127.0.0.1 · Port 10209 rồi bấm “Lưu cấu hình”.",
-    helpNote: "Ubuntu: cấp quyền /dev/uhid một lần để tránh hỏi mật khẩu (tùy chọn):",
+    helpNote: "Ubuntu: chỉ cần khi chạy `vrtfido --uhid` (thiết bị FIDO2 ảo) — cấp quyền /dev/uhid một lần để tránh hỏi mật khẩu:",
     helpOpenBtn: "Mở GitHub — hướng dẫn đầy đủ"
   },
   en: {
@@ -172,7 +172,7 @@ const TRANSLATIONS = {
     helpStep1: "Install the CLI with mise:",
     helpStep2: "Run the server in the background:",
     helpStep3: "Keep Host 127.0.0.1 · Port 10209, then click “Save Settings”.",
-    helpNote: "Ubuntu: grant /dev/uhid access once to avoid password prompts (optional):",
+    helpNote: "Ubuntu: needed only when running `vrtfido --uhid` (virtual FIDO2 device) — grant /dev/uhid access once to avoid password prompts:",
     helpOpenBtn: "Open GitHub — full instructions"
   }
 };

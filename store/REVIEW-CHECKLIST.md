@@ -76,7 +76,8 @@ inert without that server.
 1. Install and start the VrtFido server (free, MIT licensed):
      mise use -g github:manhavn/vrtfido
      vrtfido --daemon
-   On Ubuntu, grant /dev/uhid access once:
+   On Ubuntu, grant /dev/uhid access once if you also want the native security-key path
+   (`vrtfido --uhid`; the extension itself needs only the HTTP server):
      echo 'KERNEL=="uhid", MODE="0666"' | sudo tee /etc/udev/rules.d/99-uhid.rules
    The server then listens on http://127.0.0.1:10209 and the extension's popup shows a green
    "active" badge.
@@ -114,7 +115,8 @@ extension only shows "cannot connect" and transmits nothing.
 Setup (free, MIT):
   mise use -g github:manhavn/vrtfido
   vrtfido --daemon
-On Ubuntu grant /dev/uhid once:
+On Ubuntu grant /dev/uhid once if you also want the native security-key path (`vrtfido --uhid`;
+the extension itself needs only the HTTP server):
   echo 'KERNEL=="uhid", MODE="0666"' | sudo tee /etc/udev/rules.d/99-uhid.rules
 
 Test: open https://webauthn.io, enter any username, click Register, then press "Approve" in the

@@ -8,7 +8,7 @@ Cross-browser extension (**Google Chrome**, **Chromium**, **Brave**, **Microsoft
 
 - **Pure HTTP REST API**: Calls the VrtFido backend (`/api/passkey/create`, `/api/passkey/get`) over HTTP/HTTPS, eliminating any need for local Native Messaging hosts or USB drivers.
 - **Deploy Anywhere**: The backend can run locally (`http://127.0.0.1:10209`) or on a remote VPS/cloud server with flexible Host/Port settings.
-- **Platform Authenticator Emulation**: Uses official Google Password Manager (GPM AAGUID: `ea9b8d66-4d01-1d21-3ce4-b6b48cb575d4`) and `ES256` ECDSA P-256 keys, passing strict platform verification on sites like Nvidia, Google, and webauthn.io.
+- **Platform Authenticator Emulation**: Reports official Google Password Manager's AAGUID (GPM AAGUID: `ea9b8d66-4d01-1d21-3ce4-b6b48cb575d4`) when the backend is started with `--google-aaguid` (without it the backend attests with its own AAGUID `e672fbec-badd-58f1-a951-dcfa1a7f2b43`) and signs with `ES256` ECDSA P-256 keys, passing strict platform verification on sites like Nvidia, Google, and webauthn.io while the GPM identity is enabled.
 - **Mandatory Approval Prompt (Approve / Cancel)**:
   - Whenever a website initiates passkey creation or login, the extension presents an interactive **Modal Prompt** (isolated using Shadow DOM to prevent any website CSS collisions).
   - Never auto-approves silently: user must explicitly click **Approve** or **Cancel** (shortcuts: `Enter` to approve, `Escape` to cancel).
