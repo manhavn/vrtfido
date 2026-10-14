@@ -46,6 +46,7 @@ pub(crate) fn startup_exe() -> std::io::Result<PathBuf> {
 /// Quotes one command-line word for the backends that keep the whole command in a single
 /// string (`Exec=` line, Run value). The LaunchAgent stores one array element per word and
 /// needs no quoting there.
+#[cfg(any(target_os = "linux", windows))]
 pub(crate) fn quote_arg(arg: &str) -> String {
     if arg.contains(' ') {
         format!("\"{}\"", arg)
