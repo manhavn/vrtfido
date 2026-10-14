@@ -25,7 +25,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use web::AppState;
 
-// `tray.rs` is compiled into both this binary and the library (`vrtfido::tray`) and reaches the
+// `tray.rs` is compiled into both this binary and the library (`vrtfido_core::tray`) and reaches the
 // udev helpers through the crate root, so the root has to offer the same two names here.
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub use uhid::{ensure_permanent_uhid_permission, has_permanent_uhid_rule};

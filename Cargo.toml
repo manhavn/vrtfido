@@ -4,7 +4,13 @@ version = "0.3.6"
 edition = "2021"
 
 [lib]
-name = "vrtfido"
+# The library is `vrtfido_core`, not `vrtfido`: the package ships a *binary* of that name, and the
+# cdylib (needed for the Android JNI library alone) would otherwise be written to the same
+# `vrtfido.dll` / `vrtfido.so` / `vrtfido.pdb` path as that binary. Cargo reports the clash as an
+# "output filename collision" - and on Windows the two artifacts then overwrite each other's debug
+# symbols. The exported JNI symbols come from the Java class name, so only the `loadLibrary` call
+# and the file the Android build copies are affected.
+name = "vrtfido_core"
 path = "src/lib.rs"
 crate-type = ["lib", "cdylib"]
 

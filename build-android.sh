@@ -168,13 +168,13 @@ export RUSTFLAGS="${RUSTFLAGS:-} -A linker_messages"
 
 # Output directly into Gradle's jniLibs; any native failure aborts the APK build.
 mkdir -p "$JNILIBS"
-rm -f "$JNILIBS/arm64-v8a/libvrtfido.so" "$JNILIBS/x86_64/libvrtfido.so"
+rm -f "$JNILIBS/arm64-v8a/libvrtfido_core.so" "$JNILIBS/x86_64/libvrtfido_core.so"
 (
     cd "$ROOT"
     cargo ndk -t arm64-v8a -t x86_64 -o "$JNILIBS" build --release --lib --features jni-bridge
 )
 for abi in arm64-v8a x86_64; do
-    [ -s "$JNILIBS/$abi/libvrtfido.so" ] || fail "Native library missing for $abi"
+    [ -s "$JNILIBS/$abi/libvrtfido_core.so" ] || fail "Native library missing for $abi"
 done
 
 APK="$ROOT/android/app/build/outputs/apk/$VARIANT/app-$VARIANT.apk"

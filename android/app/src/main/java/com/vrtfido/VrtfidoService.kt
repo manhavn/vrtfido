@@ -46,7 +46,9 @@ class VrtfidoService : Service() {
             private set
 
         private val loadError: String? = try {
-            System.loadLibrary("vrtfido")
+            // Matches the library target's name in Cargo.toml (`vrtfido_core`); the JNI entry
+            // points themselves are derived from this class's name and do not change with it.
+            System.loadLibrary("vrtfido_core")
             null
         } catch (e: UnsatisfiedLinkError) {
             e.message ?: "Could not load native library"

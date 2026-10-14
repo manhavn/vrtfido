@@ -28,7 +28,7 @@ fn main() {
     // platforms whose tray icon lives in the window (see `src/gui.rs`).
     let tray = !args.iter().any(|a| a == "--no-tray");
 
-    std::process::exit(vrtfido::gui::run(&host, port, tray));
+    std::process::exit(vrtfido_core::gui::run(&host, port, tray));
 }
 
 fn value_of(args: &[String], flag: &str) -> Option<String> {

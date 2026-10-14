@@ -345,13 +345,23 @@ for target in "${BUILD_TARGETS[@]}"; do
       # this target's own variable, because cargo-xwin merges RUSTFLAGS into the flags it hands to
       # the target - and because a set RUSTFLAGS wins over a target-specific variable in the cargo
       # it spawns, so putting it only there would have it ignored.
-      export RUSTFLAGS="$CROSS_RUSTFLAGS -C target-feature=+crt-static"
+      #
+      # LNK4099 is switched off as well: the CRT that cargo-xwin downloads is Microsoft's own
+      # libcmt/libvcruntime, whose debug info points at .pdb files from their build machine that
+      # are not part of the package, so every object in them reports "cannot use debug info". It
+      # says nothing about this crate, and there is no way to ship those files.
+      export RUSTFLAGS="$CROSS_RUSTFLAGS -C target-feature=+crt-static -C link-arg=/ignore:4099"
       cargo xwin build --release --features gui --target "$target"
       ;;
     *windows*)
       # gnu / gnullvm: zig carries compiler, assembler and linker, so this flavour needs no
       # system package at all, and its binaries import only DLLs that ship with Windows.
-      export RUSTFLAGS="$CROSS_RUSTFLAGS"
+      #
+      # zig's LLD rejects the `-Wl,-O1` that rustc passes it ("ignoring deprecated linker
+      # optimization setting") and the linker_messages lint forwards that line as a warning of
+      # this crate. It describes the toolchain, so only that lint is allowed - the same allowance
+      # build-android.sh makes for the same reason.
+      export RUSTFLAGS="$CROSS_RUSTFLAGS -A linker_messages"
       cargo zigbuild --release --features gui --target "$target"
       ;;
     *musl*)
@@ -366,8 +376,10 @@ for target in "${BUILD_TARGETS[@]}"; do
       cargo zigbuild --release --target "$target"
       ;;
     *)
-      # `gnu`: the daemon together with the prompt window, for a desktop host.
-      export RUSTFLAGS="$CROSS_RUSTFLAGS"
+      # Linux `gnu`: the daemon together with the prompt window, for a desktop host. Same
+      # `-A linker_messages` as the other zig-linked targets: rustc hands zig's LLD a `-Wl,-O1`
+      # that LLD reports as deprecated, and that line is not about this crate.
+      export RUSTFLAGS="$CROSS_RUSTFLAGS -A linker_messages"
       cargo zigbuild --release --features gui --target "${target}.${GLIBC_FLOOR}"
       ;;
   esac
