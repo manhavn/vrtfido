@@ -5,7 +5,7 @@
 #
 #   ./publish-firefox.sh                     # tương tác đầy đủ (hỏi từng bước)
 #   ./publish-firefox.sh --dry-run           # chạy hết luồng nhưng KHÔNG gọi AMO
-#   ./publish-firefox.sh --channel unlisted --version 0.3.4 --yes
+#   ./publish-firefox.sh --channel unlisted --version 0.3.5 --yes
 #
 # Tùy chọn:
 #   --channel listed|unlisted  listed = public trên addons.mozilla.org (mặc định),
@@ -27,7 +27,7 @@ EXT_DIR="$SCRIPT_DIR/extension"
 MANIFEST="$EXT_DIR/manifest.json"
 DIST_DIR="$SCRIPT_DIR/dist"
 FIREFOX_DIST="$DIST_DIR/firefox"
-ZIP_FILE="$DIST_DIR/vrtfido-firefox.zip"
+ZIP_FILE="$SCRIPT_DIR/releases/vrtfido-firefox.zip"
 SIGNED_XPI="$DIST_DIR/vrtfido-firefox-signed.xpi"
 ARTIFACTS_DIR="$SCRIPT_DIR/web-ext-artifacts"
 DEFAULT_CRED_FILE="${VRTFIDO_AMO_CREDENTIALS:-$HOME/.config/vrtfido/amo.env}"
@@ -92,7 +92,7 @@ get_version() {
 
 valid_version() { [[ "$1" =~ ^[0-9]+(\.[0-9]+){1,3}$ ]]; }
 
-bump_version() { # bump_version "0.3.4" patch|minor|major
+bump_version() { # bump_version "0.3.5" patch|minor|major
   python3 - "$1" "$2" <<'PY'
 import sys
 cur, mode = sys.argv[1], sys.argv[2]
@@ -109,7 +109,7 @@ print(f"{p[0]}.{p[1]}.{p[2]}")
 PY
 }
 
-set_version() { # set_version "0.3.4" — chỉ sửa đúng dòng "version"
+set_version() { # set_version "0.3.5" — chỉ sửa đúng dòng "version"
   python3 - "$MANIFEST" "$1" <<'PY'
 import re, sys
 path, new = sys.argv[1], sys.argv[2]
@@ -167,7 +167,7 @@ Chạy 1 lệnh, script hỏi lần lượt từng tham số.
 
   ./publish-firefox.sh                     # tương tác đầy đủ (hỏi từng bước)
   ./publish-firefox.sh --dry-run           # chạy hết luồng nhưng KHÔNG gọi AMO
-  ./publish-firefox.sh --channel unlisted --version 0.3.4 --yes
+  ./publish-firefox.sh --channel unlisted --version 0.3.5 --yes
 
 Tùy chọn:
   --channel listed|unlisted  listed = public trên addons.mozilla.org (mặc định),

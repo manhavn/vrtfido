@@ -9,12 +9,18 @@ NDK_VERSION=26.3.11579264
 GRADLE_VERSION=8.7
 CMDLINE_TOOLS=https://dl.google.com/android/repository/commandlinetools-linux-13114758_latest.zip
 JNILIBS="$ROOT/android/app/src/main/jniLibs"
+RELEASES="$ROOT/releases"
 VARIANT="${1:-release}"
 case "$VARIANT" in
     release) GRADLE_TASK=assembleRelease ;;
     debug) GRADLE_TASK=assembleDebug ;;
     *) printf 'Usage: %s [release|debug]\n' "$0" >&2; exit 2 ;;
 esac
+
+# releases/ chỉ chứa file thành phẩm: xoá APK cũ của biến thể sắp build trước khi
+# build để một lần build lỗi không để lại APK cũ trông như vừa build xong.
+mkdir -p "$RELEASES"
+rm -f "$RELEASES/app-$VARIANT.apk"
 
 fail() { printf 'Android build failed: %s\n' "$*" >&2; exit 1; }
 fetch() { curl --fail --location --retry 3 --retry-delay 2 --silent --show-error "$1" -o "$2"; }
@@ -182,4 +188,5 @@ if [ "$VARIANT" = release ]; then
     "$SDK/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK" ||
         fail "Release APK signature verification failed"
 fi
-echo "Android APK: $APK"
+mv -f "$APK" "$RELEASES/"
+echo "Android APK: $RELEASES/app-$VARIANT.apk"

@@ -997,6 +997,121 @@ fn ensure_default_sidecar_dir() -> std::io::Result<()> {
     Ok(())
 }
 
+/// IPv6 literals need brackets before a port can be appended (`[::]:10209`).
+fn bind_host(host: &str) -> String {
+    if host.contains(':') && !host.starts_with('[') {
+        format!("[{}]", host)
+    } else {
+        host.to_string()
+    }
+}
+
+/// Host to print in the dashboard URLs: a wildcard bind is opened as `localhost`, while a
+/// concrete configured address is worth showing exactly as it was set.
+fn display_host(host: &str) -> &str {
+    match host {
+        "0.0.0.0" | "::" | "[::]" | "*" => "localhost",
+        other => other,
+    }
+}
+
+/// Host the GUI client connects to. It runs on the same machine, so a wildcard bind is
+/// reached over the loopback interface rather than at the wildcard address itself.
+fn gui_client_host(host: &str) -> &str {
+    match host {
+        "0.0.0.0" | "*" => "127.0.0.1",
+        "::" | "[::]" => "::1",
+        other => other,
+    }
+}
+
+/// Starts the GTK prompt window from the sibling `vrtfido-gui` binary.
+///
+/// The window is a separate process so this daemon never links GTK: a host without the
+/// GTK3 runtime cannot run the client, which is what lets one package serve both a
+/// desktop and a headless server. Returns the running child, `None` when it cannot run.
+fn spawn_gui_client(host: &str, port: u16) -> Option<std::process::Child> {
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(configured) = std::env::var("VRTFIDO_GUI_BIN") {
+        candidates.push(std::path::PathBuf::from(configured));
+    }
+    if let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|parent| parent.to_path_buf()))
+    {
+        candidates.push(dir.join("vrtfido-gui"));
+    }
+    // Last resort: whatever the package manager put on PATH.
+    candidates.push(std::path::PathBuf::from("vrtfido-gui"));
+
+    for candidate in candidates {
+        let mut child = match Command::new(&candidate)
+            .arg("--host")
+            .arg(host)
+            .arg("--port")
+            .arg(port.to_string())
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(e) => {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    eprintln!("[GUI] Could not start {}: {}", candidate.display(), e);
+                }
+                continue;
+            }
+        };
+
+        // A client that cannot load GTK (or finds no display) exits immediately: report that
+        // once instead of holding a dead handle for the rest of the run.
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                println!(
+                    "[GUI] Prompt window unavailable ({} exited with {}); continuing headless.",
+                    candidate.display(),
+                    status
+                );
+                println!(
+                    "[GUI] The window needs the GTK3 runtime and a display; the daemon and the Web CMS on port {} keep working without it.",
+                    port
+                );
+                return None;
+            }
+            _ => {
+                println!("[GUI] Native GUI prompt window started (pid {}).", child.id());
+                return Some(child);
+            }
+        }
+    }
+
+    println!("[GUI] vrtfido-gui not found; continuing headless.");
+    None
+}
+
+/// Asks the prompt window to quit, then reaps it. A window that ignores SIGTERM is killed
+/// after a short grace period: shutting the daemon down must never hang on an optional UI.
+fn stop_gui_client(child: &mut std::process::Child) {
+    unsafe {
+        libc::kill(child.id() as i32, libc::SIGTERM);
+    }
+    for _ in 0..30 {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                println!("[GUI] Prompt window exited ({})", status);
+                return;
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(100)),
+            Err(e) => {
+                eprintln!("[GUI] Could not check the prompt window: {}", e);
+                return;
+            }
+        }
+    }
+    println!("[GUI] Prompt window ignored the stop signal; terminating it.");
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 1. Parse CLI arguments & environment variables
@@ -1174,6 +1289,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("      --google-aaguid           Report Google Password Manager's AAGUID instead of the project's");
         println!("      --uhid                    Create the virtual FIDO2 device on /dev/uhid and request elevated access (default: off)");
         println!("      --no-tray                 Disable system tray icon");
+        println!("  -H, --host <HOST>             Bind address for the Web CMS and API (default: 0.0.0.0, every interface)");
+        println!("  -p, --port <PORT>             Port for the Web CMS and API (default: 10209)");
         println!("  -D, --database, --db <SPEC>   Database path or connection URL (default: authenticator.db)");
         println!("                                Supported:");
         println!("                                  - SQLite:     authenticator.db or sqlite:my.db");
@@ -1194,6 +1311,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  -h, --help                    Show this help message\n");
         println!("Environment variables:");
         println!("  DATABASE_URL / DB_URL         Connection string or database file path");
+        println!("  HOST / PORT                   Bind address and port for the Web CMS and API");
         println!("  DB_TYPE                       Database type");
         println!("  LIBSQL_AUTH_TOKEN             LibSQL authentication token");
         println!("  SHADOW_DB / QUEUE_DB          Override shadow and queue file paths (flags take precedence)");
@@ -1416,10 +1534,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let debug_mode_arc = Arc::new(AtomicBool::new(debug_mode));
     let uhid_connected = Arc::new(AtomicBool::new(false));
 
+    // The bind address is the operator's choice: the default exposes the CMS on every
+    // interface, `--host 127.0.0.1` keeps it on loopback. No authentication is imposed
+    // either way, so publishing the service stays a deliberate deployment decision.
     let port = get_opt("--port", Some("-p"))
         .or_else(|| std::env::var("PORT").ok())
         .and_then(|p| p.parse::<u16>().ok())
         .unwrap_or(10209);
+    let host = get_opt("--host", Some("-H"))
+        .or_else(|| std::env::var("HOST").ok())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "0.0.0.0".to_string());
     let app_state = AppState {
         db: db.clone(),
         security: security.clone(),
@@ -1429,12 +1555,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         port,
     };
 
-    // 5. Start Web CMS Server on port
+    // 5. Start Web CMS Server on the configured address
     let app = web::create_router(app_state);
-    let addr = format!("0.0.0.0:{}", port);
+    let addr = format!("{}:{}", bind_host(&host), port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    println!("[CMS] Web Management CMS is running at: http://localhost:{}", port);
-    println!("[CMS] Open browser at http://localhost:{} to manage and approve verification requests\n", port);
+    println!(
+        "[CMS] Web Management CMS is running at: http://{}:{}",
+        display_host(&host),
+        port
+    );
+    println!(
+        "[CMS] Open browser at http://{}:{} to manage and approve verification requests\n",
+        display_host(&host),
+        port
+    );
 
     // Run Web Server in background task
     tokio::spawn(async move {
@@ -1589,7 +1723,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // 7. Start System Tray icon in background
+    // 7. Start the GTK prompt window: a sibling process that talks to this daemon over the
+    // local API. It is started unconditionally, because a host that cannot run it (no GTK3
+    // runtime, no display) simply gets the headless daemon instead of a failed startup.
+    let mut gui_client = spawn_gui_client(gui_client_host(&host), port);
+
+    // 8. Start System Tray icon in background
     let _tray_handle = if !no_tray {
         tray::spawn_tray(port, uhid_enabled).await
     } else {
@@ -1609,6 +1748,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    if let Some(mut child) = gui_client.take() {
+        stop_gui_client(&mut child);
+    }
+
     if let Some(handle) = _tray_handle {
         println!("[TRAY] Shutting down system tray service...");
         handle.shutdown().await;
@@ -1621,6 +1764,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bind_and_display_hosts_handle_wildcards_and_ipv6() {
+        // An IPv6 literal needs brackets before the port can be appended.
+        assert_eq!(bind_host("0.0.0.0"), "0.0.0.0");
+        assert_eq!(bind_host("::"), "[::]");
+        assert_eq!(bind_host("[::1]"), "[::1]");
+        assert_eq!(bind_host("192.168.1.5"), "192.168.1.5");
+        // Wildcards are shown as localhost, explicit addresses as configured.
+        assert_eq!(display_host("0.0.0.0"), "localhost");
+        assert_eq!(display_host("::"), "localhost");
+        assert_eq!(display_host("192.168.1.5"), "192.168.1.5");
+        // The GUI client runs on the same machine, so it dials the loopback address.
+        assert_eq!(gui_client_host("0.0.0.0"), "127.0.0.1");
+        assert_eq!(gui_client_host("::"), "::1");
+        assert_eq!(gui_client_host("192.168.1.5"), "192.168.1.5");
+    }
 
     /// Builds the initial frame of a CTAPHID message: `total` is the length of the whole message,
     /// `data` is the part carried by this frame (at most 57 bytes).

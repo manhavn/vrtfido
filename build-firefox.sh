@@ -6,8 +6,13 @@ EXT_DIR="$SCRIPT_DIR/extension"
 DIST_DIR="$SCRIPT_DIR/dist"
 FIREFOX_DIST="$DIST_DIR/firefox"
 ZIP_FILE="$DIST_DIR/vrtfido-firefox.zip"
+RELEASES="$SCRIPT_DIR/releases"
 
 echo "=== [1/4] Chuẩn bị thư mục build Firefox ==="
+# releases/ chỉ chứa file thành phẩm: xoá gói Firefox cũ trước khi build để một lần
+# build lỗi không để lại gói cũ trông như vừa build xong.
+mkdir -p "$RELEASES"
+rm -f "$RELEASES/vrtfido-firefox.zip"
 rm -rf "$FIREFOX_DIST" "$ZIP_FILE"
 mkdir -p "$FIREFOX_DIST"
 
@@ -80,6 +85,8 @@ else
 fi
 
 echo
+mv -f "$ZIP_FILE" "$RELEASES/"
+
 echo "✓ Build Firefox Extension thành công!"
 echo "  - Thư mục nạp trực tiếp: $FIREFOX_DIST"
-echo "  - Tệp zip đóng gói: $ZIP_FILE"
+echo "  - Tệp zip đóng gói: $RELEASES/vrtfido-firefox.zip"

@@ -90,6 +90,30 @@ impl Default for EnrollProgress {
     }
 }
 
+/// Probes libusb once, keeping the probe context alive for the process lifetime.
+///
+/// `rusb`'s global context is built with `expect`, so on a host without a USB bus (a
+/// container, many VPS hosts) the first `rusb::devices()` call panics and takes the daemon
+/// down with it, Web CMS included. The fingerprint sensor is an optional peripheral, so
+/// every USB entry point asks here first and reports it as unavailable instead.
+static USB_CONTEXT_AVAILABLE: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+    match rusb::Context::new() {
+        Ok(context) => {
+            // Hold it for the whole process: libusb's init/exit pair is not refcounted, so
+            // dropping the probe here would tear down what the real path opens afterwards.
+            std::mem::forget(context);
+            true
+        }
+        Err(e) => {
+            eprintln!(
+                "[SENSOR] No USB context on this host ({}); the fingerprint sensor is disabled.",
+                e
+            );
+            false
+        }
+    }
+});
+
 #[derive(Clone)]
 pub struct UsbSensor {
     inner: Arc<Mutex<Option<DeviceHandle<GlobalContext>>>>,
@@ -121,6 +145,9 @@ impl UsbSensor {
         return false;
         #[cfg(not(target_os = "android"))]
         {
+            if !*USB_CONTEXT_AVAILABLE {
+                return false;
+            }
             if let Ok(devices) = rusb::devices() {
                 for dev in devices.iter() {
                     if let Ok(desc) = dev.device_descriptor() {
@@ -195,6 +222,9 @@ impl UsbSensor {
     }
 
     pub fn try_connect(&self) -> Result<(), String> {
+        if !*USB_CONTEXT_AVAILABLE {
+            return Err("this host has no USB context".to_string());
+        }
         let mut guard = self.inner.lock();
         if guard.is_some() {
             return Ok(());

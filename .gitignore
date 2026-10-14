@@ -6,6 +6,7 @@
 postgres/
 backup*.json
 dist/
+/releases/
 web-ext-artifacts/
 /.android-build/
 /android/.gradle/

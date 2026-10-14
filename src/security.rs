@@ -784,3 +784,217 @@ impl SecurityEngine {
         }
     }
 }
+
+#[cfg(test)]
+mod prompt_tests {
+    use super::*;
+    use crate::db::Db;
+    use crate::sensor::UsbSensor;
+    use std::time::Duration;
+
+    fn setup_test_engine() -> SecurityEngine {
+        let db = Db::open(":memory:").expect("In-memory SQLite DB failed");
+        let sensor = UsbSensor::new();
+        SecurityEngine::new(db, sensor, false)
+    }
+
+    /// One request end to end, checking that every step reaches the prompt broadcast the
+    /// UI surfaces follow: NewPrompt, account selection, "remember", then PromptClosed.
+    #[tokio::test]
+    async fn test_prompt_broadcast_lifecycle() {
+        let security = setup_test_engine();
+        let mut rx = security.subscribe_prompts();
+
+        let sec_clone = security.clone();
+        let handle = tokio::spawn(async move {
+            let accounts = vec![
+                PendingAccountOption {
+                    id: "acc_1".into(),
+                    user_name: "alice".into(),
+                    user_display_name: "Alice A".into(),
+                    last_used_at: "2026-09-25".into(),
+                    created_at: "2026-09-01".into(),
+                },
+                PendingAccountOption {
+                    id: "acc_2".into(),
+                    user_name: "bob".into(),
+                    user_display_name: "Bob B".into(),
+                    last_used_at: "2026-09-24".into(),
+                    created_at: "2026-09-02".into(),
+                },
+            ];
+            sec_clone
+                .request_user_verification_with_accounts(
+                    "webauthn.io",
+                    "GetAssertion",
+                    "alice",
+                    accounts,
+                    Some("acc_1".into()),
+                )
+                .await
+        });
+
+        // 1. Should receive NewPrompt
+        let event1 = tokio::time::timeout(Duration::from_millis(500), rx.recv())
+            .await
+            .expect("Timeout waiting for NewPrompt")
+            .expect("Recv error");
+
+        let req_id = match event1 {
+            PromptEvent::NewPrompt(p) => {
+                assert_eq!(p.rp_id, "webauthn.io");
+                assert_eq!(p.operation, "GetAssertion");
+                assert_eq!(p.user_name, "alice");
+                assert_eq!(p.accounts.len(), 2);
+                assert_eq!(p.selected_credential_id, Some("acc_1".into()));
+                p.request_id
+            }
+            other => panic!("Expected NewPrompt, got {:?}", other),
+        };
+
+        // 2. Select different account -> PromptUpdated
+        security
+            .select_account(req_id, "acc_2")
+            .expect("select_account failed");
+
+        let event2 = tokio::time::timeout(Duration::from_millis(500), rx.recv())
+            .await
+            .expect("Timeout waiting for PromptUpdated (account)")
+            .expect("Recv error");
+
+        match event2 {
+            PromptEvent::PromptUpdated(p) => {
+                assert_eq!(p.request_id, req_id);
+                assert_eq!(p.selected_credential_id, Some("acc_2".into()));
+            }
+            other => panic!("Expected PromptUpdated, got {:?}", other),
+        }
+
+        // 3. Toggle remember -> PromptUpdated
+        security.set_remember_requested(true);
+
+        let event3 = tokio::time::timeout(Duration::from_millis(500), rx.recv())
+            .await
+            .expect("Timeout waiting for PromptUpdated (remember)")
+            .expect("Recv error");
+
+        match event3 {
+            PromptEvent::PromptUpdated(p) => {
+                assert_eq!(p.request_id, req_id);
+                assert!(p.remember_requested);
+            }
+            other => panic!("Expected PromptUpdated, got {:?}", other),
+        }
+
+        // 4. Approve prompt -> PromptClosed
+        security
+            .approve_pending(req_id, "SETUP", Some("123456"), None, None)
+            .expect("approve_pending failed");
+
+        let event4 = tokio::time::timeout(Duration::from_millis(500), rx.recv())
+            .await
+            .expect("Timeout waiting for PromptClosed")
+            .expect("Recv error");
+
+        match event4 {
+            PromptEvent::PromptClosed(closed_id) => {
+                assert_eq!(closed_id, req_id);
+            }
+            other => panic!("Expected PromptClosed, got {:?}", other),
+        }
+
+        let result = handle.await.unwrap();
+        assert!(result.is_ok());
+        let success = result.unwrap();
+        assert_eq!(success.method, "SETUP");
+    }
+
+    #[tokio::test]
+    async fn test_prompt_rejection_broadcast() {
+        let security = setup_test_engine();
+        let mut rx = security.subscribe_prompts();
+
+        let sec_clone = security.clone();
+        let handle = tokio::spawn(async move {
+            sec_clone
+                .request_user_verification("example.com", "GetAssertion", "charlie")
+                .await
+        });
+
+        let event = rx.recv().await.unwrap();
+        let req_id = match event {
+            PromptEvent::NewPrompt(p) => p.request_id,
+            other => panic!("Expected NewPrompt, got {:?}", other),
+        };
+
+        security
+            .reject_pending(req_id, "Dismissed by user")
+            .expect("reject_pending failed");
+
+        let event_close = rx.recv().await.unwrap();
+        match event_close {
+            PromptEvent::PromptClosed(id) => assert_eq!(id, req_id),
+            other => panic!("Expected PromptClosed, got {:?}", other),
+        }
+
+        let res = handle.await.unwrap();
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("Dismissed by user"));
+    }
+
+    /// A request served by the Web UI while the prompt broadcast is being followed: the
+    /// pending query, the "remember" toggle and the approval all have to agree.
+    #[tokio::test]
+    async fn test_parallel_web_and_gui_sync() {
+        let security = setup_test_engine();
+        let mut rx = security.subscribe_prompts();
+
+        // Initially no prompt
+        assert!(security.get_pending_prompt().is_none());
+
+        let sec_clone = security.clone();
+        let handle = tokio::spawn(async move {
+            sec_clone
+                .request_user_verification("login.github.com", "GetAssertion", "dev")
+                .await
+        });
+
+        // Event for the UI surfaces
+        let event = rx.recv().await.unwrap();
+        let req_id = match event {
+            PromptEvent::NewPrompt(p) => p.request_id,
+            other => panic!("Expected NewPrompt, got {:?}", other),
+        };
+
+        // Query used by Web UI (/api/verify/pending)
+        let web_prompt = security.get_pending_prompt().expect("Web UI should see pending prompt");
+        assert_eq!(web_prompt.request_id, req_id);
+        assert_eq!(web_prompt.rp_id, "login.github.com");
+
+        // Web UI toggles remember preference
+        security.set_remember_requested(true);
+        let event_up = rx.recv().await.unwrap();
+        match event_up {
+            PromptEvent::PromptUpdated(p) => assert!(p.remember_requested),
+            other => panic!("Expected PromptUpdated, got {:?}", other),
+        }
+
+        // Web UI approves
+        security
+            .approve_pending(req_id, "SETUP", Some("654321"), None, Some(true))
+            .expect("Approval failed");
+
+        // The UI surfaces receive the closed event
+        let event_closed = rx.recv().await.unwrap();
+        match event_closed {
+            PromptEvent::PromptClosed(id) => assert_eq!(id, req_id),
+            other => panic!("Expected PromptClosed, got {:?}", other),
+        }
+
+        // Web UI now sees prompt is gone
+        assert!(security.get_pending_prompt().is_none());
+
+        let res = handle.await.unwrap();
+        assert!(res.is_ok());
+    }
+}

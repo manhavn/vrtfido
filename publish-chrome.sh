@@ -21,7 +21,7 @@
 #   --version X.Y.Z      Đặt version trước khi build (bỏ qua bước hỏi)
 #   --no-publish         Chỉ upload, không publish (giữ ở bản nháp)
 #   --dry-run            Build + in lệnh, KHÔNG gọi API
-#   --no-build           Dùng dist/vrtfido-chrome.zip có sẵn
+#   --no-build           Dùng releases/vrtfido-chrome.zip có sẵn
 #   -y, --yes            Không hỏi xác nhận
 #   -h, --help
 #
@@ -30,7 +30,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MANIFEST="$SCRIPT_DIR/extension/manifest.json"
 CHROME_DIST="$SCRIPT_DIR/dist/chrome"
-ZIP_FILE="$SCRIPT_DIR/dist/vrtfido-chrome.zip"
+ZIP_FILE="$SCRIPT_DIR/releases/vrtfido-chrome.zip"
 DEFAULT_CRED_FILE="${VRTFIDO_CWS_CREDENTIALS:-$HOME/.config/vrtfido/cws.env}"
 API_BASE="https://chromewebstore.googleapis.com"
 TOKEN_URL="https://oauth2.googleapis.com/token"
@@ -89,7 +89,7 @@ confirm() { # confirm "câu hỏi" -> 0 = đồng ý
 get_version() { python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["version"])' "$MANIFEST"; }
 valid_version() { [[ "$1" =~ ^[0-9]+(\.[0-9]+){1,3}$ ]]; }
 
-bump_version() { # bump_version "0.3.4" patch|minor|major
+bump_version() { # bump_version "0.3.5" patch|minor|major
   python3 - "$1" "$2" <<'PY'
 import sys
 cur, mode = sys.argv[1], sys.argv[2]
@@ -150,7 +150,7 @@ Tùy chọn:
   --version X.Y.Z      Đặt version trước khi build
   --no-publish         Chỉ upload, không publish
   --dry-run            Build + in lệnh, không gọi API
-  --no-build           Dùng dist/vrtfido-chrome.zip có sẵn
+  --no-build           Dùng releases/vrtfido-chrome.zip có sẵn
   -y, --yes            Không hỏi xác nhận
   -h, --help
 EOF

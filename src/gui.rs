@@ -1,4 +1,5 @@
-use crate::security::{PendingPrompt, PromptEvent, SecurityEngine};
+use crate::security::PendingPrompt;
+use crate::web::{ApiResponse, ApproveVerifyRequest, RejectVerifyRequest, RememberRequest, SelectAccountRequest};
 use gtk::prelude::*;
 use gtk::{gdk, glib};
 use std::cell::RefCell;
@@ -153,37 +154,147 @@ window.vrtfido-modal {
 }
 "#;
 
-thread_local! {
-    static MODAL_HOLDER: RefCell<Option<PromptModalUi>> = RefCell::new(None);
+/// Blocking client for the daemon's local verification API.
+///
+/// The window lives in its own process, so it observes and settles requests over HTTP
+/// exactly like the Web CMS does. Method names and signatures mirror the engine's, which
+/// keeps the modal code below identical to the in-process version it replaced.
+#[derive(Clone)]
+struct PromptApi {
+    host: String,
+    port: u16,
 }
 
-pub struct GuiHandle {
-    join_handle: Option<std::thread::JoinHandle<()>>,
-}
+impl PromptApi {
+    fn new(host: &str, port: u16) -> Self {
+        Self {
+            host: host.to_string(),
+            port,
+        }
+    }
 
-impl GuiHandle {
-    pub fn shutdown(mut self) {
-        glib::idle_add_once(|| {
-            gtk::main_quit();
-        });
-        if let Some(handle) = self.join_handle.take() {
-            let _ = handle.join();
+    fn url(&self, path: &str) -> String {
+        format!("http://{}:{}{}", self.host, self.port, path)
+    }
+
+    /// The request the daemon is waiting for, `None` when none is pending. An error
+    /// means the daemon could not be reached at all.
+    fn pending(&self) -> Result<Option<PendingPrompt>, String> {
+        let response = ureq::get(&self.url("/api/verify/pending"))
+            .timeout(Duration::from_secs(2))
+            .call()
+            .map_err(|e| e.to_string())?;
+        let body: ApiResponse<Option<PendingPrompt>> = response
+            .into_json()
+            .map_err(|e| format!("invalid daemon response: {}", e))?;
+        if body.success {
+            Ok(body.data.unwrap_or(None))
+        } else {
+            Err(body.error.unwrap_or_else(|| "daemon rejected the request".into()))
+        }
+    }
+
+    /// The fingerprint path waits for the USB sensor inside the daemon, so this call needs
+    /// a timeout well beyond that scan window.
+    fn approve_pending(
+        &self,
+        request_id: u64,
+        method: &str,
+        pin: Option<&str>,
+        credential_id: Option<String>,
+        remember: Option<bool>,
+    ) -> Result<(), String> {
+        self.post(
+            "/api/verify/approve",
+            &ApproveVerifyRequest {
+                request_id,
+                method: method.to_string(),
+                pin: pin.map(|value| value.to_string()),
+                credential_id,
+                remember,
+            },
+            Duration::from_secs(60),
+        )
+    }
+
+    fn reject_pending(&self, request_id: u64, reason: &str) -> Result<(), String> {
+        self.post(
+            "/api/verify/reject",
+            &RejectVerifyRequest {
+                request_id,
+                reason: Some(reason.to_string()),
+            },
+            Duration::from_secs(5),
+        )
+    }
+
+    fn set_remember_requested(&self, enabled: bool) {
+        if let Err(e) = self.post(
+            "/api/verify/remember",
+            &RememberRequest { enabled },
+            Duration::from_secs(5),
+        ) {
+            eprintln!("[GUI] Could not update the remember checkbox: {}", e);
+        }
+    }
+
+    fn select_account(&self, request_id: u64, credential_id: &str) -> Result<(), String> {
+        self.post(
+            "/api/verify/select",
+            &SelectAccountRequest {
+                request_id,
+                credential_id: credential_id.to_string(),
+            },
+            Duration::from_secs(5),
+        )
+    }
+
+    fn post<B: serde::Serialize>(
+        &self,
+        path: &str,
+        payload: &B,
+        timeout: Duration,
+    ) -> Result<(), String> {
+        match ureq::post(&self.url(path)).timeout(timeout).send_json(payload) {
+            Ok(response) => Self::read_result(response),
+            // A 4xx/5xx answer still carries the daemon's explanation, so read that body
+            // instead of reporting a bare status code.
+            Err(ureq::Error::Status(_, response)) => Self::read_result(response),
+            Err(other) => Err(other.to_string()),
+        }
+    }
+
+    fn read_result(response: ureq::Response) -> Result<(), String> {
+        let body: ApiResponse<bool> = response
+            .into_json()
+            .map_err(|e| format!("invalid daemon response: {}", e))?;
+        if body.success {
+            Ok(())
+        } else {
+            Err(body.error.unwrap_or_else(|| "request failed".into()))
         }
     }
 }
 
-/// Spawns the Linux desktop native GUI prompt service in a dedicated thread.
-/// Automatically detects headless environments (missing DISPLAY or WAYLAND_DISPLAY)
-/// and handles errors gracefully without interrupting daemon / CLI mode.
-pub fn spawn_gui(security: SecurityEngine) -> Option<GuiHandle> {
+thread_local! {
+    static MODAL_HOLDER: RefCell<Option<PromptModalUi>> = RefCell::new(None);
+}
+
+/// Runs the GTK verification window until the window closes or the daemon disappears.
+///
+/// The window is a client of the daemon's local API, which is what lets the daemon
+/// binary ship without GTK: on a host without the GTK3 runtime this process exits at
+/// once and the daemon keeps serving headless. Returns the process exit status.
+pub fn run(host: &str, port: u16) -> i32 {
     if std::env::var("DISPLAY").is_err() && std::env::var("WAYLAND_DISPLAY").is_err() {
         println!("[GUI] No X11 or Wayland display detected. Native GUI prompt modal disabled.");
-        return None;
+        return 0;
     }
 
     let (init_tx, init_rx) = std::sync::mpsc::channel::<Result<(), String>>();
 
-    let sec_for_thread = security.clone();
+    let api = PromptApi::new(host, port);
+    let api_for_thread = api.clone();
     let join_handle = std::thread::spawn(move || {
         if let Err(e) = gtk::init() {
             let err_msg = format!("GTK initialization failed: {}", e);
@@ -207,18 +318,35 @@ pub fn spawn_gui(security: SecurityEngine) -> Option<GuiHandle> {
         println!("[GUI] [+] Linux desktop WebAuthn verification prompt modal initialized.");
 
         // Construct modal UI on GTK thread and store in thread_local
-        let modal = PromptModalUi::new(sec_for_thread.clone());
+        let modal = PromptModalUi::new(api_for_thread.clone());
         MODAL_HOLDER.with(|holder| {
             *holder.borrow_mut() = Some(modal);
         });
 
         let _ = init_tx.send(Ok(()));
 
-        // 200ms periodic timer to reconcile active prompt with backend
-        // (Ensures auto-close if settled via Web UI, USB touch, or 60s timeout)
-        let sec_heartbeat = sec_for_thread.clone();
+        // 200ms periodic timer to reconcile the active prompt with the daemon: shows a new
+        // request, follows changes made in the Web CMS or on the USB sensor, and closes the
+        // window once the request is settled or times out. Repeated failures mean the daemon
+        // is gone, so the window exits instead of lingering.
+        let api_heartbeat = api_for_thread.clone();
+        let mut unreachable_polls = 0u32;
         glib::timeout_add_local(Duration::from_millis(200), move || {
-            let pending_opt = sec_heartbeat.get_pending_prompt();
+            let pending_opt = match api_heartbeat.pending() {
+                Ok(pending) => {
+                    unreachable_polls = 0;
+                    pending
+                }
+                Err(reason) => {
+                    unreachable_polls += 1;
+                    if unreachable_polls >= 10 {
+                        eprintln!("[GUI] Daemon unreachable ({}); closing the prompt window.", reason);
+                        gtk::main_quit();
+                        return glib::ControlFlow::Break;
+                    }
+                    return glib::ControlFlow::Continue;
+                }
+            };
             MODAL_HOLDER.with(|holder| {
                 if let Some(ui) = holder.borrow().as_ref() {
                     if ui.is_visible() {
@@ -249,46 +377,20 @@ pub fn spawn_gui(security: SecurityEngine) -> Option<GuiHandle> {
         });
     });
 
-    // Await GTK initialization result
+    // Await the GTK initialization result, then keep this process alive until the window
+    // closes so the exit status says whether the window ever came up.
     match init_rx.recv() {
         Ok(Ok(())) => {}
         Ok(Err(_)) | Err(_) => {
-            return None;
+            return 1;
         }
     }
 
-    // Forward Tokio prompt broadcast events to the GTK main context via idle_add
-    let sec_listener = security.clone();
-    tokio::spawn(async move {
-        let mut rx = sec_listener.subscribe_prompts();
-        while let Ok(event) = rx.recv().await {
-            glib::idle_add_once(move || {
-                MODAL_HOLDER.with(|holder| {
-                    if let Some(ui) = holder.borrow().as_ref() {
-                        match event {
-                            PromptEvent::NewPrompt(p) => {
-                                ui.display_prompt(p);
-                            }
-                            PromptEvent::PromptUpdated(p) => {
-                                ui.update_prompt(p);
-                            }
-                            PromptEvent::PromptClosed(id) => {
-                                ui.close_if_matching(id);
-                            }
-                        }
-                    }
-                });
-            });
-        }
-    });
-
-    Some(GuiHandle {
-        join_handle: Some(join_handle),
-    })
+    let _ = join_handle.join();
+    0
 }
 
 struct PromptModalUi {
-    _security: SecurityEngine,
     window: gtk::Window,
     rp_badge: gtk::Label,
     user_label: gtk::Label,
@@ -311,7 +413,7 @@ struct PromptModalUi {
 }
 
 impl PromptModalUi {
-    fn new(security: SecurityEngine) -> Self {
+    fn new(api: PromptApi) -> Self {
         let window = gtk::Window::new(gtk::WindowType::Toplevel);
         window.set_title("WebAuthn Verification Request - VrtFido");
         window.set_position(gtk::WindowPosition::Center);
@@ -474,7 +576,7 @@ impl PromptModalUi {
         window.add(&outer_box);
 
         // Setup Event Connectors
-        let sec = security.clone();
+        let sec = api.clone();
         let cur_id = current_req_id.clone();
         let win_clone = window.clone();
         let status_clone = status_label.clone();
@@ -713,7 +815,7 @@ impl PromptModalUi {
         });
 
         // Remember Checkbox onchange
-        let sec_check = security.clone();
+        let sec_check = api.clone();
         let suppress_check = suppress_callbacks.clone();
         remember_check.connect_toggled(move |btn| {
             if suppress_check.load(Ordering::SeqCst) {
@@ -723,7 +825,7 @@ impl PromptModalUi {
         });
 
         // Multi-Account ComboBox onchange
-        let sec_combo = security.clone();
+        let sec_combo = api.clone();
         let cur_id_combo = current_req_id.clone();
         let suppress_combo = suppress_callbacks.clone();
         account_combo.connect_changed(move |combo| {
@@ -738,7 +840,6 @@ impl PromptModalUi {
         });
 
         Self {
-            _security: security,
             window,
             rp_badge,
             user_label,
@@ -772,17 +873,6 @@ impl PromptModalUi {
         self.setup_pin_entry.set_text("");
         self.status_label.set_text("");
         self.window.hide();
-    }
-
-    fn close_if_matching(&self, req_id: u64) {
-        let mut guard = self.current_req_id.lock();
-        if *guard == Some(req_id) {
-            *guard = None;
-            self.verify_pin_entry.set_text("");
-            self.setup_pin_entry.set_text("");
-            self.status_label.set_text("");
-            self.window.hide();
-        }
     }
 
     fn display_prompt(&self, p: PendingPrompt) {
@@ -878,24 +968,6 @@ impl PromptModalUi {
         self.window.present();
     }
 
-    fn update_prompt(&self, p: PendingPrompt) {
-        if *self.current_req_id.lock() != Some(p.request_id) {
-            return;
-        }
-
-        self.suppress_callbacks.store(true, Ordering::SeqCst);
-        if self.remember_check.is_active() != p.remember_requested {
-            self.remember_check.set_active(p.remember_requested);
-        }
-
-        if let Some(sel) = &p.selected_credential_id {
-            if self.account_combo.active_id().as_deref() != Some(sel.as_str()) {
-                self.account_combo.set_active_id(Some(sel));
-            }
-        }
-        self.suppress_callbacks.store(false, Ordering::SeqCst);
-    }
-
     fn sync_fields_if_changed(&self, p: &PendingPrompt) {
         if self.suppress_callbacks.load(Ordering::SeqCst) {
             return;
@@ -931,211 +1003,9 @@ impl PromptModalUi {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::Db;
-    use crate::security::PendingAccountOption;
-    use crate::sensor::UsbSensor;
 
-    fn setup_test_engine() -> SecurityEngine {
-        let db = Db::open(":memory:").expect("In-memory SQLite DB failed");
-        let sensor = UsbSensor::new();
-        SecurityEngine::new(db, sensor, false)
-    }
-
-    #[tokio::test]
-    async fn test_prompt_broadcast_lifecycle() {
-        let security = setup_test_engine();
-        let mut rx = security.subscribe_prompts();
-
-        let sec_clone = security.clone();
-        let handle = tokio::spawn(async move {
-            let accounts = vec![
-                PendingAccountOption {
-                    id: "acc_1".into(),
-                    user_name: "alice".into(),
-                    user_display_name: "Alice A".into(),
-                    last_used_at: "2026-09-25".into(),
-                    created_at: "2026-09-01".into(),
-                },
-                PendingAccountOption {
-                    id: "acc_2".into(),
-                    user_name: "bob".into(),
-                    user_display_name: "Bob B".into(),
-                    last_used_at: "2026-09-24".into(),
-                    created_at: "2026-09-02".into(),
-                },
-            ];
-            sec_clone
-                .request_user_verification_with_accounts(
-                    "webauthn.io",
-                    "GetAssertion",
-                    "alice",
-                    accounts,
-                    Some("acc_1".into()),
-                )
-                .await
-        });
-
-        // 1. Should receive NewPrompt
-        let event1 = tokio::time::timeout(Duration::from_millis(500), rx.recv())
-            .await
-            .expect("Timeout waiting for NewPrompt")
-            .expect("Recv error");
-
-        let req_id = match event1 {
-            PromptEvent::NewPrompt(p) => {
-                assert_eq!(p.rp_id, "webauthn.io");
-                assert_eq!(p.operation, "GetAssertion");
-                assert_eq!(p.user_name, "alice");
-                assert_eq!(p.accounts.len(), 2);
-                assert_eq!(p.selected_credential_id, Some("acc_1".into()));
-                p.request_id
-            }
-            other => panic!("Expected NewPrompt, got {:?}", other),
-        };
-
-        // 2. Select different account -> PromptUpdated
-        security
-            .select_account(req_id, "acc_2")
-            .expect("select_account failed");
-
-        let event2 = tokio::time::timeout(Duration::from_millis(500), rx.recv())
-            .await
-            .expect("Timeout waiting for PromptUpdated (account)")
-            .expect("Recv error");
-
-        match event2 {
-            PromptEvent::PromptUpdated(p) => {
-                assert_eq!(p.request_id, req_id);
-                assert_eq!(p.selected_credential_id, Some("acc_2".into()));
-            }
-            other => panic!("Expected PromptUpdated, got {:?}", other),
-        }
-
-        // 3. Toggle remember -> PromptUpdated
-        security.set_remember_requested(true);
-
-        let event3 = tokio::time::timeout(Duration::from_millis(500), rx.recv())
-            .await
-            .expect("Timeout waiting for PromptUpdated (remember)")
-            .expect("Recv error");
-
-        match event3 {
-            PromptEvent::PromptUpdated(p) => {
-                assert_eq!(p.request_id, req_id);
-                assert!(p.remember_requested);
-            }
-            other => panic!("Expected PromptUpdated, got {:?}", other),
-        }
-
-        // 4. Approve prompt -> PromptClosed
-        security
-            .approve_pending(req_id, "SETUP", Some("123456"), None, None)
-            .expect("approve_pending failed");
-
-        let event4 = tokio::time::timeout(Duration::from_millis(500), rx.recv())
-            .await
-            .expect("Timeout waiting for PromptClosed")
-            .expect("Recv error");
-
-        match event4 {
-            PromptEvent::PromptClosed(closed_id) => {
-                assert_eq!(closed_id, req_id);
-            }
-            other => panic!("Expected PromptClosed, got {:?}", other),
-        }
-
-        let result = handle.await.unwrap();
-        assert!(result.is_ok());
-        let success = result.unwrap();
-        assert_eq!(success.method, "SETUP");
-    }
-
-    #[tokio::test]
-    async fn test_prompt_rejection_broadcast() {
-        let security = setup_test_engine();
-        let mut rx = security.subscribe_prompts();
-
-        let sec_clone = security.clone();
-        let handle = tokio::spawn(async move {
-            sec_clone
-                .request_user_verification("example.com", "GetAssertion", "charlie")
-                .await
-        });
-
-        let event = rx.recv().await.unwrap();
-        let req_id = match event {
-            PromptEvent::NewPrompt(p) => p.request_id,
-            other => panic!("Expected NewPrompt, got {:?}", other),
-        };
-
-        security
-            .reject_pending(req_id, "Dismissed by user")
-            .expect("reject_pending failed");
-
-        let event_close = rx.recv().await.unwrap();
-        match event_close {
-            PromptEvent::PromptClosed(id) => assert_eq!(id, req_id),
-            other => panic!("Expected PromptClosed, got {:?}", other),
-        }
-
-        let res = handle.await.unwrap();
-        assert!(res.is_err());
-        assert!(res.unwrap_err().contains("Dismissed by user"));
-    }
-
-    #[tokio::test]
-    async fn test_parallel_web_and_gui_sync() {
-        let security = setup_test_engine();
-        let mut rx = security.subscribe_prompts();
-
-        // Initially no prompt
-        assert!(security.get_pending_prompt().is_none());
-
-        let sec_clone = security.clone();
-        let handle = tokio::spawn(async move {
-            sec_clone
-                .request_user_verification("login.github.com", "GetAssertion", "dev")
-                .await
-        });
-
-        // Event for GUI
-        let event = rx.recv().await.unwrap();
-        let req_id = match event {
-            PromptEvent::NewPrompt(p) => p.request_id,
-            other => panic!("Expected NewPrompt, got {:?}", other),
-        };
-
-        // Query used by Web UI (/api/verify/pending)
-        let web_prompt = security.get_pending_prompt().expect("Web UI should see pending prompt");
-        assert_eq!(web_prompt.request_id, req_id);
-        assert_eq!(web_prompt.rp_id, "login.github.com");
-
-        // Web UI toggles remember preference
-        security.set_remember_requested(true);
-        let event_up = rx.recv().await.unwrap();
-        match event_up {
-            PromptEvent::PromptUpdated(p) => assert!(p.remember_requested),
-            other => panic!("Expected PromptUpdated, got {:?}", other),
-        }
-
-        // Web UI approves
-        security
-            .approve_pending(req_id, "SETUP", Some("654321"), None, Some(true))
-            .expect("Approval failed");
-
-        // GUI receives closed event
-        let event_closed = rx.recv().await.unwrap();
-        match event_closed {
-            PromptEvent::PromptClosed(id) => assert_eq!(id, req_id),
-            other => panic!("Expected PromptClosed, got {:?}", other),
-        }
-
-        // Web UI now sees prompt is gone
-        assert!(security.get_pending_prompt().is_none());
-
-        let res = handle.await.unwrap();
-        assert!(res.is_ok());
-    }
+    // The prompt lifecycle specs live in src/security.rs next to the engine APIs they
+    // cover; the window itself is only responsible for the CSS it loads.
 
     #[test]
     fn test_gui_css_validity() {

@@ -5,8 +5,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EXT_DIR="$SCRIPT_DIR/extension"
 DIST_DIR="$SCRIPT_DIR/dist"
 CHROME_DIST="$DIST_DIR/chrome"
+RELEASES="$SCRIPT_DIR/releases"
 
 echo "=== [1/3] Chuẩn bị thư mục build Chrome ==="
+# releases/ chỉ chứa file thành phẩm: xoá gói Chrome cũ trước khi build để một lần
+# build lỗi không để lại gói cũ trông như vừa build xong.
+mkdir -p "$RELEASES"
+rm -f "$RELEASES/vrtfido-chrome.zip"
 rm -rf "$CHROME_DIST" "$DIST_DIR/vrtfido-chrome.zip"
 mkdir -p "$CHROME_DIST"
 
@@ -42,6 +47,8 @@ with zipfile.ZipFile(out_zip, "w", zipfile.ZIP_DEFLATED) as z:
             z.write(p, os.path.relpath(p, dist))
 '
 
+mv -f "$DIST_DIR/vrtfido-chrome.zip" "$RELEASES/"
+
 echo "✓ Build Chrome Extension thành công!"
 echo "  - Thư mục nạp trực tiếp (Load unpacked): $CHROME_DIST"
-echo "  - Tệp zip đóng gói: $DIST_DIR/vrtfido-chrome.zip"
+echo "  - Tệp zip đóng gói: $RELEASES/vrtfido-chrome.zip"

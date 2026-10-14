@@ -43,10 +43,10 @@ Tại thư mục gốc dự án, chạy script build:
 ./build-safari.sh
 ```
 
-Kết quả build sẽ nằm tại thư mục `dist/`:
-- **Chrome / Chromium / Brave / Edge / Opera**: Thư mục `dist/chrome/` và tệp `dist/vrtfido-chrome.zip`.
-- **Firefox**: Thư mục `dist/firefox/` và tệp `dist/vrtfido-firefox.zip`.
-- **Apple Safari**: Thư mục `dist/safari/` và tệp `dist/vrtfido-safari.zip`.
+Gói đóng gói được đưa vào `releases/`; thư mục giải nén vẫn nằm ở `dist/`:
+- **Chrome / Chromium / Brave / Edge / Opera**: Thư mục `dist/chrome/` và tệp `releases/vrtfido-chrome.zip`.
+- **Firefox**: Thư mục `dist/firefox/` và tệp `releases/vrtfido-firefox.zip`.
+- **Apple Safari**: Thư mục `dist/safari/` và tệp `releases/vrtfido-safari.zip`.
 
 ---
 
@@ -66,7 +66,7 @@ Kết quả build sẽ nằm tại thư mục `dist/`:
 2. Nhấp vào nút **Tải tiện ích bổ sung tạm thời...** (**Load Temporary Add-on...**).
 3. Chọn tệp:
    ```text
-   vrtfido/dist/vrtfido-firefox.zip
+   vrtfido/releases/vrtfido-firefox.zip
    ```
 
 ### C. Cho Apple Safari (macOS & iOS/iPadOS):
@@ -108,14 +108,14 @@ Safari đóng gói Web Extension dưới dạng một ứng dụng macOS native 
 
 ## 5. Phát hành bản build Firefox (addons.mozilla.org)
 
-`dist/vrtfido-firefox.zip` **chưa cài vĩnh viễn được trên Firefox release cho tới khi Mozilla ký** — nên "lên public" nghĩa là bản đã ký trên [addons.mozilla.org](https://addons.mozilla.org) (AMO), hoặc tệp `.xpi` đã ký do bạn tự host.
+`releases/vrtfido-firefox.zip` **chưa cài vĩnh viễn được trên Firefox release cho tới khi Mozilla ký** — nên "lên public" nghĩa là bản đã ký trên [addons.mozilla.org](https://addons.mozilla.org) (AMO), hoặc tệp `.xpi` đã ký do bạn tự host.
 
 **Một lệnh duy nhất (tương tác).** Chạy từ thư mục gốc repo:
 
 ```bash
 ./publish-firefox.sh             # hỏi lần lượt: kênh, version, license, API key -> ký -> public
 ./publish-firefox.sh --dry-run   # build + lint, KHÔNG gọi AMO
-./publish-firefox.sh --channel unlisted --version 0.3.4 --yes   # không tương tác
+./publish-firefox.sh --channel unlisted --version 0.3.5 --yes   # không tương tác
 ```
 
 Script kiểm tra môi trường, hỏi kênh (`listed` = public trên AMO, `unlisted` = `.xpi` đã ký tự host), cho tăng version, chạy `build-firefox.sh` (đã ép addons-linter), hỏi giấy phép (chỉ kênh listed) và API key/secret của AMO (có thể lưu tại `~/.config/vrtfido/amo.env`, `chmod 600`), ký, rồi public (submit AMO với `listed`; tạo GitHub Release bằng `gh` nếu có với `unlisted`). Các bước thủ công bên dưới chính là những gì script tự động hoá.
@@ -136,7 +136,7 @@ Slug category hợp lệ: <https://addons.mozilla.org/api/v5/addons/categories/>
 **Kiểm tra (`mozilla/addons-linter`).** `./build-firefox.sh` tự chạy linter chính thức trên file zip và dừng nếu có lỗi (`SKIP_LINT=1` để bỏ qua, hữu ích khi offline). Chạy lẻ:
 
 ```bash
-npx --yes addons-linter@latest dist/vrtfido-firefox.zip
+npx --yes addons-linter@latest releases/vrtfido-firefox.zip
 ```
 
 **Điều kiện.** Tài khoản AMO và API key tại <https://addons.mozilla.org/developers/addon/api/key/>, xuất thành biến `WEB_EXT_API_KEY` và `WEB_EXT_API_SECRET`.
@@ -172,7 +172,7 @@ Tệp đã ký nằm trong `web-ext-artifacts/`. ID extension (`vrtfido@local`) 
 
 ## 6. Phát hành lên Chrome Web Store
 
-Chrome không có công cụ tương đương `web-ext`: [Chrome Web Store API v2](https://developer.chrome.com/docs/webstore/using-api) cần OAuth, và item **đầu tiên** phải tạo thủ công trên [Developer Dashboard](https://chrome.google.com/webstore/devconsole/) (upload `dist/vrtfido-chrome.zip`, điền tab **Store listing** và **Privacy**). Sau đó có thể tự động hoá các bản cập nhật:
+Chrome không có công cụ tương đương `web-ext`: [Chrome Web Store API v2](https://developer.chrome.com/docs/webstore/using-api) cần OAuth, và item **đầu tiên** phải tạo thủ công trên [Developer Dashboard](https://chrome.google.com/webstore/devconsole/) (upload `releases/vrtfido-chrome.zip`, điền tab **Store listing** và **Privacy**). Sau đó có thể tự động hoá các bản cập nhật:
 
 ```bash
 ./publish-chrome.sh                      # hỏi lần lượt: version, OAuth, Publisher/Extension ID -> upload -> publish

@@ -57,7 +57,7 @@ pub struct AddFingerprintRequest {
     pub name: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct ApproveVerifyRequest {
     pub request_id: u64,
     pub method: String,
@@ -68,24 +68,24 @@ pub struct ApproveVerifyRequest {
     pub remember: Option<bool>,
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct RememberRequest {
     pub enabled: bool,
 }
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct SelectAccountRequest {
     pub request_id: u64,
     pub credential_id: String,
 }
 
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct RejectVerifyRequest {
     pub request_id: u64,
     pub reason: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct ApiResponse<T> {
     pub success: bool,
     #[serde(skip_serializing_if = "Option::is_none")]

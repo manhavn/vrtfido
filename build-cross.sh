@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Standalone local release builder for vrtfido.
 # Automatically installs missing tools (zig, cargo-zigbuild, rust targets)
-# and outputs upload-ready archives to dist/packages/.
+# and moves upload-ready archives from dist/packages/ into releases/.
 #
 # Usage:
 #   ./build-cross.sh
@@ -19,7 +19,10 @@ fi
 
 PROJECT_NAME="vrtfido"
 BIN_NAME="vrtfido"
-DEFAULT_TARGETS="x86_64-unknown-linux-gnu,x86_64-unknown-linux-musl,aarch64-unknown-linux-gnu,aarch64-unknown-linux-musl"
+# The `gnu` packages belong to build-gui.sh, which ships the daemon together with the GTK
+# window; this script owns the portable builds. A GTK-free `gnu` package is still one
+# TARGETS=... away.
+DEFAULT_TARGETS="x86_64-unknown-linux-musl,aarch64-unknown-linux-musl"
 TARGETS_CSV="${TARGETS:-$DEFAULT_TARGETS}"
 
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -76,7 +79,17 @@ else
 fi
 
 IFS=',' read -r -a BUILD_TARGETS <<< "$TARGETS_CSV"
-mkdir -p "$ROOT/dist/packages"
+
+# releases/ holds only finished packages. Every target that is about to be rebuilt
+# drops its previous archive first, so a failed build cannot leave a stale package
+# behind that looks current.
+RELEASES="$ROOT/releases"
+mkdir -p "$ROOT/dist/packages" "$RELEASES"
+for target in "${BUILD_TARGETS[@]}"; do
+  target="$(echo "$target" | xargs)"
+  [[ -n "$target" ]] || continue
+  rm -f "$RELEASES/${PROJECT_NAME}-${target}.tar.gz" "$RELEASES/${PROJECT_NAME}-${target}.tar.gz.sha256"
+done
 
 # rustc links every artifact with -Wl,-O1 and the lld that zig ships deprecates that value, so each
 # cross build used to print "ignoring deprecated linker optimization setting '1'" through the
@@ -125,10 +138,12 @@ for target in "${BUILD_TARGETS[@]}"; do
   tar -C "$stage_dir" -czf "${archive}.tmp" .
   mv -f "${archive}.tmp" "$archive"
   rm -rf "$stage_dir"
-  # The checksum is written only after the archive is final.
+  # The checksum is written only after the archive is final, and both files travel
+  # together into releases/ so a staged package is never there without its checksum.
   (cd "$ROOT/dist/packages" && sha256sum "$(basename "$archive")" > "$(basename "$archive").sha256")
+  mv -f "$archive" "${archive}.sha256" "$RELEASES/"
   built+=("$target")
-  echo "    [+] Package completed: $archive"
+  echo "    [+] Package completed: $RELEASES/$(basename "$archive")"
 done
 
 echo ""
@@ -136,5 +151,5 @@ echo "============================================================"
 echo "     ALL PACKAGES BUILT AND ARCHIVED SUCCESSFULLY           "
 echo "============================================================"
 echo "Built architectures: ${built[*]}"
-echo "GitHub Releases upload directory: $ROOT/dist/packages/"
-ls -lh "$ROOT/dist/packages/"
+echo "Publish-ready artifacts: $RELEASES/"
+ls -lh "$RELEASES/"

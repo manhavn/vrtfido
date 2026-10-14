@@ -52,6 +52,7 @@ The application includes an embedded **Web CMS Dashboard** on port **10209**, su
    - Click the tray icon or select **Dashboard** from the tray menu to open your default browser.
    - Toggle **Start with the system** directly in the tray menu (with checkmark status) to enable or disable automatic startup upon system login (`~/.config/autostart/vrtfido.desktop`).
    - Option `--no-tray` to disable system tray on headless/server systems.
+   - The native GTK verification window ships as the companion binary `vrtfido-gui`, which the daemon starts by itself: a machine that can run GTK shows the window, a headless VPS keeps running without it (the Web CMS prompt modal still works). No flag is needed — GTK is never a startup requirement of the daemon.
 
 8. **Android System Passkey Provider (Android 14+):**
    - Acts as a system-level Passkey / Credential Provider via Android Credential Manager API.
@@ -130,6 +131,11 @@ tail -f /tmp/vrtfido.log
 # Create the virtual FIDO2 device on /dev/uhid (off by default; asks for sudo/pkexec once if the node is not writable):
 ./target/release/vrtfido --uhid
 
+# Bind the dashboard to a specific address/port (defaults: 0.0.0.0:10209, every interface;
+# the same two values are read from HOST and PORT). The service has no built-in
+# authentication, so who can reach it is decided by the bind address you choose:
+./target/release/vrtfido --host 127.0.0.1 --port 8080
+
 # Impersonate Google Password Manager's AAGUID instead of the project AAGUID:
 ./target/release/vrtfido --uhid --google-aaguid
 ```
@@ -150,11 +156,33 @@ mise use -g zig
 TARGETS=x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu ./build-cross.sh
 ```
 
-Release packages (`.tar.gz`) and checksums (`.sha256`) are generated in `dist/packages/`:
+Release packages (`.tar.gz`) and checksums (`.sha256`) are moved into `releases/`:
 - `vrtfido-x86_64-unknown-linux-gnu.tar.gz`
 - `vrtfido-x86_64-unknown-linux-musl.tar.gz`
 - `vrtfido-aarch64-unknown-linux-gnu.tar.gz`
 - `vrtfido-aarch64-unknown-linux-musl.tar.gz`
+
+The native desktop GUI (GTK3) packages are built the same way by `build-gui.sh`:
+
+```bash
+# Build every GUI target:
+./build-gui.sh
+
+# Or build specific targets:
+TARGETS=x86_64-unknown-linux-gnu ./build-gui.sh
+```
+
+One run installs everything it needs: missing CLI tools are installed through [mise](https://mise.jdx.dev/) whenever its registry ships them, GTK3 development files come from the system package manager, and on hosts where that would need a password the `.deb` archives are unpacked into a private sysroot under `~/.cache/vrtfido-gui/` (rootless, no changes to `/usr`). The aarch64 GUI package is cross-compiled inside a container, so that target needs a working `podman` or `docker` that you install yourself.
+
+Every GUI package carries two binaries: `vrtfido` (the daemon, which links no GTK) and `vrtfido-gui` (the GTK window). The daemon starts the window itself and falls back to headless mode whenever the host cannot run it — no GTK3 runtime, no display, or a failed start — so the same `.tar.gz` serves a desktop laptop and a headless VPS with no flag and no per-machine configuration. Installing `libgtk-3-0` is only what a machine needs to actually get the window.
+
+Every release package (browser extensions, Android APK, CLI and GUI) can be built with a single command instead:
+
+```bash
+./release-build-all.sh
+```
+
+Each build type drops its previous output and stages the new one in `releases/`, so that directory always holds the current release set.
 
 ### 5. Getting Started
 
@@ -173,7 +201,7 @@ On Linux x86_64, build a **signed release APK** with one command (internet requi
 ./build-android.sh
 ```
 
-Output: `android/app/build/outputs/apk/release/app-release.apk`. For a debug build, run `./build-android.sh debug`.
+Output: `releases/app-release.apk` (Gradle writes it under `android/app/build/outputs/apk/release/` first, then the script moves it into `releases/`). For a debug build, run `./build-android.sh debug`.
 
 Install it on a connected phone with:
 

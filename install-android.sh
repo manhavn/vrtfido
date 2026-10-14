@@ -21,8 +21,8 @@ for arg in "$@"; do
 done
 if [ -z "$apk" ]; then
     for candidate in \
-        "$ROOT/android/app/build/outputs/apk/release/app-release.apk" \
-        "$ROOT/android/app/build/outputs/apk/debug/app-debug.apk"; do
+        "$ROOT/releases/app-release.apk" \
+        "$ROOT/releases/app-debug.apk"; do
         [ -f "$candidate" ] && { apk="$candidate"; break; }
     done
 fi

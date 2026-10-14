@@ -5,8 +5,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EXT_DIR="$SCRIPT_DIR/extension"
 DIST_DIR="$SCRIPT_DIR/dist"
 SAFARI_DIST="$DIST_DIR/safari"
+RELEASES="$SCRIPT_DIR/releases"
 
 echo "=== [1/3] Chuẩn bị thư mục build Safari ==="
+# releases/ chỉ chứa file thành phẩm: xoá gói Safari cũ trước khi build để một lần
+# build lỗi không để lại gói cũ trông như vừa build xong.
+mkdir -p "$RELEASES"
+rm -f "$RELEASES/vrtfido-safari.zip"
 rm -rf "$SAFARI_DIST" "$DIST_DIR/vrtfido-safari.zip"
 mkdir -p "$SAFARI_DIST"
 
@@ -58,9 +63,11 @@ with zipfile.ZipFile(out_zip, "w", zipfile.ZIP_DEFLATED) as z:
             z.write(p, os.path.relpath(p, dist))
 '
 
+mv -f "$DIST_DIR/vrtfido-safari.zip" "$RELEASES/"
+
 echo "✓ Build Safari Extension thành công!"
 echo "  - Thư mục nguồn Safari Web Extension: $SAFARI_DIST"
-echo "  - Tệp zip đóng gói: $DIST_DIR/vrtfido-safari.zip"
+echo "  - Tệp zip đóng gói: $RELEASES/vrtfido-safari.zip"
 
 # Nếu chạy trên macOS có sẵn Xcode xcrun, tự động convert sang Xcode project
 if command -v xcrun &>/dev/null && xcrun --find safari-web-extension-converter &>/dev/null; then

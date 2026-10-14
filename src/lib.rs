@@ -5,6 +5,7 @@ pub mod security;
 pub mod sensor;
 pub mod tray;
 pub mod web;
+#[cfg(feature = "gui")]
 pub mod gui;
 
 // Re-export common types

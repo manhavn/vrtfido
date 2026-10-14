@@ -43,10 +43,10 @@ From the repository root directory, run:
 ./build-safari.sh
 ```
 
-Build outputs are generated in `dist/`:
-- **Chrome / Chromium / Brave / Edge / Opera**: Directory `dist/chrome/` and package `dist/vrtfido-chrome.zip`.
-- **Firefox**: Directory `dist/firefox/` and package `dist/vrtfido-firefox.zip`.
-- **Apple Safari**: Directory `dist/safari/` and package `dist/vrtfido-safari.zip`.
+Packaged archives are staged in `releases/`; the unpacked directories stay in `dist/`:
+- **Chrome / Chromium / Brave / Edge / Opera**: Directory `dist/chrome/` and package `releases/vrtfido-chrome.zip`.
+- **Firefox**: Directory `dist/firefox/` and package `releases/vrtfido-firefox.zip`.
+- **Apple Safari**: Directory `dist/safari/` and package `releases/vrtfido-safari.zip`.
 
 ---
 
@@ -66,7 +66,7 @@ Build outputs are generated in `dist/`:
 2. Click **Load Temporary Add-on...**.
 3. Select the package file:
    ```text
-   vrtfido/dist/vrtfido-firefox.zip
+   vrtfido/releases/vrtfido-firefox.zip
    ```
 
 ### C. For Apple Safari (macOS & iOS/iPadOS):
@@ -108,14 +108,14 @@ Safari packages Web Extensions inside a native macOS/iOS application wrapper via
 
 ## 5. Publishing the Firefox Build (addons.mozilla.org)
 
-`dist/vrtfido-firefox.zip` cannot be installed permanently in release Firefox until Mozilla signs it, so "public" means a signed build on [addons.mozilla.org](https://addons.mozilla.org) (AMO) or a self-hosted signed `.xpi`.
+`releases/vrtfido-firefox.zip` cannot be installed permanently in release Firefox until Mozilla signs it, so "public" means a signed build on [addons.mozilla.org](https://addons.mozilla.org) (AMO) or a self-hosted signed `.xpi`.
 
 **One command (interactive).** From the repository root:
 
 ```bash
 ./publish-firefox.sh             # hỏi lần lượt: kênh, version, license, API key -> ký -> public
 ./publish-firefox.sh --dry-run   # build + lint, KHÔNG gọi AMO
-./publish-firefox.sh --channel unlisted --version 0.3.4 --yes   # không tương tác
+./publish-firefox.sh --channel unlisted --version 0.3.5 --yes   # không tương tác
 ```
 
 The script verifies the toolchain, asks for the channel (`listed` = public AMO listing, `unlisted` = signed `.xpi` you host), optionally bumps the version, runs `build-firefox.sh` (which enforces addons-linter), prompts for the AMO license (listed only) and API key/secret (offer to cache them under `~/.config/vrtfido/amo.env`, `chmod 600`), signs, and finally publishes (AMO submission for `listed`; GitHub Release via `gh` when available for `unlisted`). The manual steps below are what it automates.
@@ -136,7 +136,7 @@ Valid category slugs: <https://addons.mozilla.org/api/v5/addons/categories/>.
 **Validation (`mozilla/addons-linter`).** `./build-firefox.sh` runs the official linter on the packaged zip and aborts on errors (`SKIP_LINT=1` skips it, useful offline). Run it standalone with:
 
 ```bash
-npx --yes addons-linter@latest dist/vrtfido-firefox.zip
+npx --yes addons-linter@latest releases/vrtfido-firefox.zip
 ```
 
 **Prerequisites.** An AMO account and API credentials from <https://addons.mozilla.org/developers/addon/api/key/>, exported as `WEB_EXT_API_KEY` and `WEB_EXT_API_SECRET`.
@@ -172,7 +172,7 @@ Signed artifacts are written to `web-ext-artifacts/`. The extension ID (`vrtfido
 
 ## 6. Publishing to the Chrome Web Store
 
-Chrome has no `web-ext` equivalent: the [Chrome Web Store API v2](https://developer.chrome.com/docs/webstore/using-api) needs OAuth, and the very first item must be created in the [Developer Dashboard](https://chrome.google.com/webstore/devconsole/) (upload `dist/vrtfido-chrome.zip`, fill the **Store listing** and **Privacy** tabs). After that, updates can be automated:
+Chrome has no `web-ext` equivalent: the [Chrome Web Store API v2](https://developer.chrome.com/docs/webstore/using-api) needs OAuth, and the very first item must be created in the [Developer Dashboard](https://chrome.google.com/webstore/devconsole/) (upload `releases/vrtfido-chrome.zip`, fill the **Store listing** and **Privacy** tabs). After that, updates can be automated:
 
 ```bash
 ./publish-chrome.sh                      # hỏi lần lượt: version, OAuth, Publisher/Extension ID -> upload -> publish
