@@ -43,9 +43,9 @@ ksni = "0.3.6"
 open = "5.4.4"
 base64 = "0.22"
 jni = { version = "0.21", optional = true }
-# GTK3 is used by the desktop GUI module alone. Android and musl targets have no
-# GTK to link against, so it stays behind the `gui` feature that build-gui.sh
-# enables; every other build compiles the library without it.
+# GTK3 is used by the desktop GUI module alone. Android and musl targets have no GTK to
+# link against, so it stays behind the `gui` feature, which the `gnu` packages built by
+# build-cross.sh enable; every other build compiles the library without it.
 gtk = { version = "0.19.0", optional = true }
 # The GTK client is a separate process that talks to the daemon over its local HTTP
 # API, so the `gui` feature pulls a small blocking HTTP client with it.

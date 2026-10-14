@@ -163,6 +163,9 @@ window.vrtfido-modal {
 struct PromptApi {
     host: String,
     port: u16,
+    /// One agent for the whole client: it keeps the loopback connection alive, so a poll no
+    /// longer opens and tears down a TCP connection every tick.
+    agent: ureq::Agent,
 }
 
 impl PromptApi {
@@ -170,6 +173,9 @@ impl PromptApi {
         Self {
             host: host.to_string(),
             port,
+            agent: ureq::AgentBuilder::new()
+                .timeout(Duration::from_secs(60))
+                .build(),
         }
     }
 
@@ -180,7 +186,9 @@ impl PromptApi {
     /// The request the daemon is waiting for, `None` when none is pending. An error
     /// means the daemon could not be reached at all.
     fn pending(&self) -> Result<Option<PendingPrompt>, String> {
-        let response = ureq::get(&self.url("/api/verify/pending"))
+        let response = self
+            .agent
+            .get(&self.url("/api/verify/pending"))
             .timeout(Duration::from_secs(2))
             .call()
             .map_err(|e| e.to_string())?;
@@ -255,7 +263,7 @@ impl PromptApi {
         payload: &B,
         timeout: Duration,
     ) -> Result<(), String> {
-        match ureq::post(&self.url(path)).timeout(timeout).send_json(payload) {
+        match self.agent.post(&self.url(path)).timeout(timeout).send_json(payload) {
             Ok(response) => Self::read_result(response),
             // A 4xx/5xx answer still carries the daemon's explanation, so read that body
             // instead of reporting a bare status code.
@@ -325,13 +333,29 @@ pub fn run(host: &str, port: u16) -> i32 {
 
         let _ = init_tx.send(Ok(()));
 
-        // 200ms periodic timer to reconcile the active prompt with the daemon: shows a new
-        // request, follows changes made in the Web CMS or on the USB sensor, and closes the
-        // window once the request is settled or times out. Repeated failures mean the daemon
-        // is gone, so the window exits instead of lingering.
+        // The timer ticks every 200 ms while a request is on screen and backs off to about one poll
+        // per second while nothing is pending: a hidden window must not cost 5 requests and 5
+        // wakeups per second for the whole day. Repeated failures mean the daemon is gone, so the
+        // window exits instead of lingering.
+        const IDLE_TICKS: u32 = 5;
         let api_heartbeat = api_for_thread.clone();
         let mut unreachable_polls = 0u32;
+        let mut idle_ticks = IDLE_TICKS;
         glib::timeout_add_local(Duration::from_millis(200), move || {
+            let modal_visible = MODAL_HOLDER.with(|holder| {
+                holder
+                    .borrow()
+                    .as_ref()
+                    .map(|ui| ui.is_visible())
+                    .unwrap_or(false)
+            });
+            if !modal_visible {
+                idle_ticks += 1;
+                if idle_ticks < IDLE_TICKS {
+                    return glib::ControlFlow::Continue;
+                }
+            }
+            idle_ticks = 0;
             let pending_opt = match api_heartbeat.pending() {
                 Ok(pending) => {
                     unreachable_polls = 0;

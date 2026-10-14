@@ -265,9 +265,13 @@ impl ResilientBackend {
                 }
 
                 if state.primary.is_none() {
-                    // Connection lost during sync; loop will retry connecting
+                    // Connection lost during sync. This loop has no delay of its own, so back off
+                    // here: a bare `continue` reconnects as fast as the OS allows, which burns a
+                    // whole core when the primary accepts the connection and then drops it.
                     drop(state);
-                    drop(backend);
+                    reconnect_backoff = (reconnect_backoff * 2).min(Duration::from_secs(30));
+                    let mut state = backend.state.lock();
+                    backend.notify.wait_for(&mut state, reconnect_backoff);
                     continue;
                 }
 
@@ -286,9 +290,12 @@ impl ResilientBackend {
                 }
 
                 if state.primary.is_none() {
-                    // Connection lost during snapshot
+                    // Connection lost during the snapshot: same backoff, otherwise the loop
+                    // alternates connect/snapshot failures without ever sleeping.
                     drop(state);
-                    drop(backend);
+                    reconnect_backoff = (reconnect_backoff * 2).min(Duration::from_secs(30));
+                    let mut state = backend.state.lock();
+                    backend.notify.wait_for(&mut state, reconnect_backoff);
                     continue;
                 }
 

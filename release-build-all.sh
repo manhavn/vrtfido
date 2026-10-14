@@ -6,8 +6,7 @@ set -euo pipefail
 #
 #   extensions -> build-extension.sh (Chrome + Firefox + Safari)
 #   android    -> build-android.sh (release APK)
-#   cross      -> build-cross.sh  (CLI packages for every default target)
-#   gui        -> build-gui.sh    (GTK3 desktop packages)
+#   linux      -> build-cross.sh  (gnu packages with the GTK window, static musl packages)
 #
 # Every step stages its own publish-ready files in releases/, so when this command
 # finishes that single directory holds the whole release set. Each step prepares
@@ -26,12 +25,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 
-STEP_NAMES=(extensions android cross gui)
+STEP_NAMES=(extensions android linux)
 STEP_SCRIPTS=(
   ./build-extension.sh
   ./build-android.sh
   ./build-cross.sh
-  ./build-gui.sh
 )
 
 RELEASES="$ROOT/releases"

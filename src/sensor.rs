@@ -23,6 +23,13 @@ const CMD_SEARCH: u8 = 0x66;
 
 pub const ENROLL_TOTAL_STAGES: u32 = 6;
 pub const MAX_STAGE_RETRIES: u32 = 10;
+/// Upper bound for a whole enrollment. The stage loop waits for one press at a time, so without
+/// this an enrollment nobody touches keeps polling the chip - and holding it busy - forever.
+const ENROLL_TOTAL_SECS: u64 = 180;
+/// `VRTFIDO_SENSOR_TRACE=1` traces every USB round trip. Read once instead of on each command:
+/// a scan issues about ten of them per second.
+static SENSOR_TRACE: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var_os("VRTFIDO_SENSOR_TRACE").is_some());
 /// A stage only counts once the finger is off the sensor again: the chip builds its model
 /// from six independent presses, so sampling the same press twice corrupts the template.
 const ENROLL_LIFT_TIMEOUT_SECS: u64 = 60;
@@ -334,7 +341,7 @@ impl UsbSensor {
     }
 
     fn send_command(&self, cmd: &[u8], timeout: Duration) -> Result<Vec<u8>, String> {
-        let trace = std::env::var_os("VRTFIDO_SENSOR_TRACE").is_some();
+        let trace = *SENSOR_TRACE;
         let t0 = Instant::now();
         let result = self.send_command_inner(cmd, timeout, trace);
         if trace {
@@ -632,10 +639,19 @@ impl UsbSensor {
         let mut current_stage = 1u32;
         let mut retry_count = 0u32;
         let mut unavailable_windows = 0u32;
+        // An enrollment nobody completes has to end by itself: it holds the sensor busy, so an
+        // abandoned one would block every other sensor path for the lifetime of the process.
+        let enroll_deadline = Instant::now() + Duration::from_secs(ENROLL_TOTAL_SECS);
 
         while current_stage <= ENROLL_TOTAL_STAGES {
             if self.cancel_requested.load(Ordering::SeqCst) {
                 return Err("Fingerprint enrollment cancelled".into());
+            }
+            if Instant::now() >= enroll_deadline {
+                return Err(format!(
+                    "Fingerprint enrollment timed out after {}s without a complete set of presses",
+                    ENROLL_TOTAL_SECS
+                ));
             }
 
             // Update waiting for finger press state
@@ -790,6 +806,10 @@ impl UsbSensor {
         if enrolled_slots.is_empty() {
             return Err("No fingerprints enrolled in the system".into());
         }
+
+        // A cancel belongs to the request that raised it: clearing it here stops one Cancel click
+        // from failing every later verification without ever touching the chip.
+        self.cancel_requested.store(false, Ordering::SeqCst);
 
         self.begin_operation(SensorBusyMode::Verifying, Duration::ZERO)?;
         let res = self.execute_verification(enrolled_slots, timeout_secs);

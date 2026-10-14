@@ -49,13 +49,6 @@ pub struct PendingPrompt {
 }
 
 #[derive(Clone, Debug)]
-pub enum PromptEvent {
-    NewPrompt(PendingPrompt),
-    PromptUpdated(PendingPrompt),
-    PromptClosed(u64),
-}
-
-#[derive(Clone, Debug)]
 pub struct VerificationSuccess {
     pub method: String,
     pub selected_credential_id: Option<String>,
@@ -88,7 +81,6 @@ pub struct SecurityEngine {
     fp_listener_paused: Arc<AtomicBool>,
     /// One manual scan per request: a double click must not start a second scan on the same chip.
     fp_manual_active: Arc<AtomicBool>,
-    prompt_tx: tokio::sync::broadcast::Sender<PromptEvent>,
 }
 
 impl SecurityEngine {
@@ -103,20 +95,11 @@ impl SecurityEngine {
             session_verified: Arc::new(AtomicBool::new(false)),
             fp_listener_paused: Arc::new(AtomicBool::new(false)),
             fp_manual_active: Arc::new(AtomicBool::new(false)),
-            prompt_tx: tokio::sync::broadcast::channel(64).0,
         }
     }
 
     pub fn sensor(&self) -> &UsbSensor {
         &self.sensor
-    }
-    pub fn subscribe_prompts(&self) -> tokio::sync::broadcast::Receiver<PromptEvent> {
-        self.prompt_tx.subscribe()
-    }
-
-    #[allow(dead_code)]
-    pub fn notify_prompt_event(&self, event: PromptEvent) {
-        let _ = self.prompt_tx.send(event);
     }
 
 
@@ -127,9 +110,7 @@ impl SecurityEngine {
         let mut guard = self.pending.lock();
         if let Some(active) = guard.as_mut() {
             active.prompt.remember_requested = enabled;
-            let updated = active.prompt.clone();
             drop(guard);
-            let _ = self.prompt_tx.send(PromptEvent::PromptUpdated(updated));
         }
     }
 
@@ -317,9 +298,8 @@ impl SecurityEngine {
         let mut guard = self.pending.lock();
         if let Some(active) = guard.as_mut() {
             if active.start_time.elapsed() > Duration::from_secs(active.prompt.timeout_seconds) {
-                let req_id = active.prompt.request_id;
+                // Timed out: dropping the request also ends the wait in the requester.
                 *guard = None;
-                let _ = self.prompt_tx.send(PromptEvent::PromptClosed(req_id));
                 None
             } else {
                 // The flags are live state, not a snapshot: the checkbox is pushed by the browser and
@@ -417,7 +397,6 @@ impl SecurityEngine {
                 responder: Some(tx),
             });
         }
-        let _ = self.prompt_tx.send(PromptEvent::NewPrompt(prompt));
 
         println!(
             "\n[SECURITY] >>> NEW VERIFICATION REQUEST (Request #{} - RP: '{}', Operation: '{}') <<<",
@@ -518,19 +497,16 @@ impl SecurityEngine {
             Ok(Ok(res)) => {
                 let mut guard = self.pending.lock();
                 *guard = None;
-                let _ = self.prompt_tx.send(PromptEvent::PromptClosed(req_id));
                 res
             }
             Ok(Err(_)) => {
                 let mut guard = self.pending.lock();
                 *guard = None;
-                let _ = self.prompt_tx.send(PromptEvent::PromptClosed(req_id));
                 Err("Verification session cancelled".to_string())
             }
             Err(_) => {
                 let mut guard = self.pending.lock();
                 *guard = None;
-                let _ = self.prompt_tx.send(PromptEvent::PromptClosed(req_id));
                 Err("Verification timed out (Timeout 60s)".to_string())
             }
         };
@@ -581,7 +557,6 @@ impl SecurityEngine {
                         "PIN",
                         Some("Verified 6-digit PIN successfully via Web CMS"),
                     );
-                    let _ = self.prompt_tx.send(PromptEvent::PromptClosed(req_id));
                     Ok(())
                 }
                 "FINGERPRINT" => {
@@ -676,7 +651,6 @@ impl SecurityEngine {
                         "FINGERPRINT",
                         Some("Fingerprint sensor verified successfully (Template match)"),
                     );
-                    let _ = self.prompt_tx.send(PromptEvent::PromptClosed(req_id));
                     Ok(())
                 }
                 "SETUP" => {
@@ -698,7 +672,6 @@ impl SecurityEngine {
                         "SETUP",
                         Some("Initialized new security settings successfully"),
                     );
-                    let _ = self.prompt_tx.send(PromptEvent::PromptClosed(req_id));
                     Ok(())
                 }
 
@@ -726,7 +699,6 @@ impl SecurityEngine {
                         "REMEMBERED",
                         Some("Approved with the remembered session of this app run (no PIN / fingerprint)"),
                     );
-                    let _ = self.prompt_tx.send(PromptEvent::PromptClosed(req_id));
                     Ok(())
                 }
 
@@ -749,9 +721,7 @@ impl SecurityEngine {
             }
 
             active.prompt.selected_credential_id = Some(credential_id.to_string());
-            let updated = active.prompt.clone();
             *guard = Some(active);
-            let _ = self.prompt_tx.send(PromptEvent::PromptUpdated(updated));
             Ok(())
         } else {
             Err("No pending verification request".to_string())
@@ -777,7 +747,6 @@ impl SecurityEngine {
                 "NONE",
                 Some(reason),
             );
-            let _ = self.prompt_tx.send(PromptEvent::PromptClosed(req_id));
             Ok(())
         } else {
             Err("No pending verification request".to_string())
@@ -798,12 +767,23 @@ mod prompt_tests {
         SecurityEngine::new(db, sensor, false)
     }
 
-    /// One request end to end, checking that every step reaches the prompt broadcast the
-    /// UI surfaces follow: NewPrompt, account selection, "remember", then PromptClosed.
+    /// Polls until the request is registered: the engine stores it before the requester starts
+    /// waiting, and both UI surfaces (Web CMS and GTK client) read it through this query.
+    async fn wait_for_prompt(security: &SecurityEngine) -> PendingPrompt {
+        for _ in 0..100 {
+            if let Some(prompt) = security.get_pending_prompt() {
+                return prompt;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("Timeout waiting for the request to be registered");
+    }
+
+    /// One request end to end through the state both UI surfaces read: the pending query, the
+    /// account choice, the "remember" flag and the approval.
     #[tokio::test]
-    async fn test_prompt_broadcast_lifecycle() {
+    async fn test_prompt_lifecycle_through_pending_query() {
         let security = setup_test_engine();
-        let mut rx = security.subscribe_prompts();
 
         let sec_clone = security.clone();
         let handle = tokio::spawn(async move {
@@ -834,85 +814,41 @@ mod prompt_tests {
                 .await
         });
 
-        // 1. Should receive NewPrompt
-        let event1 = tokio::time::timeout(Duration::from_millis(500), rx.recv())
-            .await
-            .expect("Timeout waiting for NewPrompt")
-            .expect("Recv error");
+        // 1. The request is visible with everything the modal renders.
+        let prompt = wait_for_prompt(&security).await;
+        assert_eq!(prompt.rp_id, "webauthn.io");
+        assert_eq!(prompt.operation, "GetAssertion");
+        assert_eq!(prompt.user_name, "alice");
+        assert_eq!(prompt.accounts.len(), 2);
+        assert_eq!(prompt.selected_credential_id, Some("acc_1".into()));
+        let req_id = prompt.request_id;
 
-        let req_id = match event1 {
-            PromptEvent::NewPrompt(p) => {
-                assert_eq!(p.rp_id, "webauthn.io");
-                assert_eq!(p.operation, "GetAssertion");
-                assert_eq!(p.user_name, "alice");
-                assert_eq!(p.accounts.len(), 2);
-                assert_eq!(p.selected_credential_id, Some("acc_1".into()));
-                p.request_id
-            }
-            other => panic!("Expected NewPrompt, got {:?}", other),
-        };
-
-        // 2. Select different account -> PromptUpdated
+        // 2. Choosing another account is reflected in the pending state.
         security
             .select_account(req_id, "acc_2")
             .expect("select_account failed");
+        let prompt = security.get_pending_prompt().expect("pending after select_account");
+        assert_eq!(prompt.request_id, req_id);
+        assert_eq!(prompt.selected_credential_id, Some("acc_2".into()));
 
-        let event2 = tokio::time::timeout(Duration::from_millis(500), rx.recv())
-            .await
-            .expect("Timeout waiting for PromptUpdated (account)")
-            .expect("Recv error");
-
-        match event2 {
-            PromptEvent::PromptUpdated(p) => {
-                assert_eq!(p.request_id, req_id);
-                assert_eq!(p.selected_credential_id, Some("acc_2".into()));
-            }
-            other => panic!("Expected PromptUpdated, got {:?}", other),
-        }
-
-        // 3. Toggle remember -> PromptUpdated
+        // 3. The "remember" checkbox is shared with the sensor path.
         security.set_remember_requested(true);
+        let prompt = security.get_pending_prompt().expect("pending after set_remember");
+        assert!(prompt.remember_requested);
 
-        let event3 = tokio::time::timeout(Duration::from_millis(500), rx.recv())
-            .await
-            .expect("Timeout waiting for PromptUpdated (remember)")
-            .expect("Recv error");
-
-        match event3 {
-            PromptEvent::PromptUpdated(p) => {
-                assert_eq!(p.request_id, req_id);
-                assert!(p.remember_requested);
-            }
-            other => panic!("Expected PromptUpdated, got {:?}", other),
-        }
-
-        // 4. Approve prompt -> PromptClosed
+        // 4. Approving settles the request for the requester and clears the pending state.
         security
             .approve_pending(req_id, "SETUP", Some("123456"), None, None)
             .expect("approve_pending failed");
+        assert!(security.get_pending_prompt().is_none());
 
-        let event4 = tokio::time::timeout(Duration::from_millis(500), rx.recv())
-            .await
-            .expect("Timeout waiting for PromptClosed")
-            .expect("Recv error");
-
-        match event4 {
-            PromptEvent::PromptClosed(closed_id) => {
-                assert_eq!(closed_id, req_id);
-            }
-            other => panic!("Expected PromptClosed, got {:?}", other),
-        }
-
-        let result = handle.await.unwrap();
-        assert!(result.is_ok());
-        let success = result.unwrap();
+        let success = handle.await.unwrap().expect("approval must succeed");
         assert_eq!(success.method, "SETUP");
     }
 
     #[tokio::test]
-    async fn test_prompt_rejection_broadcast() {
+    async fn test_prompt_rejection_fails_the_requester() {
         let security = setup_test_engine();
-        let mut rx = security.subscribe_prompts();
 
         let sec_clone = security.clone();
         let handle = tokio::spawn(async move {
@@ -921,33 +857,22 @@ mod prompt_tests {
                 .await
         });
 
-        let event = rx.recv().await.unwrap();
-        let req_id = match event {
-            PromptEvent::NewPrompt(p) => p.request_id,
-            other => panic!("Expected NewPrompt, got {:?}", other),
-        };
-
+        let req_id = wait_for_prompt(&security).await.request_id;
         security
             .reject_pending(req_id, "Dismissed by user")
             .expect("reject_pending failed");
-
-        let event_close = rx.recv().await.unwrap();
-        match event_close {
-            PromptEvent::PromptClosed(id) => assert_eq!(id, req_id),
-            other => panic!("Expected PromptClosed, got {:?}", other),
-        }
+        assert!(security.get_pending_prompt().is_none());
 
         let res = handle.await.unwrap();
         assert!(res.is_err());
         assert!(res.unwrap_err().contains("Dismissed by user"));
     }
 
-    /// A request served by the Web UI while the prompt broadcast is being followed: the
-    /// pending query, the "remember" toggle and the approval all have to agree.
+    /// A request served while another surface (Web CMS or GTK client) follows it: the pending
+    /// query, the "remember" toggle and the approval all have to agree.
     #[tokio::test]
     async fn test_parallel_web_and_gui_sync() {
         let security = setup_test_engine();
-        let mut rx = security.subscribe_prompts();
 
         // Initially no prompt
         assert!(security.get_pending_prompt().is_none());
@@ -959,39 +884,22 @@ mod prompt_tests {
                 .await
         });
 
-        // Event for the UI surfaces
-        let event = rx.recv().await.unwrap();
-        let req_id = match event {
-            PromptEvent::NewPrompt(p) => p.request_id,
-            other => panic!("Expected NewPrompt, got {:?}", other),
-        };
+        // The query the Web CMS and the GTK client poll (/api/verify/pending).
+        let prompt = wait_for_prompt(&security).await;
+        let req_id = prompt.request_id;
+        assert_eq!(prompt.rp_id, "login.github.com");
 
-        // Query used by Web UI (/api/verify/pending)
-        let web_prompt = security.get_pending_prompt().expect("Web UI should see pending prompt");
-        assert_eq!(web_prompt.request_id, req_id);
-        assert_eq!(web_prompt.rp_id, "login.github.com");
-
-        // Web UI toggles remember preference
+        // The "remember" toggle writes through to the shared pending state.
         security.set_remember_requested(true);
-        let event_up = rx.recv().await.unwrap();
-        match event_up {
-            PromptEvent::PromptUpdated(p) => assert!(p.remember_requested),
-            other => panic!("Expected PromptUpdated, got {:?}", other),
-        }
+        assert!(security
+            .get_pending_prompt()
+            .expect("pending after set_remember")
+            .remember_requested);
 
-        // Web UI approves
+        // Approving from either surface settles it for both.
         security
             .approve_pending(req_id, "SETUP", Some("654321"), None, Some(true))
             .expect("Approval failed");
-
-        // The UI surfaces receive the closed event
-        let event_closed = rx.recv().await.unwrap();
-        match event_closed {
-            PromptEvent::PromptClosed(id) => assert_eq!(id, req_id),
-            other => panic!("Expected PromptClosed, got {:?}", other),
-        }
-
-        // Web UI now sees prompt is gone
         assert!(security.get_pending_prompt().is_none());
 
         let res = handle.await.unwrap();

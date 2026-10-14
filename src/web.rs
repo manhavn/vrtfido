@@ -2532,16 +2532,30 @@ async fn index_html() -> Html<&'static str> {
                 statusPollInterval = null;
             }
         }
+        let pendingPollInterval = null;
+        function startPendingPolling() {
+            if (pendingPollInterval) clearInterval(pendingPollInterval);
+            pendingPollInterval = setInterval(pollPendingVerification, 1000);
+        }
+        function stopPendingPolling() {
+            if (pendingPollInterval) {
+                clearInterval(pendingPollInterval);
+                pendingPollInterval = null;
+            }
+        }
         document.addEventListener('visibilitychange', () => {
             if (document.hidden) {
                 stopStatusPolling();
+                stopPendingPolling();
             } else {
                 fetchStatus();
+                pollPendingVerification();
                 startStatusPolling();
+                startPendingPolling();
             }
         });
         startStatusPolling();
-        setInterval(pollPendingVerification, 1000);
+        startPendingPolling();
     </script>
 </body>
 </html>

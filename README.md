@@ -162,19 +162,14 @@ Release packages (`.tar.gz`) and checksums (`.sha256`) are moved into `releases/
 - `vrtfido-aarch64-unknown-linux-gnu.tar.gz`
 - `vrtfido-aarch64-unknown-linux-musl.tar.gz`
 
-The native desktop GUI (GTK3) packages are built the same way by `build-gui.sh`:
+The `gnu` archives carry the GTK window as well, and `build-cross.sh` makes them inside a container, so the host needs no GTK3 development files at all:
 
-```bash
-# Build every GUI target:
-./build-gui.sh
+- `vrtfido-<target>.tar.gz` (`gnu`): `vrtfido` (daemon, links no GTK) plus `vrtfido-gui` (the GTK window)
+- `vrtfido-<target>.tar.gz` (`musl`): `vrtfido` only, statically linked
 
-# Or build specific targets:
-TARGETS=x86_64-unknown-linux-gnu ./build-gui.sh
-```
+That container image is why the `gnu` targets need a working `podman` or `docker`, installed from your distribution's package manager — a podman installed through mise is a client-only build and cannot run a local daemon, and the script prints the right command for your OS when the engine is missing. The `musl` targets need nothing beyond zig, so `TARGETS=x86_64-unknown-linux-musl ./build-cross.sh` still works on a machine without a container engine. Missing CLI tools (rust, zig, cargo-zigbuild) are installed through [mise](https://mise.jdx.dev/) whenever its registry ships them.
 
-One run installs everything it needs: missing CLI tools are installed through [mise](https://mise.jdx.dev/) whenever its registry ships them, GTK3 development files come from the system package manager, and on hosts where that would need a password the `.deb` archives are unpacked into a private sysroot under `~/.cache/vrtfido-gui/` (rootless, no changes to `/usr`). The aarch64 GUI package is cross-compiled inside a container, so that target needs a working `podman` or `docker` that you install yourself.
-
-Every GUI package carries two binaries: `vrtfido` (the daemon, which links no GTK) and `vrtfido-gui` (the GTK window). The daemon starts the window itself and falls back to headless mode whenever the host cannot run it — no GTK3 runtime, no display, or a failed start — so the same `.tar.gz` serves a desktop laptop and a headless VPS with no flag and no per-machine configuration. Installing `libgtk-3-0` is only what a machine needs to actually get the window.
+The daemon starts the window itself and falls back to headless mode whenever the host cannot run it — no GTK3 runtime, no display, or a failed start — so one archive serves a desktop laptop and a headless VPS with no flag and no per-machine configuration. Installing `libgtk-3-0` is only what a machine needs to actually get the window.
 
 Every release package (browser extensions, Android APK, CLI and GUI) can be built with a single command instead:
 
