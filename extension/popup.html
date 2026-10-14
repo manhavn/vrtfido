@@ -491,6 +491,47 @@
       background: var(--border);
       border-radius: 4px;
     }
+
+    /* Help / Local server setup */
+    .help-desc {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-bottom: 10px;
+    }
+    .help-steps {
+      margin: 0 0 12px;
+      padding-left: 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .help-steps li {
+      font-size: 12px;
+      color: var(--text-main);
+    }
+    .help-steps li::marker {
+      color: var(--accent);
+      font-weight: 700;
+    }
+    .help-note {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin: 4px 0 0;
+    }
+    .cmd {
+      display: block;
+      font-family: monospace;
+      font-size: 11px;
+      color: var(--accent);
+      background: var(--bg-input);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 5px 8px;
+      margin-top: 4px;
+      overflow-wrap: anywhere;
+      user-select: all;
+      cursor: text;
+    }
   </style>
 </head>
 <body>
@@ -580,6 +621,33 @@
 
     <button class="btn btn-primary" id="saveBtn">
       <span>💾</span> <span id="txtSaveBtn">Lưu cấu hình</span>
+    </button>
+  </section>
+
+  <!-- Help / Install the local VrtFido server (CLI) -->
+  <section class="card" id="helpCard">
+    <div class="card-title" id="txtHelpTitle">🖥️ Cài máy chủ VrtFido (local)</div>
+    <p class="help-desc" id="txtHelpDesc">Tiện ích cần app CLI vrtfido chạy nền trên máy này để tạo và đăng nhập passkey.</p>
+
+    <ol class="help-steps">
+      <li>
+        <span id="txtHelpStep1">Cài CLI bằng mise:</span>
+        <code class="cmd">mise use -g github:manhavn/vrtfido</code>
+      </li>
+      <li>
+        <span id="txtHelpStep2">Chạy máy chủ ở chế độ nền:</span>
+        <code class="cmd">vrtfido --daemon</code>
+      </li>
+      <li>
+        <span id="txtHelpStep3">Giữ Host 127.0.0.1 · Port 10209 rồi bấm “Lưu cấu hình”.</span>
+      </li>
+    </ol>
+
+    <p class="help-note" id="txtHelpNote">Ubuntu: cấp quyền /dev/uhid một lần để tránh hỏi mật khẩu (tùy chọn):</p>
+    <code class="cmd">echo 'KERNEL=="uhid", MODE="0666"' | sudo tee /etc/udev/rules.d/99-uhid.rules</code>
+
+    <button class="btn btn-secondary" id="btnOpenGitHub" style="margin-top: 12px;">
+      <span>📖</span> <span id="txtHelpOpenBtn">Mở GitHub — hướng dẫn đầy đủ</span>
     </button>
   </section>
 

@@ -5,7 +5,6 @@ mod sensor;
 mod tray;
 mod web;
 mod passkey;
-mod gui;
 use ciborium::Value;
 use db::Db;
 use p256::ecdsa::signature::Signer;
@@ -467,7 +466,7 @@ fn handle_cbor(
                         Value::Text("FIDO_2_1".into()),
                     ]),
                 ),
-                (Value::Integer(3.into()), Value::Bytes(passkey::AAGUID.to_vec())), // AAGUID
+                (Value::Integer(3.into()), Value::Bytes(passkey::aaguid().to_vec())), // AAGUID
                 (Value::Integer(4.into()), Value::Map(options)),
                 (Value::Integer(5.into()), Value::Integer(1200.into())), // maxMsgSize
                 // CTAP 2.1 transports (key 9). Clients copy this list into the credential they
@@ -652,7 +651,7 @@ fn handle_cbor(
             auth_data.extend_from_slice(&rp_id_hash);
             auth_data.push(flags);
             auth_data.extend_from_slice(&sign_count.to_be_bytes());
-            auth_data.extend_from_slice(&passkey::AAGUID); // AAGUID
+            auth_data.extend_from_slice(&passkey::aaguid()); // AAGUID
             auth_data.extend_from_slice(&(cred_id.len() as u16).to_be_bytes());
             auth_data.extend_from_slice(&cred_id);
             auth_data.extend_from_slice(&cose_bytes);
@@ -1007,9 +1006,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let check_daemon = args.iter().any(|a| a == "--daemon" || a == "-b");
     let debug_mode = args.iter().any(|a| a == "--debug" || a == "-d");
     let unlimited_fps = args.iter().any(|a| a == "--unlimited-fps" || a == "--unlimited-fingerprints" || a == "-u");
+    let google_aaguid = args.iter().any(|a| a == "--google-aaguid");
+    let uhid_enabled = args.iter().any(|a| a == "--uhid");
     let exit_after_import = args.iter().any(|a| a == "--exit-after-import");
     let no_tray = args.iter().any(|a| a == "--no-tray");
-    let no_gui = args.iter().any(|a| a == "--no-gui");
+    // The identity is process-wide and a credential records it at creation time, so fix it before
+    // anything can serve a WebAuthn request - including the daemon child, which inherits the flags.
+    passkey::set_google_aaguid(google_aaguid);
     let check_clean_logs: Option<String> = {
         let mut target = None;
         let mut i = 0;
@@ -1114,8 +1117,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .filter(|a| *a != "--daemon" && *a != "-b")
             .cloned()
             .collect();
-        println!("[UHID] Checking /dev/uhid access permission...");
-        ensure_uhid_permission();
+        if uhid_enabled {
+            println!("[UHID] Checking /dev/uhid access permission...");
+            ensure_uhid_permission();
+        } else {
+            println!("[UHID] Virtual FIDO2 device disabled: pass --uhid to create it on /dev/uhid.");
+        }
 
         let current_exe = std::env::current_exe()?;
         let log_file_path = std::env::temp_dir().join("vrtfido.log");
@@ -1164,8 +1171,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  -q, --quit, --stop            Stop running vrtfido process (foreground or daemon)");
         println!("  -d, --debug                   Enable packet debug mode");
         println!("  -u, --unlimited-fps           Unlimited fingerprint slots (default: 10)");
+        println!("      --google-aaguid           Report Google Password Manager's AAGUID instead of the project's");
+        println!("      --uhid                    Create the virtual FIDO2 device on /dev/uhid and request elevated access (default: off)");
         println!("      --no-tray                 Disable system tray icon");
-        println!("      --no-gui                  Disable native Linux desktop GUI verification prompt");
         println!("  -D, --database, --db <SPEC>   Database path or connection URL (default: authenticator.db)");
         println!("                                Supported:");
         println!("                                  - SQLite:     authenticator.db or sqlite:my.db");
@@ -1258,6 +1266,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("[CLI] FINGERPRINT mode: UNLIMITED (--unlimited-fps)");
     } else {
         println!("[CLI] FINGERPRINT mode: LIMITED TO 10 (Use '--unlimited-fps' to remove limit)");
+    }
+    if google_aaguid {
+        println!("[CLI] AAGUID: GOOGLE {} (--google-aaguid)", passkey::aaguid_string());
+    } else {
+        println!(
+            "[CLI] AAGUID: PROJECT {} (Use '--google-aaguid' to impersonate Google Password Manager)",
+            passkey::aaguid_string()
+        );
+    }
+    if uhid_enabled {
+        println!("[CLI] UHID device: ENABLED (--uhid)");
+    } else {
+        println!("[CLI] UHID device: DISABLED (Use '--uhid' to create the virtual FIDO2 device on /dev/uhid)");
     }
 
 
@@ -1383,9 +1404,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         db
     };
 
-    // 3. Check and grant /dev/uhid access via sudo if needed
-    println!("[UHID] Checking /dev/uhid access permission...");
-    ensure_uhid_permission();
+    // 3. Check and grant /dev/uhid access via sudo if needed - only when the virtual device is
+    // requested, so a Web-CMS-only run never prompts for a password
+    if uhid_enabled {
+        println!("[UHID] Checking /dev/uhid access permission...");
+        ensure_uhid_permission();
+    }
     // 4. Initialize SecurityEngine & AppState
     let sensor = sensor::UsbSensor::new();
     let security = SecurityEngine::new(db.clone(), sensor.clone(), unlimited_fps);
@@ -1426,6 +1450,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let security_uhid = security.clone();
 
     std::thread::spawn(move || {
+        if !uhid_enabled {
+            // Without --uhid the daemon never touches /dev/uhid: no device node, no permission
+            // request. The Web CMS keeps working; browsers see no security key.
+            println!("[UHID] Virtual FIDO2 device disabled: pass --uhid to create it on /dev/uhid.");
+            return;
+        }
         println!("[UHID] Opening /dev/uhid...");
         let mut dev = match UhidDevice::open() {
             Ok(d) => {
@@ -1561,17 +1591,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 7. Start System Tray icon in background
     let _tray_handle = if !no_tray {
-        tray::spawn_tray(port).await
+        tray::spawn_tray(port, uhid_enabled).await
     } else {
         println!("[TRAY] System tray disabled (--no-tray)");
-        None
-    };
-
-    // 8. Start Linux Desktop Native GUI verification prompt modal in background
-    let _gui_handle = if !no_gui {
-        gui::spawn_gui(security.clone())
-    } else {
-        println!("[GUI] Native desktop GUI prompt disabled (--no-gui)");
         None
     };
 
@@ -1590,10 +1612,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(handle) = _tray_handle {
         println!("[TRAY] Shutting down system tray service...");
         handle.shutdown().await;
-    }
-    if let Some(handle) = _gui_handle {
-        println!("[GUI] Shutting down desktop GUI service...");
-        handle.shutdown();
     }
 
     let _ = std::fs::remove_file(&pid_file);
@@ -1844,8 +1862,12 @@ mod tests {
             panic!("GetInfo AAGUID must be a byte string");
         };
 
-        assert_ne!(passkey::AAGUID, [0u8; 16], "AAGUID must identify VrtFido");
-        assert_eq!(bytes, passkey::AAGUID.to_vec());
+        assert_ne!(passkey::PROJECT_AAGUID, [0u8; 16], "AAGUID must identify VrtFido");
+        assert!(
+            !passkey::google_aaguid_enabled(),
+            "Google's AAGUID is opt-in: the default identity is the project's"
+        );
+        assert_eq!(bytes, passkey::PROJECT_AAGUID.to_vec());
 
         // Without key 9 a browser reports an empty transport list for every credential it creates
         // with this authenticator.

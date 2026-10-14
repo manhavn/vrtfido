@@ -40,6 +40,16 @@ pub struct DaemonOptions {
     /// `--unlimited-fps` / `--unlimited-fingerprints`
     #[serde(default)]
     pub unlimited_fingerprints: bool,
+    /// `--google-aaguid`: report Google Password Manager's AAGUID instead of the project's.
+    ///
+    /// Android has no command line, so the bridge keeps the identity the app shipped with (Google's
+    /// AAGUID) when a caller omits the field; the desktop CLI stays opt-in through `--google-aaguid`.
+    #[serde(default = "google_aaguid_default")]
+    pub google_aaguid: bool,
+}
+
+fn google_aaguid_default() -> bool {
+    true
 }
 
 /// Builds the embedded server's router from CLI-equivalent options. Only the JNI bridge starts a
@@ -47,6 +57,7 @@ pub struct DaemonOptions {
 /// flags with the UHID thread and the tray.
 #[cfg(feature = "jni-bridge")]
 fn server_router(options: &DaemonOptions) -> Result<axum::Router, db::DbError> {
+    passkey::set_google_aaguid(options.google_aaguid);
     let db = Db::open_resilient(
         &options.database,
         options.db_type.as_deref(),
@@ -240,7 +251,22 @@ pub mod jni_bridge {
                 auth_token: None,
                 debug_mode: false,
                 unlimited_fingerprints: false,
+                // Starting the daemon sets the process-wide identity, and the attestation tests in
+                // this binary run in parallel with it: keep the fixture on the project AAGUID. The
+                // default a Kotlin caller gets is asserted by `android_options_default_to_googles_aaguid`.
+                google_aaguid: false,
             }
+        }
+
+        /// The Android app never sends the field, so the serde default decides the identity its
+        /// passkeys are attested with.
+        #[test]
+        fn android_options_default_to_googles_aaguid() {
+            let parsed: DaemonOptions = serde_json::from_str(
+                r#"{"database":"authenticator.db","host":"0.0.0.0","port":10209,"shadow_db":"a.shadow.db","queue_db":"a.queue.db"}"#,
+            )
+            .expect("Kotlin-style options must deserialize");
+            assert!(parsed.google_aaguid, "the JNI bridge keeps Google's AAGUID unless told otherwise");
         }
 
         #[test]

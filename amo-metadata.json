@@ -1,0 +1,25 @@
+{
+  "name": {
+    "en-US": "VrtFido Passkey Provider",
+    "vi": "VrtFido Passkey Provider"
+  },
+  "summary": {
+    "en-US": "Virtual FIDO2 platform passkey authenticator: create, store and sign in with WebAuthn passkeys using the VrtFido CLI running locally or on your own server.",
+    "vi": "Trình xác thực passkey nền tảng FIDO2 ảo: tạo, lưu và đăng nhập bằng passkey WebAuthn qua CLI VrtFido chạy cục bộ hoặc trên máy chủ của bạn."
+  },
+  "categories": {
+    "firefox": [
+      "privacy-security"
+    ],
+    "android": [
+      "privacy-security"
+    ]
+  },
+  "homepage": {
+    "en-US": "https://github.com/manhavn/vrtfido"
+  },
+  "requires_payment": false,
+  "version": {
+    "license": "MIT"
+  }
+}

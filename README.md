@@ -9,7 +9,7 @@ The application includes an embedded **Web CMS Dashboard** on port **10209**, su
 ## 🌟 Key Features
 
 1. **Kernel Virtual HID (`/dev/uhid`):**
-   - Creates a virtual USB HID device with the FIDO Usage Page (`0xF1D0`).
+   - Creates a virtual USB HID device with the FIDO Usage Page (`0xF1D0`). **Opt-in:** the device is only created when the daemon is started with `--uhid`; without it VrtFido runs as the Web CMS alone and leaves `/dev/uhid` untouched.
    - All browsers (Chrome, Chromium, Firefox, Edge) automatically recognize it as a physical USB Security Key.
    - Full support for standard CTAP2 commands: `authenticatorGetInfo`, `authenticatorMakeCredential` (Passkey Registration), and `authenticatorGetAssertion` (WebAuthn Sign-in).
 
@@ -86,7 +86,7 @@ Or add to your `mise.toml`:
 
 ### 2. Granting `/dev/uhid` Access Permissions
 
-**VrtFido** automatically checks and requests permission via `sudo`/`pkexec` upon startup if `/dev/uhid` is not accessible.
+The virtual FIDO2 device is **opt-in**: only a run started with `--uhid` opens `/dev/uhid`, and only then does VrtFido check the node and request elevated access via `sudo`/`pkexec` when it is not writable. A run without the flag serves the Web CMS only and never touches `/dev/uhid`, so it never prompts for a password.
 
 To configure a permanent udev rule (avoiding password prompts):
 
@@ -126,6 +126,12 @@ tail -f /tmp/vrtfido.log
 
 # Run with debug mode enabled:
 ./target/release/vrtfido --debug
+
+# Create the virtual FIDO2 device on /dev/uhid (off by default; asks for sudo/pkexec once if the node is not writable):
+./target/release/vrtfido --uhid
+
+# Impersonate Google Password Manager's AAGUID instead of the project AAGUID:
+./target/release/vrtfido --uhid --google-aaguid
 ```
 
 ### 4. Local Cross-Compilation for GitHub Releases
@@ -152,11 +158,11 @@ Release packages (`.tar.gz`) and checksums (`.sha256`) are generated in `dist/pa
 
 ### 5. Getting Started
 
-1. Open Web CMS in your browser: **http://localhost:10209**
+1. Start the daemon with `--uhid` (the virtual device is off by default) and open Web CMS in your browser: **http://localhost:10209**
 2. In another tab, open a test site: **https://webauthn.io/**
 3. Enter any username $\rightarrow$ Click **Register** or **Authenticate**.
 4. The popup window on Web CMS will appear for you to enter your 6-digit PIN or touch the fingerprint sensor.
-5. **Device identity:** Linux sees the virtual authenticator as `HID_ID=0003:5652:F1D0` with `HID_NAME=VrtFido - Virtual FIDO2 Authenticator` (`udevadm info /dev/hidrawN`, `/sys/class/hidraw/*/device/uevent`); WebAuthn clients read the AAGUID `ea9b8d66-4d01-1d21-3ce4-b6b48cb575d4` (Google Password Manager synced passkey AAGUID) from `authenticatorGetInfo` and from `authData`, and take the CTAP 2.1 `transports` member (`ble`, `hybrid`, `internal`, `nfc`, `usb`) from `authenticatorGetInfo` for the transport list they return with a credential.
+5. **Device identity:** Linux sees the virtual authenticator as `HID_ID=0003:5652:F1D0` with `HID_NAME=VrtFido - Virtual FIDO2 Authenticator` (`udevadm info /dev/hidrawN`, `/sys/class/hidraw/*/device/uevent`); WebAuthn clients read the AAGUID from `authenticatorGetInfo` and from `authData` — the project AAGUID `e672fbec-badd-58f1-a951-dcfa1a7f2b43` by default, or Google Password Manager's `ea9b8d66-4d01-1d21-3ce4-b6b48cb575d4` when the daemon runs with `--google-aaguid` — and take the CTAP 2.1 `transports` member (`ble`, `hybrid`, `internal`, `nfc`, `usb`) from `authenticatorGetInfo` for the transport list they return with a credential.
 
 
 ### 6. Android Passkey Provider Build & Deployment
@@ -202,7 +208,7 @@ The script installs missing host utilities with apt/dnf/pacman, bootstraps Rust 
    - **Browsers (Chrome on Android 14+)** route WebAuthn through Android Credential Manager, which only lists providers that declare the passkey capability. With the provider enabled and the daemon ON, `VrtFido` appears as an entry when a site (for example webauthn.io) asks to register or sign in with a passkey. Browsers send only a client-data hash, so the created credential is bound to the site's own origin and challenge; the app never sees the visited domain.
    - **Account already known → no list.** When the site pins the account (`allowCredentials` names a credential), VrtFido returns only that single matching passkey and marks it auto-selectable; Android Credential Manager then goes straight to the biometric / screen-lock prompt, like a desktop authenticator, instead of asking you to choose an account. When the site sends no account at all (usernameless / conditional UI), the system lists the matching passkeys for that site so you can pick one.
    - If `VrtFido` is missing from the browser's passkey prompt, re-check that the provider is enabled: the capability declaration is read when the service is registered, so an app update can require re-enabling it.
-   - **Authenticator identity (AAGUID):** every credential is attested with `fmt: "none"` and the project AAGUID `e672fbec-badd-58f1-a951-dcfa1a7f2b43` (`uuid5(NAMESPACE_URL, "https://vrtfido.local/webauthn-cms")`, emitted by both the CTAP2 `authenticatorGetInfo` response and `authData`). Relying parties that restrict authenticators by AAGUID can allow-list that value. A human-readable provider name is resolved by the client from vendor metadata (FIDO MDS) or from the OS provider registry, so it does not appear in UIs that look the AAGUID up in a registry — re-register existing credentials if the authenticator must present a non-zero AAGUID, since the value is only written at creation time.
+   - **Authenticator identity (AAGUID):** every credential is attested with `fmt: "none"` and Google Password Manager's AAGUID `ea9b8d66-4d01-1d21-3ce4-b6b48cb575d4`, emitted by both the CTAP2 `authenticatorGetInfo` response and `authData`. The phone has no command line, so the JNI bridge keeps that identity; the desktop CLI stays opt-in through `--google-aaguid`, where the default is the project AAGUID `e672fbec-badd-58f1-a951-dcfa1a7f2b43` (`uuid5(NAMESPACE_URL, "https://vrtfido.local/webauthn-cms")`). Relying parties that restrict authenticators by AAGUID can allow-list the value their surface reports. A human-readable provider name is resolved by the client from vendor metadata (FIDO MDS) or from the OS provider registry, so it does not appear in UIs that look the AAGUID up in a registry — and since the value is only written at creation time, switching identity only affects newly created credentials.
    - **Language (EN / VI):** the main screen carries an **EN / VI** switch and the Web CMS has the same control in its header. English is the default; the choice is written to the database (`POST /api/settings`) and shared by both surfaces, so the app, the dashboard and a later restore all follow the same language.
    - `--unlimited-fps` / `--unlimited-fingerprints` is not exposed on the phone: Android has no USB fingerprint sensor, so the fingerprint slots cannot be enrolled there and the 10-slot limit is irrelevant. The flag stays available on the desktop CLI and is read by the Web CMS from the running daemon.
    - **Nothing has to be re-entered:** host, port, database spec, DB type, auth token and the `--debug` / `--unlimited-fps` flags are cached on the device and mirrored into the database. If the daemon was ON when you closed the app, the next launch starts it again automatically with the same parameters.

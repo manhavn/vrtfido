@@ -36,7 +36,9 @@
       processing: "Đang xử lý...",
       approved: "✓ Đã xác nhận!",
       cancelError: "Người dùng đã hủy yêu cầu Passkey.",
-      noCredsError: "Không có thông tin xác thực nào cho tên miền này."
+      noCredsError: "Không có thông tin xác thực nào cho tên miền này.",
+      serverLabel: "Máy chủ xử lý",
+      privacyNotice: "Khi bấm Xác nhận, dữ liệu passkey của trang web này sẽ được gửi tới máy chủ VrtFido bạn đã cấu hình ở trên."
     },
     en: {
       appName: "VrtFido Passkey",
@@ -57,7 +59,9 @@
       processing: "Processing...",
       approved: "✓ Approved!",
       cancelError: "User cancelled the passkey request.",
-      noCredsError: "No credentials found for this domain."
+      noCredsError: "No credentials found for this domain.",
+      serverLabel: "Processed by",
+      privacyNotice: "When you press Approve, this site's passkey data is sent to the VrtFido server configured above."
     }
   };
 
@@ -73,7 +77,7 @@
   // Active prompt reference to ensure only one dialog is open at a time
   let activePrompt = null;
 
-  function showApprovalDialog(type, options, candidates, candidatesError, langCode) {
+  function showApprovalDialog(type, options, candidates, candidatesError, langCode, serverUrl) {
     return new Promise((resolve, reject) => {
       if (activePrompt) {
         activePrompt.cancel("Superseded by new request");
@@ -207,9 +211,16 @@
             font-weight: 600;
             text-transform: uppercase;
             letter-spacing: 0.5px;
-            background: ${isCreate ? "rgba(14, 165, 233, 0.15)" : "rgba(16, 185, 129, 0.15)"};
-            color: ${isCreate ? "#38bdf8" : "#34d399"};
-            border: 1px solid ${isCreate ? "rgba(56, 189, 248, 0.3)" : "rgba(52, 211, 153, 0.3)"};
+          }
+          .vrtfido-badge-create {
+            background: rgba(14, 165, 233, 0.15);
+            color: #38bdf8;
+            border: 1px solid rgba(56, 189, 248, 0.3);
+          }
+          .vrtfido-badge-get {
+            background: rgba(16, 185, 129, 0.15);
+            color: #34d399;
+            border: 1px solid rgba(52, 211, 153, 0.3);
           }
           .vrtfido-title {
             font-size: 15px;
@@ -252,6 +263,12 @@
             display: flex;
             align-items: center;
             gap: 6px;
+          }
+          .vrtfido-privacy {
+            font-size: 10.5px;
+            color: #64748b;
+            margin: 0;
+            line-height: 1.4;
           }
           /* Account Selector Cards */
           .vrtfido-accounts-group {
@@ -376,123 +393,124 @@
             to { transform: rotate(360deg); }
           }
         </style>
-
-        <div class="vrtfido-backdrop" id="backdrop">
-          <div class="vrtfido-card" id="card">
-            <div class="vrtfido-header">
-              <div class="vrtfido-brand">
-                <img class="vrtfido-brand-icon" src="${logoUrl}" width="22" height="22" alt="VrtFido" style="border-radius: 4px; display: block;">
-                <span>${t.appName}</span>
-              </div>
-              <button class="vrtfido-close-btn" id="closeBtn" title="${isGetWithNoCreds ? t.close : t.cancel}">✕</button>
-            </div>
-
-            <div class="vrtfido-badge-row">
-              <span class="vrtfido-badge">
-                <span>${isCreate ? "✨" : "🛡️"}</span>
-                <span>${isCreate ? t.createTitle : t.getTitle}</span>
-              </span>
-            </div>
-
-            <div>
-              <h3 class="vrtfido-title">${isCreate ? t.createTitle : t.getTitle}</h3>
-              <p class="vrtfido-desc">${isCreate ? t.createDesc : t.getDesc}</p>
-            </div>
-
-            ${
-              isGetWithNoCreds
-                ? `
-              <div class="vrtfido-alert">
-                <span>⚠️</span>
-                <span>${candidatesError ? t.serverUnreachable : t.noCredentialsFound}</span>
-              </div>
-              <div class="vrtfido-info-box">
-                <div class="vrtfido-info-item">
-                  <span class="vrtfido-info-label">${t.website}</span>
-                  <span class="vrtfido-info-value">🌐 ${escapeHtml(rpName || rpId)}</span>
-                </div>
-              </div>
-            `
-                : `
-              <div class="vrtfido-info-box">
-                <div class="vrtfido-info-item">
-                  <span class="vrtfido-info-label">${t.website}</span>
-                  <span class="vrtfido-info-value">🌐 ${escapeHtml(rpName || rpId)}</span>
-                </div>
-
-                ${
-                  isGetWithMultiple
-                    ? `
-                  <div class="vrtfido-info-item">
-                    <span class="vrtfido-info-label">${t.chooseAccount}</span>
-                    <div class="vrtfido-accounts-group" id="accountsGroup">
-                      ${candidates
-                        .map((c, idx) => {
-                          const cid = escapeHtml(c.id_b64url || c.id);
-                          const isSelected = idx === 0;
-                          return `
-                          <div class="vrtfido-account-card ${isSelected ? "selected" : ""}" data-cid="${cid}">
-                            <input type="radio" name="vrtfido_account_choice" value="${cid}" class="vrtfido-account-radio" ${isSelected ? "checked" : ""}>
-                            <div class="vrtfido-account-meta">
-                              <span class="vrtfido-account-username">👤 ${escapeHtml(c.user_name)}</span>
-                              ${
-                                c.user_display_name && c.user_display_name !== c.user_name
-                                  ? `<span class="vrtfido-account-displayname">${escapeHtml(c.user_display_name)}</span>`
-                                  : ""
-                              }
-                            </div>
-                          </div>
-                        `;
-                        })
-                        .join("")}
-                    </div>
-                  </div>
-                `
-                    : `
-                  <div class="vrtfido-info-item">
-                    <span class="vrtfido-info-label">${t.account}</span>
-                    <span class="vrtfido-info-value">👤 ${escapeHtml(accountName || t.defaultAccount)}</span>
-                  </div>
-                `
-                }
-              </div>
-            `
-            }
-
-            <div class="vrtfido-error" id="errorBox"></div>
-
-            <div class="vrtfido-actions">
-              <button class="vrtfido-btn vrtfido-btn-cancel" id="cancelBtn">
-                ${isGetWithNoCreds ? t.close : t.cancel}
-              </button>
-              ${
-                !isGetWithNoCreds
-                  ? `
-                <button class="vrtfido-btn vrtfido-btn-approve" id="approveBtn">
-                  <span>${t.approve}</span>
-                </button>
-              `
-                  : ""
-              }
-            </div>
-          </div>
-        </div>
       `;
 
-      function escapeHtml(str) {
-        return String(str || "")
-          .replace(/&/g, "&amp;")
-          .replace(/</g, "&lt;")
-          .replace(/>/g, "&gt;")
-          .replace(/"/g, "&quot;")
-          .replace(/'/g, "&#039;");
+      // Dựng phần thân prompt bằng DOM API (không gán innerHTML với giá trị động).
+      function el(tag, className, text) {
+        const node = document.createElement(tag);
+        if (className) node.className = className;
+        if (text != null) node.textContent = text;
+        return node;
       }
 
-      const backdrop = shadow.getElementById("backdrop");
-      const cancelBtn = shadow.getElementById("cancelBtn");
-      const approveBtn = shadow.getElementById("approveBtn");
-      const closeBtn = shadow.getElementById("closeBtn");
-      const errorBox = shadow.getElementById("errorBox");
+      const backdrop = el("div", "vrtfido-backdrop");
+      backdrop.id = "backdrop";
+      const card = el("div", "vrtfido-card");
+      card.id = "card";
+
+      const header = el("div", "vrtfido-header");
+      const brand = el("div", "vrtfido-brand");
+      const brandIcon = document.createElement("img");
+      brandIcon.className = "vrtfido-brand-icon";
+      brandIcon.src = logoUrl;
+      brandIcon.width = 22;
+      brandIcon.height = 22;
+      brandIcon.alt = "VrtFido";
+      brandIcon.style.borderRadius = "4px";
+      brandIcon.style.display = "block";
+      brand.appendChild(brandIcon);
+      brand.appendChild(el("span", null, t.appName));
+      const closeBtn = el("button", "vrtfido-close-btn", "✕");
+      closeBtn.id = "closeBtn";
+      closeBtn.title = isGetWithNoCreds ? t.close : t.cancel;
+      header.appendChild(brand);
+      header.appendChild(closeBtn);
+
+      const badgeRow = el("div", "vrtfido-badge-row");
+      const badge = el("span", "vrtfido-badge " + (isCreate ? "vrtfido-badge-create" : "vrtfido-badge-get"));
+      badge.appendChild(el("span", null, isCreate ? "✨" : "🛡️"));
+      badge.appendChild(el("span", null, isCreate ? t.createTitle : t.getTitle));
+      badgeRow.appendChild(badge);
+
+      const titleBlock = el("div");
+      titleBlock.appendChild(el("h3", "vrtfido-title", isCreate ? t.createTitle : t.getTitle));
+      titleBlock.appendChild(el("p", "vrtfido-desc", isCreate ? t.createDesc : t.getDesc));
+
+      card.appendChild(header);
+      card.appendChild(badgeRow);
+      card.appendChild(titleBlock);
+
+      if (isGetWithNoCreds) {
+        const alertBox = el("div", "vrtfido-alert");
+        alertBox.appendChild(el("span", null, "⚠️"));
+        alertBox.appendChild(el("span", null, candidatesError ? t.serverUnreachable : t.noCredentialsFound));
+        card.appendChild(alertBox);
+      }
+
+      const infoBox = el("div", "vrtfido-info-box");
+      const websiteItem = el("div", "vrtfido-info-item");
+      websiteItem.appendChild(el("span", "vrtfido-info-label", t.website));
+      websiteItem.appendChild(el("span", "vrtfido-info-value", "🌐 " + (rpName || rpId)));
+      infoBox.appendChild(websiteItem);
+
+      const serverItem = el("div", "vrtfido-info-item");
+      serverItem.appendChild(el("span", "vrtfido-info-label", t.serverLabel));
+      serverItem.appendChild(el("span", "vrtfido-info-value", serverUrl || "127.0.0.1:10209"));
+      infoBox.appendChild(serverItem);
+
+      if (isGetWithMultiple) {
+        const accountsItem = el("div", "vrtfido-info-item");
+        accountsItem.appendChild(el("span", "vrtfido-info-label", t.chooseAccount));
+        const accountsGroup = el("div", "vrtfido-accounts-group");
+        accountsGroup.id = "accountsGroup";
+        candidates.forEach((c, idx) => {
+          const cid = c.id_b64url || c.id;
+          const accountCard = el("div", "vrtfido-account-card" + (idx === 0 ? " selected" : ""));
+          accountCard.setAttribute("data-cid", cid);
+          const radio = document.createElement("input");
+          radio.type = "radio";
+          radio.name = "vrtfido_account_choice";
+          radio.value = cid;
+          radio.className = "vrtfido-account-radio";
+          radio.checked = idx === 0;
+          const meta = el("div", "vrtfido-account-meta");
+          meta.appendChild(el("span", "vrtfido-account-username", "👤 " + c.user_name));
+          if (c.user_display_name && c.user_display_name !== c.user_name) {
+            meta.appendChild(el("span", "vrtfido-account-displayname", c.user_display_name));
+          }
+          accountCard.appendChild(radio);
+          accountCard.appendChild(meta);
+          accountsGroup.appendChild(accountCard);
+        });
+        accountsItem.appendChild(accountsGroup);
+        infoBox.appendChild(accountsItem);
+      } else if (!isGetWithNoCreds) {
+        const accountItem = el("div", "vrtfido-info-item");
+        accountItem.appendChild(el("span", "vrtfido-info-label", t.account));
+        accountItem.appendChild(el("span", "vrtfido-info-value", "👤 " + (accountName || t.defaultAccount)));
+        infoBox.appendChild(accountItem);
+      }
+      card.appendChild(infoBox);
+      card.appendChild(el("p", "vrtfido-privacy", t.privacyNotice));
+
+      const errorBox = el("div", "vrtfido-error");
+      errorBox.id = "errorBox";
+      card.appendChild(errorBox);
+
+      const actions = el("div", "vrtfido-actions");
+      const cancelBtn = el("button", "vrtfido-btn vrtfido-btn-cancel", isGetWithNoCreds ? t.close : t.cancel);
+      cancelBtn.id = "cancelBtn";
+      actions.appendChild(cancelBtn);
+      let approveBtn = null;
+      if (!isGetWithNoCreds) {
+        approveBtn = el("button", "vrtfido-btn vrtfido-btn-approve", t.approve);
+        approveBtn.id = "approveBtn";
+        actions.appendChild(approveBtn);
+      }
+      card.appendChild(actions);
+
+      backdrop.appendChild(card);
+      shadow.appendChild(backdrop);
 
       let selectedCredentialId = initialSelectedId;
 
@@ -552,7 +570,7 @@
           cancelBtn.disabled = true;
           closeBtn.disabled = true;
           errorBox.style.display = "none";
-          approveBtn.innerHTML = `<span class="vrtfido-spinner"></span><span>${t.processing}</span>`;
+          approveBtn.replaceChildren(el("span", "vrtfido-spinner"), el("span", null, t.processing));
 
           const finalOptions = Object.assign({}, options);
           if (!isCreate && selectedCredentialId) {
@@ -567,11 +585,11 @@
               approveBtn.disabled = false;
               cancelBtn.disabled = false;
               closeBtn.disabled = false;
-              approveBtn.innerHTML = `<span>${t.retry}</span>`;
+              approveBtn.replaceChildren(el("span", null, t.retry));
               return;
             }
 
-            approveBtn.innerHTML = `<span>${t.approved}</span>`;
+            approveBtn.replaceChildren(el("span", null, t.approved));
             setTimeout(() => {
               cleanUp();
               resolve(res);
@@ -643,6 +661,7 @@
     const cfg = await getStoredSettings();
     const requireApproval = cfg.requireApproval !== false;
     const langCode = cfg.language || (navigator.language && navigator.language.startsWith("vi") ? "vi" : "en");
+    const serverUrl = cfg.apiBaseUrl || `${cfg.protocol || "http"}://${cfg.host || "127.0.0.1"}:${cfg.port || 10209}`;
 
     // For GET: always query candidates to know accounts available on this domain
     let candidates = [];
@@ -655,7 +674,7 @@
 
     // ALWAYS display interactive approval prompt modal (never auto-approve)
     try {
-      const response = await showApprovalDialog(type, options, candidates, candidatesError, langCode);
+      const response = await showApprovalDialog(type, options, candidates, candidatesError, langCode, serverUrl);
       window.postMessage({
         source: "VRTFIDO_EXT",
         requestId,

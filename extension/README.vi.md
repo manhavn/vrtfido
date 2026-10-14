@@ -8,7 +8,7 @@ Tiện ích mở rộng đa trình duyệt (**Google Chrome**, **Chromium**, **B
 
 - **Không phụ thuộc USB hay Native Messaging Host**: Tiện ích gọi trực tiếp qua HTTP REST API tới backend `vrtfido` (`/api/passkey/create`, `/api/passkey/get`).
 - **Linh hoạt vị trí máy chủ**: Bạn có thể chạy VrtFido trên máy cục bộ (`http://127.0.0.1:10209`) hoặc deploy lên VPS/Cloud từ xa và cấu hình Host/Port linh hoạt.
-- **Bypass giới hạn Platform Passkey**: Giả lập hoàn hảo định danh Google Password Manager (GPM AAGUID: `ea9b8d66-4d01-1d21-3ce4-b6b48cb575d4`) và thuật toán `ES256` ECDSA P-256, cho phép đăng ký trên cả các website khắt khe như Nvidia, Google hay webauthn.io.
+- **Bypass giới hạn Platform Passkey**: Giả lập định danh Google Password Manager (GPM AAGUID: `ea9b8d66-4d01-1d21-3ce4-b6b48cb575d4`) khi backend được chạy kèm `--google-aaguid` (nếu không, backend ký bằng AAGUID riêng `e672fbec-badd-58f1-a951-dcfa1a7f2b43`) và dùng thuật toán `ES256` ECDSA P-256, cho phép đăng ký trên cả các website khắt khe như Nvidia, Google hay webauthn.io khi bật định danh GPM.
 - **Hộp thoại xác thực bắt buộc (Approve / Cancel Prompt)**:
   - Khi có yêu cầu tạo hoặc đăng nhập Passkey từ trang web, tiện ích luôn hiển thị một **Modal Popup** nổi (sử dụng Shadow DOM cách ly CSS hoàn toàn khỏi website).
   - Tuyệt đối không tự động duyệt ngầm: người dùng bắt buộc phải bấm **Xác nhận (Approve)** hoặc **Hủy (Cancel)** (hỗ trợ phím tắt `Escape` để hủy, `Enter` để xác nhận).
@@ -103,3 +103,93 @@ Safari đóng gói Web Extension dưới dạng một ứng dụng macOS native 
    - Bấm **Xuất JSON** để tải tệp backup passkeys về máy tính.
    - Bấm **Nhập JSON** để nạp tệp backup vào cơ sở dữ liệu.
    - Ô tìm kiếm danh sách Passkeys cho phép gõ tên miền hoặc tài khoản để lọc nhanh, có nút xóa kèm hộp thoại xác nhận.
+
+---
+
+## 5. Phát hành bản build Firefox (addons.mozilla.org)
+
+`dist/vrtfido-firefox.zip` **chưa cài vĩnh viễn được trên Firefox release cho tới khi Mozilla ký** — nên "lên public" nghĩa là bản đã ký trên [addons.mozilla.org](https://addons.mozilla.org) (AMO), hoặc tệp `.xpi` đã ký do bạn tự host.
+
+**Một lệnh duy nhất (tương tác).** Chạy từ thư mục gốc repo:
+
+```bash
+./publish-firefox.sh             # hỏi lần lượt: kênh, version, license, API key -> ký -> public
+./publish-firefox.sh --dry-run   # build + lint, KHÔNG gọi AMO
+./publish-firefox.sh --channel unlisted --version 0.3.4 --yes   # không tương tác
+```
+
+Script kiểm tra môi trường, hỏi kênh (`listed` = public trên AMO, `unlisted` = `.xpi` đã ký tự host), cho tăng version, chạy `build-firefox.sh` (đã ép addons-linter), hỏi giấy phép (chỉ kênh listed) và API key/secret của AMO (có thể lưu tại `~/.config/vrtfido/amo.env`, `chmod 600`), ký, rồi public (submit AMO với `listed`; tạo GitHub Release bằng `gh` nếu có với `unlisted`). Các bước thủ công bên dưới chính là những gì script tự động hoá.
+
+**Metadata AMO (bắt buộc với `listed`).** AMO từ chối bản listed nếu thiếu license, nên script ghi/cập nhật `amo-metadata.json` (ở gốc repo) rồi truyền qua `--amo-metadata`. Mặc định license `MIT` (đổi bằng `--license SLUG`, hoặc dùng file riêng qua `--amo-metadata FILE`). File do bạn cung cấp chỉ được kiểm tra, không bị ghi đè. Với bản listed **đầu tiên**, AMO còn cần `name`, `summary` và `categories` cho mọi ứng dụng tương thích — các field này nằm trong `amo-metadata.json`:
+
+```json
+{
+  "name": { "en-US": "VrtFido Passkey Provider", "vi": "VrtFido Passkey Provider" },
+  "summary": { "en-US": "…", "vi": "…" },
+  "categories": { "firefox": ["privacy-security"], "android": ["privacy-security"] },
+  "version": { "license": "MIT" }
+}
+```
+
+Slug category hợp lệ: <https://addons.mozilla.org/api/v5/addons/categories/>.
+
+**Kiểm tra (`mozilla/addons-linter`).** `./build-firefox.sh` tự chạy linter chính thức trên file zip và dừng nếu có lỗi (`SKIP_LINT=1` để bỏ qua, hữu ích khi offline). Chạy lẻ:
+
+```bash
+npx --yes addons-linter@latest dist/vrtfido-firefox.zip
+```
+
+**Điều kiện.** Tài khoản AMO và API key tại <https://addons.mozilla.org/developers/addon/api/key/>, xuất thành biến `WEB_EXT_API_KEY` và `WEB_EXT_API_SECRET`.
+
+**Listed (hiện công khai trên store).** Tạo listing một lần qua web tại <https://addons.mozilla.org/developers/addon/submit/>, các bản sau ký với channel `listed` (hoặc kéo-thả zip lên trang version của add-on):
+
+```bash
+npx --yes web-ext sign \
+  --source-dir dist/firefox \
+  --api-key "$WEB_EXT_API_KEY" \
+  --api-secret "$WEB_EXT_API_SECRET" \
+  --amo-metadata amo-metadata.json \
+  --channel listed
+```
+
+**Unlisted (tự phân phối).** Trả về `.xpi` đã ký để bạn tự host (ví dụ gắn vào GitHub Releases):
+
+```bash
+npx --yes web-ext sign \
+  --source-dir dist/firefox \
+  --api-key "$WEB_EXT_API_KEY" \
+  --api-secret "$WEB_EXT_API_SECRET" \
+  --channel unlisted
+```
+
+Tệp đã ký nằm trong `web-ext-artifacts/`. ID extension (`vrtfido@local`) cùng trường `key` giữ ID ổn định giữa các phiên bản. Nếu tự host, thêm `browser_specific_settings.gecko.update_url` trỏ tới update manifest để bản đã cài nhận được cập nhật.
+
+**Khai báo thu thập dữ liệu.** Manifest đặt `browser_specific_settings.gecko.data_collection_permissions.required: ["authenticationInfo", "personallyIdentifyingInfo"]` vì tiện ích truyền dữ liệu WebAuthn/passkey — bao gồm user name / display name do trang web cung cấp — tới backend VrtFido đã cấu hình (có thể ở xa). AMO bắt buộc key này với submission mới — xóa đi sẽ bị chặn ký. Nếu backend chỉ chạy nội bộ máy, có thể rút gọn thành `["none"]`. Key được hỗ trợ từ Firefox desktop 140+ / Android 142+, nên manifest đặt `strict_min_version` = `140.0` và `gecko_android.strict_min_version` = `142.0` — bản cũ hơn không được hỗ trợ, nhờ đó không còn warning về key không tương thích.
+
+**Tuân thủ store.** Privacy policy công khai nằm ở `PRIVACY.md` (dùng làm URL privacy policy cho cả hai store); `store/REVIEW-CHECKLIST.md` chứa câu trả lời sẵn để dán vào mọi field duyệt của Chrome Web Store và AMO — single purpose, justification từng permission, checkbox data usage, chứng nhận Limited Use và hướng dẫn test cho reviewer.
+
+---
+
+## 6. Phát hành lên Chrome Web Store
+
+Chrome không có công cụ tương đương `web-ext`: [Chrome Web Store API v2](https://developer.chrome.com/docs/webstore/using-api) cần OAuth, và item **đầu tiên** phải tạo thủ công trên [Developer Dashboard](https://chrome.google.com/webstore/devconsole/) (upload `dist/vrtfido-chrome.zip`, điền tab **Store listing** và **Privacy**). Sau đó có thể tự động hoá các bản cập nhật:
+
+```bash
+./publish-chrome.sh                      # hỏi lần lượt: version, OAuth, Publisher/Extension ID -> upload -> publish
+./publish-chrome.sh --dry-run            # build + in lệnh API, không gọi mạng
+./publish-chrome.sh --no-publish --yes   # chỉ upload, giữ ở bản nháp
+```
+
+Chuẩn bị:
+
+1. Đăng ký tài khoản developer Chrome Web Store (phí một lần US$5) và bật **2-Step Verification** cho tài khoản Google.
+2. Trong [Google Cloud Console](https://console.developers.google.com): bật **Chrome Web Store API**, cấu hình OAuth consent screen, rồi tạo **OAuth client ID** loại *Web application* với redirect URI `https://developers.google.com/oauthplayground`.
+3. Lấy refresh token ở [OAuth 2.0 Playground](https://developers.google.com/oauthplayground) bằng client ID/secret của bạn với scope `https://www.googleapis.com/auth/chromewebstore`.
+4. Ghi lại **Publisher ID** (Dashboard → Publisher → Settings) và **Item ID** của extension.
+
+Script đọc `CWS_CLIENT_ID`, `CWS_CLIENT_SECRET`, `CWS_REFRESH_TOKEN`, `CWS_PUBLISHER_ID`, `CWS_EXTENSION_ID` từ biến môi trường hoặc `~/.config/vrtfido/cws.env` (có thể lưu tại đó với `chmod 600`). Nó làm mới access token, kiểm tra `fetchStatus`, upload zip rồi gọi `publish`.
+
+Lưu ý:
+- Mỗi lần upload phải dùng `version` **cao hơn** bản đang publish — script có sẵn lựa chọn tăng patch/minor/major.
+- Item luôn được publish theo visibility đang đặt.
+- Vì tiện ích truyền dữ liệu xác thực tới backend VrtFido đã cấu hình, tab **Privacy practices** trên Dashboard cần khai báo data usage và URL privacy policy.
