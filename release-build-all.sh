@@ -4,9 +4,11 @@ set -euo pipefail
 # One-command release build: runs every build script in this repository in order,
 # so a release no longer needs the scripts to be launched one by one.
 #
+#   platforms  -> check-platforms.sh (platform gating, no SDK needed)
 #   extensions -> build-extension.sh (Chrome + Firefox + Safari)
 #   android    -> build-android.sh (release APK)
-#   linux      -> build-cross.sh  (gnu packages with the prompt window, static musl packages)
+#   linux      -> build-cross.sh  (gnu packages with the prompt window, static musl packages,
+#                                  plus the Windows packages, and the macOS ones on a Mac)
 #
 # The Windows packages are part of the linux step: build-cross.sh builds them here with
 # cargo-xwin. The macOS packages are the exception - no other host may use the Apple SDK - so
@@ -29,8 +31,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 
-STEP_NAMES=(extensions android linux)
+STEP_NAMES=(platforms extensions android linux)
 STEP_SCRIPTS=(
+  ./check-platforms.sh
   ./build-extension.sh
   ./build-android.sh
   ./build-cross.sh

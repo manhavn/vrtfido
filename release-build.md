@@ -7,6 +7,8 @@
 - Or build each type on its own
 
 ```shell
+./check-platforms.sh
+
 ./build-extension.sh
 ./build-chrome.sh
 ./build-firefox.sh
@@ -18,6 +20,10 @@
 ```
 
 Every build script stages its publish-ready files (`.zip`, `.tar.gz`, `.sha256`, `.apk`) in the `releases/` directory, replacing that build type's previous output, so one directory holds the whole release set. `build-extension.sh` already chains Chrome, Firefox and Safari; `release-build-all.sh` runs each build type once, keeps going when one of them fails, and reports the failures at the end.
+
+- Platform gating (no SDK needed)
+
+`check-platforms.sh` type-checks the platform-gated backends (today `src/autostart`, one backend per operating system) for every platform family, on any machine: `rustc --emit=metadata` needs no SDK, no linker and no C toolchain, and that module depends on nothing but the standard library. It exists because a `#[cfg]` naming the wrong platforms compiles everywhere except on the platform it left out — the Android build once stopped with `unresolved import super::quote_arg` because the helper was gated to `linux` and `windows`, and neither a Mac building the Android package nor the reverse is something a machine can notice by itself. `release-build-all.sh` runs it first, before the builds that take minutes; the Windows families are not in its list because `src/autostart/windows.rs` uses the `winreg` crate, which a bare `rustc` call cannot resolve, so `build-cross.sh` compiles those for real.
 
 - Linux packages (local)
 

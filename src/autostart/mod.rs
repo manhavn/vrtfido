@@ -43,10 +43,13 @@ pub(crate) fn startup_exe() -> std::io::Result<PathBuf> {
     Ok(std::fs::canonicalize(&current).unwrap_or(current))
 }
 
-/// Quotes one command-line word for the backends that keep the whole command in a single
-/// string (`Exec=` line, Run value). The LaunchAgent stores one array element per word and
-/// needs no quoting there.
-#[cfg(any(target_os = "linux", windows))]
+/// Quotes one command-line word for the backends that keep their whole command in a single
+/// string: the FreeDesktop `Exec=` line and the Windows `Run` value. The LaunchAgent stores one
+/// array element per word and needs no quoting, which is why macOS - and only macOS - does not
+/// compile this. Written as "not macOS" rather than a list of the three platforms that quote, so
+/// that a new backend gets the helper instead of a missing-import error, and the one platform
+/// that does not use it says so right here.
+#[cfg(not(target_os = "macos"))]
 pub(crate) fn quote_arg(arg: &str) -> String {
     if arg.contains(' ') {
         format!("\"{}\"", arg)
