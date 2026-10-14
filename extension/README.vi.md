@@ -115,7 +115,7 @@ Safari đóng gói Web Extension dưới dạng một ứng dụng macOS native 
 ```bash
 ./publish-firefox.sh             # hỏi lần lượt: kênh, version, license, API key -> ký -> public
 ./publish-firefox.sh --dry-run   # build + lint, KHÔNG gọi AMO
-./publish-firefox.sh --channel unlisted --version 0.3.6 --yes   # không tương tác
+./publish-firefox.sh --channel unlisted --version 0.3.7 --yes   # không tương tác
 ```
 
 Script kiểm tra môi trường, hỏi kênh (`listed` = public trên AMO, `unlisted` = `.xpi` đã ký tự host), cho tăng version, chạy `build-firefox.sh` (đã ép addons-linter), hỏi giấy phép (chỉ kênh listed) và API key/secret của AMO (có thể lưu tại `~/.config/vrtfido/amo.env`, `chmod 600`), ký, rồi public (submit AMO với `listed`; tạo GitHub Release bằng `gh` nếu có với `unlisted`). Các bước thủ công bên dưới chính là những gì script tự động hoá.

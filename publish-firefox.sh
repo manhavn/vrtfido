@@ -5,7 +5,7 @@
 #
 #   ./publish-firefox.sh                     # tương tác đầy đủ (hỏi từng bước)
 #   ./publish-firefox.sh --dry-run           # chạy hết luồng nhưng KHÔNG gọi AMO
-#   ./publish-firefox.sh --channel unlisted --version 0.3.6 --yes
+#   ./publish-firefox.sh --channel unlisted --version 0.3.7 --yes
 #
 # Tùy chọn:
 #   --channel listed|unlisted  listed = public trên addons.mozilla.org (mặc định),
@@ -92,7 +92,7 @@ get_version() {
 
 valid_version() { [[ "$1" =~ ^[0-9]+(\.[0-9]+){1,3}$ ]]; }
 
-bump_version() { # bump_version "0.3.6" patch|minor|major
+bump_version() { # bump_version "0.3.7" patch|minor|major
   python3 - "$1" "$2" <<'PY'
 import sys
 cur, mode = sys.argv[1], sys.argv[2]
@@ -109,7 +109,7 @@ print(f"{p[0]}.{p[1]}.{p[2]}")
 PY
 }
 
-set_version() { # set_version "0.3.6" — chỉ sửa đúng dòng "version"
+set_version() { # set_version "0.3.7" — chỉ sửa đúng dòng "version"
   python3 - "$MANIFEST" "$1" <<'PY'
 import re, sys
 path, new = sys.argv[1], sys.argv[2]
@@ -167,7 +167,7 @@ Chạy 1 lệnh, script hỏi lần lượt từng tham số.
 
   ./publish-firefox.sh                     # tương tác đầy đủ (hỏi từng bước)
   ./publish-firefox.sh --dry-run           # chạy hết luồng nhưng KHÔNG gọi AMO
-  ./publish-firefox.sh --channel unlisted --version 0.3.6 --yes
+  ./publish-firefox.sh --channel unlisted --version 0.3.7 --yes
 
 Tùy chọn:
   --channel listed|unlisted  listed = public trên addons.mozilla.org (mặc định),

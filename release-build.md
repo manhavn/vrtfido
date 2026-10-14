@@ -57,6 +57,6 @@ It builds both architectures (`cargo build --release --features gui --target <tr
 
 - Publish
 
-One tag per version (`v0.3.6`) with every file from `releases/` attached to it. The former `-gui` variants are gone: since the `gnu` package already contains the window as well as the daemon, there is nothing left to split by tag.
+One tag per version (`v0.3.7`) with every file from `releases/` attached to it. The former `-gui` variants are gone: since the `gnu` package already contains the window as well as the daemon, there is nothing left to split by tag.
 
 The release is put together by hand: run `./release-build-all.sh` on the Linux machine (it runs the platform check, the extensions, the Android APK and the Linux plus Windows packages) and on the Mac (the same, plus `build-mac.sh` for the two macOS packages), then create the tag and attach `releases/*.tar.gz`, `releases/*.zip`, `releases/*.apk` and their `.sha256` files from the release page or with `gh release upload <tag> releases/… --clobber`. Nothing is attached automatically, so a half-finished release is just a release with fewer files.
