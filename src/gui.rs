@@ -12,10 +12,20 @@
 //!   "prompt window" and "headless daemon", so [`run`] has to fail fast and non-zero when there is
 //!   no daemon API and no usable window. A window that loses the daemon *later* closes instead of
 //!   lingering ([`UNREACHABLE_POLL_LIMIT`]).
-//! * **Hidden window, live poll.** egui runs no ui pass while the viewport is invisible, but the
-//!   daemon still has to be asked for the next request. The poll therefore lives in
-//!   [`eframe::App::logic`], which eframe calls for an invisible window too, and every pass asks
-//!   for the next one through `request_repaint_after`.
+//! * **The card.** One card, drawn from the request on screen: it opens at [`WINDOW_SIZE`] and is
+//!   resizable, so the same dialog works on a 1024x600 netbook and on a 4K desktop. The content is
+//!   responsive - rows are laid out from the width they are given and `centered_row` wraps a row
+//!   that cannot fit - and it scrolls when the card is shorter than the request needs. The card
+//!   gives up [`SCROLL_BAR_RESERVE`] so the bar never crosses a button.
+//! * **Window lifetime.** macOS and Windows keep one window for the whole run and hide it between
+//!   requests, because the tray icon built in this process needs that event loop (`sync_window`).
+//!   Linux holds no window at all while nothing is pending: winit cannot unmap
+//!   a window on Wayland - `Window::set_visible` is a no-op there, and so is the `visible` field
+//!   of a [`egui::ViewportBuilder`] - so a window that exists is a window the user sees. `run_ephemeral`
+//!   therefore polls the daemon without any window and opens the card per request. The poll that
+//!   keeps the card in sync with the daemon lives in [`eframe::App::logic`], which eframe calls
+//!   for an invisible window too, and every pass asks for the next one through
+//!   `request_repaint_after`.
 //! * **Tray.** On macOS and Windows the menu-bar / notification-area icon is built in this very
 //!   process (see [`TrayState`]), because those APIs need the thread that runs the event loop.
 //!   Linux has no tray here: the daemon owns a `ksni` item that needs no window.
@@ -37,6 +47,10 @@ const POLL_TICK: Duration = Duration::from_millis(200);
 /// Idle ticks to skip before polling again while the window is hidden. 5 x 200 ms means one
 /// request per second (`pending()` plus its answer) for a window that shows nothing - a hidden
 /// prompt must not cost 5 wakeups and 5 round trips per second for the whole day.
+///
+/// The same 200 ms x 5 is the interval the Linux client polls at while it holds no window at all
+/// (`wait_for_prompt`), so an idle client costs the daemon the same once per second on every
+/// platform.
 const IDLE_TICKS: u32 = 5;
 /// Consecutive unreachable polls after which the daemon counts as gone. 10 of them are about ten
 /// seconds at the idle cadence, which covers a daemon that is restarting.
@@ -52,9 +66,35 @@ const ENROLL_NOTICE_HOLD: Duration = Duration::from_secs(2);
 ///
 /// eframe shows the window itself once it has painted its first frame, so the hiding command of
 /// that same pass is undone before the frame is over; the second one lands after it.
+///
+/// Only macOS and Windows hide this window: the Linux client closes it instead, because Wayland
+/// cannot unmap one (see the module documentation).
 const HIDE_ASSERTIONS: u8 = 2;
-/// The window is a dialog, not an app: a small, fixed, always-on-top card.
+/// The window is a dialog, not an app: a narrow, always-on-top card that opens at this size. It is
+/// resizable, because the card is the only surface for a verification request on this host and the
+/// space it gets differs from desktop to desktop; the content follows the size (the rows wrap, the
+/// account picker and the fields take the width they are given) and scrolls when the card is
+/// shorter than the request needs.
 const WINDOW_SIZE: [f32; 2] = [480.0, 440.0];
+/// Smallest the card may be dragged to: below this a wrapped row and the account picker stop being
+/// readable. There is no upper bound - the card fills whatever space the desktop gives it.
+const MIN_WINDOW_WIDTH: f32 = 380.0;
+const MIN_WINDOW_HEIGHT: f32 = 320.0;
+/// Padding around the card, inside the window.
+const CARD_OUTER_MARGIN: i8 = 8;
+/// Padding inside the card, between its border and the content.
+const CARD_INNER_MARGIN: i8 = 10;
+/// Strip of the card's content the scroll bar takes: egui draws the bar *over* the content, so the
+/// card gives up that width instead of letting the bar cross the last button.
+const SCROLL_BAR_RESERVE: f32 = 10.0;
+
+/// Width the card's content has at [`WINDOW_SIZE`]: the window minus both paddings, the two 2 pt
+/// border halves and [`SCROLL_BAR_RESERVE`]. Every row of the card has to fit in it, which is what
+/// `the_verify_action_row_fits_the_card_and_is_centred` holds the widest row to.
+#[cfg(test)]
+fn card_content_width() -> f32 {
+    WINDOW_SIZE[0] - 2.0 * f32::from(CARD_OUTER_MARGIN + 2 + CARD_INNER_MARGIN) - SCROLL_BAR_RESERVE
+}
 
 const ESCAPE_REASON: &str = "Dismissed via Escape";
 const CLOSE_REASON: &str = "Window closed by the user";
@@ -475,6 +515,10 @@ struct PromptApp {
     unreachable_polls: u32,
     /// The daemon is gone: close the viewport on the next pass.
     quit: bool,
+    /// This window asked to close itself: a settled request on Linux, or a daemon that is gone.
+    /// The close request that follows is then ours and must not be answered with `CancelClose`,
+    /// which is what the window manager's "X" gets.
+    closing: bool,
     /// The last visibility this window asked for, to send the command only on a change.
     window_shown: bool,
     /// Hide commands still owed to the window manager after a transition to hidden.
@@ -490,8 +534,8 @@ struct PromptApp {
 /// Runs the prompt window until the daemon disappears or the user quits it.
 ///
 /// Returns the exit status of this process. A non-zero status is the "no prompt window on this
-/// host" signal `main.rs` reacts to: it either comes from the startup probe (no daemon API) or
-/// from eframe (no display, no OpenGL).
+/// host" signal `main.rs` reacts to: it either comes from the startup probe (no daemon API), from
+/// the display pre-flight, or from eframe (no usable OpenGL surface).
 pub fn run(host: &str, port: u16, tray: bool) -> i32 {
     let api = PromptApi::new(host, port);
 
@@ -506,14 +550,49 @@ pub fn run(host: &str, port: u16, tray: bool) -> i32 {
         return 1;
     }
 
+    // Linux keeps no window while nothing is pending, so a host whose window could never open is
+    // detected here, in the same breath as the API probe `main.rs` already waits for.
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = tray; // the tray icon lives in the daemon on these platforms
+        if !has_display() {
+            eprintln!(
+                "[GUI] No display found (neither WAYLAND_DISPLAY nor DISPLAY is set); continuing without a window."
+            );
+            return 1;
+        }
+        return run_ephemeral(&api);
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    {
+        let api_for_app = api.clone();
+        return match eframe::run_native(
+            "VrtFido",
+            native_options(),
+            Box::new(move |cc| Ok(Box::new(PromptApp::new(cc, api_for_app, tray, None)))),
+        ) {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("[GUI] Could not open the prompt window: {}", e);
+                eprintln!(
+                    "[GUI] A display and an OpenGL 3.3 / GLES 3.0 driver are required; the daemon and its Web CMS keep working without them."
+                );
+                1
+            }
+        };
+    }
+}
+
+/// The native window this client asks eframe for, wherever one is created.
+fn native_options() -> eframe::NativeOptions {
     #[allow(unused_mut)]
     let mut native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("WebAuthn Verification Request - VrtFido")
             .with_inner_size(WINDOW_SIZE)
-            .with_min_inner_size(WINDOW_SIZE)
-            .with_max_inner_size(WINDOW_SIZE)
-            .with_resizable(false)
+            .with_min_inner_size([MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT])
+            .with_resizable(true)
             // The browser sits on the WebAuthn call while this card is up: it has to be readable.
             .with_always_on_top()
             // Wayland/X11 use this as the app id, which is what the window list shows.
@@ -533,27 +612,96 @@ pub fn run(host: &str, port: u16, tray: bool) -> i32 {
         }));
     }
 
-    let api_for_app = api.clone();
-    let result = eframe::run_native(
-        "VrtFido",
-        native_options,
-        Box::new(move |cc| Ok(Box::new(PromptApp::new(cc, api_for_app, tray)))),
-    );
+    native_options
+}
 
-    match result {
-        Ok(()) => 0,
-        Err(e) => {
-            eprintln!("[GUI] Could not open the prompt window: {}", e);
-            eprintln!(
-                "[GUI] A display and an OpenGL 3.3 / GLES 3.0 driver are required; the daemon and its Web CMS keep working without them."
-            );
-            1
+/// `true` when this host has a display a window could be opened on.
+///
+/// A one-line pre-flight, not a guarantee: it filters out the headless case (a VPS, a container,
+/// a service without a session) early enough for `main.rs` to fall back to the Web CMS prompt. A
+/// session that has a socket but no usable GL driver is only discovered when the first request
+/// wants a window.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn has_display() -> bool {
+    ["WAYLAND_DISPLAY", "DISPLAY"]
+        .iter()
+        .any(|key| std::env::var_os(key).is_some_and(|value| !value.is_empty()))
+}
+
+/// Runs one window per verification request.
+///
+/// The Linux half of `run`. winit cannot unmap a window on Wayland (and "unminimizing is ignored"
+/// there too), so *no* prompt on screen means *no* window: the daemon is polled over plain HTTP
+/// while nothing is pending (`wait_for_prompt`), the card is opened for the request that arrives
+/// and closed again as soon as the request is settled. Nothing survives a request - no window
+/// state to reset, nothing left on the desktop.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn run_ephemeral(api: &PromptApi) -> i32 {
+    loop {
+        let Some(prompt) = wait_for_prompt(api) else {
+            // The daemon is gone: there is nothing left to prompt for.
+            return 0;
+        };
+        println!(
+            "[GUI] Verification request #{}: opening the prompt window.",
+            prompt.request_id
+        );
+
+        let api_for_app = api.clone();
+        match eframe::run_native(
+            "VrtFido",
+            native_options(),
+            Box::new(move |cc| Ok(Box::new(PromptApp::new(cc, api_for_app, false, Some(prompt))))),
+        ) {
+            // The window was closed again (the request is settled): poll for the next one.
+            Ok(()) => {}
+            Err(e) => {
+                eprintln!("[GUI] Could not open the prompt window: {}", e);
+                eprintln!(
+                    "[GUI] A display and an OpenGL 3.3 / GLES 3.0 driver are required; the daemon and its Web CMS keep working without them."
+                );
+                return 1;
+            }
         }
     }
 }
 
+/// Asks the daemon for a request while no window exists; `None` once the daemon counts as gone.
+///
+/// The same poll the window runs, at the same one-second cadence a hidden window uses
+/// (`POLL_TICK` x `IDLE_TICKS`), and the same `UNREACHABLE_POLL_LIMIT` before the daemon is
+/// declared gone - so a daemon restart is awaited here exactly like there.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn wait_for_prompt(api: &PromptApi) -> Option<PendingPrompt> {
+    let mut unreachable_polls = 0;
+    loop {
+        match api.pending() {
+            Ok(Some(prompt)) => return Some(prompt),
+            Ok(None) => unreachable_polls = 0,
+            Err(reason) => {
+                unreachable_polls += 1;
+                if unreachable_polls >= UNREACHABLE_POLL_LIMIT {
+                    eprintln!(
+                        "[GUI] Daemon unreachable ({}); closing the prompt client.",
+                        reason
+                    );
+                    return None;
+                }
+            }
+        }
+        std::thread::sleep(POLL_TICK * IDLE_TICKS);
+    }
+}
+
 impl PromptApp {
-    fn new(cc: &eframe::CreationContext<'_>, api: PromptApi, tray: bool) -> Self {
+    /// `initial` is the request the Linux client opened this window for; macOS and Windows always
+    /// pass `None` and let the poll in `logic()` find the first request.
+    fn new(
+        cc: &eframe::CreationContext<'_>,
+        api: PromptApi,
+        tray: bool,
+        initial: Option<PendingPrompt>,
+    ) -> Self {
         apply_theme(&cc.egui_ctx);
         // `logic()` polls for the next request, so at least one pass has to run while the window
         // is still hidden - without this first request eframe would sleep until someone typed.
@@ -581,11 +729,8 @@ impl PromptApp {
         let (tx, rx) = channel();
         // The daemon's log (this process inherits its stdout) then shows where the prompt window
         // is pointed, which is the first thing to check when no prompt ever appears.
-        println!(
-            "[GUI] VrtFido prompt window ready on {}; waiting for verification requests.",
-            api.dashboard_url()
-        );
-        Self {
+        println!("[GUI] VrtFido prompt window ready on {}.", api.dashboard_url());
+        let mut app = Self {
             api,
             tx,
             rx,
@@ -603,14 +748,22 @@ impl PromptApp {
             poll_in_flight: false,
             unreachable_polls: 0,
             quit: false,
-            // Nothing is on screen yet, and eframe is about to show the window after its first
-            // painted frame, so the first pass has to take it off screen (see `sync_window`).
+            closing: false,
+            // Nothing is on screen yet, and eframe shows every window after its first painted
+            // frame: on macOS and Windows the first pass takes it off screen again (see
+            // `sync_window`). On Linux the request this window was opened for is on the card.
             window_shown: false,
             hidden_assertions: HIDE_ASSERTIONS,
             focus_pin: false,
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             tray,
+        };
+        // The Linux client opens this window *because* a request is pending, so that request is on
+        // the card from the first frame instead of one poll round trip later.
+        if let Some(prompt) = initial {
+            app.display_prompt(prompt);
         }
+        app
     }
 
     /// Runs one daemon call on a worker thread.
@@ -778,7 +931,9 @@ impl PromptApp {
         self.watch_enrollment();
         self.poll_enrollment();
 
-        // A hidden window polls at the idle cadence, a visible one every tick.
+        // A hidden window polls at the idle cadence, a visible one every tick. Only macOS and
+        // Windows own a hidden window; on Linux this window is up because a request is, and the
+        // idle half runs in `run_ephemeral` without any window at all.
         if !self.window_shown {
             self.idle_ticks += 1;
             if self.idle_ticks < IDLE_TICKS {
@@ -878,8 +1033,9 @@ impl PromptApp {
     }
 
     /// Drops the request on screen. Nothing is sent to the daemon here: the callers either
-    /// settled the request already or deliberately leave it pending. The window itself is hidden
-    /// by [`PromptApp::sync_window`] on the same pass.
+    /// settled the request already or deliberately leave it pending. The window itself leaves the
+    /// screen in [`PromptApp::sync_window`] on the same pass - hidden on macOS and Windows, closed
+    /// on Linux, where a window cannot be hidden.
     fn hide(&mut self) {
         self.prompt = None;
         self.pin.clear();
@@ -907,6 +1063,9 @@ impl PromptApp {
     /// counts how many hide commands are still owed after a transition to hidden, and the pass
     /// that still owes one asks for an immediate repaint, which makes the wrong frame too short
     /// to be seen.
+    ///
+    /// On Linux the same pass closes the window instead: Wayland ignores the hiding command, so
+    /// the card leaves the screen by ceasing to exist, and `run_ephemeral` opens the next one.
     fn sync_window(&mut self, ctx: &egui::Context) {
         if self.prompt.is_some() || self.enroll.is_some() {
             self.hidden_assertions = 0;
@@ -925,6 +1084,13 @@ impl PromptApp {
         if self.hidden_assertions > 0 {
             self.hidden_assertions -= 1;
             ctx.send_viewport_cmd(ViewportCommand::Visible(false));
+            // Wayland ignores that command, so the card leaves the screen by ceasing to exist
+            // here: `closing` marks the close as ours, which `logic()` needs to let it through.
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+            {
+                self.closing = true;
+                ctx.send_viewport_cmd(ViewportCommand::Close);
+            }
             if self.hidden_assertions > 0 {
                 ctx.request_repaint();
             }
@@ -1189,11 +1355,11 @@ impl PromptApp {
                 .size(12.0)
                 .color(Palette::SUCCESS),
             );
-            centered_row(ui, |ui| {
-                if css_button(ui, "✔️ Approve", ButtonKind::Primary).clicked() {
+            centered_row(ui, &[BTN_APPROVE, BTN_REJECT], |ui| {
+                if css_button(ui, BTN_APPROVE, ButtonKind::Primary).clicked() {
                     *action = Some(UiAction::Approve(ApprovalKind::Remembered));
                 }
-                if css_button(ui, "❌ Reject Request", ButtonKind::Danger).clicked() {
+                if css_button(ui, BTN_REJECT, ButtonKind::Danger).clicked() {
                     *action = Some(UiAction::Reject(REJECT_REASON));
                 }
             });
@@ -1211,11 +1377,11 @@ impl PromptApp {
             if entered && !self.busy {
                 *action = Some(UiAction::Approve(ApprovalKind::Setup));
             }
-            centered_row(ui, |ui| {
-                if css_button(ui, "Activate & Approve", ButtonKind::Primary).clicked() {
+            centered_row(ui, &[BTN_ACTIVATE, BTN_REJECT_SHORT], |ui| {
+                if css_button(ui, BTN_ACTIVATE, ButtonKind::Primary).clicked() {
                     *action = Some(UiAction::Approve(ApprovalKind::Setup));
                 }
-                if css_button(ui, "Reject", ButtonKind::Danger).clicked() {
+                if css_button(ui, BTN_REJECT_SHORT, ButtonKind::Danger).clicked() {
                     *action = Some(UiAction::Reject(REJECT_REASON));
                 }
             });
@@ -1229,19 +1395,19 @@ impl PromptApp {
             if entered && !self.busy {
                 *action = Some(UiAction::Approve(ApprovalKind::Pin));
             }
-            centered_row(ui, |ui| {
-                if css_button(ui, "🔑 Verify with PIN", ButtonKind::Primary).clicked() {
+            centered_row(ui, &[BTN_VERIFY_PIN, BTN_SENSOR, BTN_REJECT], |ui| {
+                if css_button(ui, BTN_VERIFY_PIN, ButtonKind::Primary).clicked() {
                     *action = Some(UiAction::Approve(ApprovalKind::Pin));
                 }
                 // The sensor button owns the chip until the daemon answers, so it is the one
                 // control that goes insensitive during its own scan.
                 let sensor = ui.add_enabled_ui(!self.sensor_scan, |ui| {
-                    css_button(ui, "🖐️ Touch USB Sensor", ButtonKind::Secondary)
+                    css_button(ui, BTN_SENSOR, ButtonKind::Secondary)
                 });
                 if sensor.inner.clicked() {
                     *action = Some(UiAction::Approve(ApprovalKind::Fingerprint));
                 }
-                if css_button(ui, "❌ Reject Request", ButtonKind::Danger).clicked() {
+                if css_button(ui, BTN_REJECT, ButtonKind::Danger).clicked() {
                     *action = Some(UiAction::Reject(REJECT_REASON));
                 }
             });
@@ -1250,9 +1416,9 @@ impl PromptApp {
             // the six stages itself; the panel below only shows them.
             ui.add_space(2.0);
             let sensor_ready = prompt.hardware_sensor_available;
-            centered_row(ui, |ui| {
+            centered_row(ui, &[BTN_ADD_FINGERPRINT], |ui| {
                 let button = ui.add_enabled_ui(sensor_ready, |ui| {
-                    css_button(ui, "➕ Add Fingerprint", ButtonKind::Secondary)
+                    css_button(ui, BTN_ADD_FINGERPRINT, ButtonKind::Secondary)
                 });
                 if button.inner.clicked() {
                     *action = Some(UiAction::OpenEnrollment);
@@ -1321,11 +1487,11 @@ impl PromptApp {
                     .margin(Margin::symmetric(10, 6)),
             );
             let entered = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-            centered_row(ui, |ui| {
-                if css_button(ui, "➕ Add Fingerprint", ButtonKind::Primary).clicked() || entered {
+            centered_row(ui, &[BTN_ADD_FINGERPRINT, BTN_CANCEL], |ui| {
+                if css_button(ui, BTN_ADD_FINGERPRINT, ButtonKind::Primary).clicked() || entered {
                     *action = Some(UiAction::StartEnrollment);
                 }
-                if css_button(ui, "❌ Cancel", ButtonKind::Danger).clicked() {
+                if css_button(ui, BTN_CANCEL, ButtonKind::Danger).clicked() {
                     *action = Some(UiAction::CancelEnrollment);
                 }
             });
@@ -1391,8 +1557,8 @@ impl PromptApp {
                     .color(Palette::MUTED),
                 );
             }
-            centered_row(ui, |ui| {
-                if css_button(ui, "❌ Cancel", ButtonKind::Danger).clicked() {
+            centered_row(ui, &[BTN_CANCEL], |ui| {
+                if css_button(ui, BTN_CANCEL, ButtonKind::Danger).clicked() {
                     *action = Some(UiAction::CancelEnrollment);
                 }
             });
@@ -1440,8 +1606,9 @@ impl eframe::App for PromptApp {
         self.tick(ctx);
 
         // The window manager's "X" has to dismiss the request, not stop the client: the daemon
-        // keeps this process for the next prompt, and on macOS/Windows the tray item lives here.
-        if ctx.input(|i| i.viewport().close_requested()) {
+        // keeps this process for the next prompt, and on macOS and Windows the tray item lives
+        // here. A close this client asked for itself (`closing`) goes through untouched.
+        if ctx.input(|i| i.viewport().close_requested()) && !self.closing {
             ctx.send_viewport_cmd(ViewportCommand::CancelClose);
             // An enrollment in progress owns the sensor, so it is stopped before the card goes.
             self.cancel_enrollment();
@@ -1449,6 +1616,7 @@ impl eframe::App for PromptApp {
         }
 
         if self.quit {
+            self.closing = true;
             ctx.send_viewport_cmd(ViewportCommand::Close);
         }
     }
@@ -1458,20 +1626,22 @@ impl eframe::App for PromptApp {
 
         egui::Frame::central_panel(&ui.style())
             .fill(Palette::BG)
-            .inner_margin(Margin::same(16))
+            .inner_margin(Margin::same(CARD_OUTER_MARGIN))
             .show(ui, |ui| {
                 egui::Frame::new()
                     .fill(Palette::CARD)
                     .stroke(Stroke::new(2.0, Palette::ACCENT))
                     .corner_radius(CornerRadius::same(14))
-                    .inner_margin(Margin::same(22))
+                    .inner_margin(Margin::same(CARD_INNER_MARGIN))
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
                         ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
                         egui::ScrollArea::vertical()
                             .auto_shrink([false; 2])
                             .show(ui, |ui| {
-                                ui.set_width(ui.available_width());
+                                ui.set_width(
+                                    (ui.available_width() - SCROLL_BAR_RESERVE).max(0.0),
+                                );
                                 // Taken out of the app so the drawing code holds no borrow of
                                 // `self.prompt` while the fields beside it are edited.
                                 if self.enroll.is_some() {
@@ -1604,7 +1774,7 @@ fn css_button(ui: &mut egui::Ui, text: &str, kind: ButtonKind) -> egui::Response
         widgets.hovered.fg_stroke.color = hover_text;
         widgets.active.fg_stroke.color = hover_text;
         ui.add(
-            egui::Button::new(RichText::new(text).size(13.0).strong())
+            egui::Button::new(RichText::new(text).size(BUTTON_TEXT_SIZE).strong())
                 .corner_radius(CornerRadius::same(8))
                 .min_size(Vec2::new(0.0, 30.0)),
         )
@@ -1612,14 +1782,60 @@ fn css_button(ui: &mut egui::Ui, text: &str, kind: ButtonKind) -> egui::Response
     response.inner
 }
 
-/// Centres a row of buttons in the card: an action row hugs its content instead of stretching
-/// across the card.
-fn centered_row(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
-    ui.with_layout(
-        egui::Layout::left_to_right(Align::Center).with_main_align(Align::Center),
-        add,
-    );
+/// The label size of every button, in points: [`button_width`] and [`css_button`] must agree on it.
+const BUTTON_TEXT_SIZE: f32 = 13.0;
+
+/// Width one of the card's buttons takes: its label plus the horizontal padding [`css_button`]
+/// leaves on both sides, measured with the fonts the button itself is drawn with.
+fn button_width(ui: &egui::Ui, label: &str) -> f32 {
+    let text = ui
+        .painter()
+        .layout_no_wrap(
+            label.to_owned(),
+            FontId::proportional(BUTTON_TEXT_SIZE),
+            Palette::TEXT,
+        )
+        .size()
+        .x;
+    text.ceil() + 2.0 * ui.spacing().button_padding.x
 }
+
+/// Places a row of buttons on the card's centre line; `labels` are what the buttons added by `add`
+/// will say, and they are measured with [`button_width`] to shift the row into place.
+///
+/// egui lays a horizontal row out from its left edge and ignores the main alignment (a row is
+/// aligned by its parent only), so the shift is computed here. A row that cannot fit the card
+/// wraps onto a second line instead of being cut off by the `ScrollArea`.
+fn centered_row(ui: &mut egui::Ui, labels: &[&str], add: impl FnOnce(&mut egui::Ui)) {
+    let spacing = ui.spacing().item_spacing.x;
+    let content: f32 = labels.iter().map(|label| button_width(ui, label)).sum::<f32>()
+        + spacing * labels.len().saturating_sub(1) as f32;
+
+    if content > ui.available_width() {
+        ui.with_layout(
+            egui::Layout::left_to_right(Align::Center).with_main_wrap(true),
+            add,
+        );
+        return;
+    }
+
+    let shift = ((ui.available_width() - content) * 0.5).max(0.0);
+    ui.horizontal(|ui| {
+        ui.add_space(shift);
+        add(ui);
+    });
+}
+
+/// The card's button labels: the drawing code and the row centring that measures them share these,
+/// so a row can never be measured for a label it does not draw.
+const BTN_APPROVE: &str = "✔️ Approve";
+const BTN_VERIFY_PIN: &str = "🔑 Verify with PIN";
+const BTN_SENSOR: &str = "🖐️ Touch USB Sensor";
+const BTN_REJECT: &str = "❌ Reject Request";
+const BTN_REJECT_SHORT: &str = "Reject";
+const BTN_ACTIVATE: &str = "Activate & Approve";
+const BTN_ADD_FINGERPRINT: &str = "➕ Add Fingerprint";
+const BTN_CANCEL: &str = "❌ Cancel";
 
 /// The framed box an input sits in: `.pin-entry` / the account box of the CMS.
 fn input_frame() -> egui::Frame {
@@ -1875,6 +2091,84 @@ mod tests {
     fn operations_are_worded_like_the_cms() {
         assert_eq!(operation_label("MakeCredential"), "Register New Passkey");
         assert_eq!(operation_label("GetAssertion"), "Authenticate Sign-in");
+    }
+
+    /// The three buttons of the verify view are the widest row on the card. They have to stay
+    /// inside the card's content width - the row used to be cut off at the right edge, because the
+    /// card's padding left it less room than the buttons need - and sit on the card's centre line.
+    #[test]
+    fn the_verify_action_row_fits_the_card_and_is_centred() {
+        let ctx = egui::Context::default();
+        let width = card_content_width();
+        let mut rects: Vec<egui::Rect> = Vec::new();
+
+        let _ = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(width, 400.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                ui.set_max_width(width);
+                centered_row(ui, &[BTN_VERIFY_PIN, BTN_SENSOR, BTN_REJECT], |ui| {
+                    rects.push(css_button(ui, BTN_VERIFY_PIN, ButtonKind::Primary).rect);
+                    rects.push(css_button(ui, BTN_SENSOR, ButtonKind::Secondary).rect);
+                    rects.push(css_button(ui, BTN_REJECT, ButtonKind::Danger).rect);
+                });
+            },
+        );
+
+        assert_eq!(rects.len(), 3);
+        // One line: a row that wrapped would mean the buttons no longer fit side by side.
+        assert!(
+            rects.windows(2).all(|pair| pair[0].min.y == pair[1].min.y),
+            "the row wrapped: {rects:?}"
+        );
+        let left = rects.iter().map(|r| r.min.x).fold(f32::INFINITY, f32::min);
+        let right = width - rects.iter().map(|r| r.max.x).fold(0.0, f32::max);
+        assert!(left >= -0.5 && right >= -0.5, "the row is cut off: {rects:?}");
+        // Centred: the slack is split evenly instead of landing all on the right.
+        assert!((left - right).abs() <= 1.5, "left={left} right={right}");
+    }
+
+    /// The window is resizable, so the row has to survive a card much narrower than the default:
+    /// wrapped onto two lines, still inside the width it was given.
+    #[test]
+    fn a_narrow_card_wraps_the_verify_row() {
+        let ctx = egui::Context::default();
+        let width = MIN_WINDOW_WIDTH - 2.0 * f32::from(CARD_OUTER_MARGIN + 2 + CARD_INNER_MARGIN)
+            - SCROLL_BAR_RESERVE;
+        let mut rects: Vec<egui::Rect> = Vec::new();
+
+        let _ = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(width, 400.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                ui.set_max_width(width);
+                centered_row(ui, &[BTN_VERIFY_PIN, BTN_SENSOR, BTN_REJECT], |ui| {
+                    rects.push(css_button(ui, BTN_VERIFY_PIN, ButtonKind::Primary).rect);
+                    rects.push(css_button(ui, BTN_SENSOR, ButtonKind::Secondary).rect);
+                    rects.push(css_button(ui, BTN_REJECT, ButtonKind::Danger).rect);
+                });
+            },
+        );
+
+        assert_eq!(rects.len(), 3);
+        assert!(
+            rects.iter().all(|r| r.min.x >= -0.5 && r.max.x <= width + 0.5),
+            "a button sticks out of the card: {rects:?}"
+        );
+        assert!(
+            rects.windows(2).any(|pair| pair[0].min.y != pair[1].min.y),
+            "the row did not wrap in a narrow card: {rects:?}"
+        );
     }
 
     #[test]
