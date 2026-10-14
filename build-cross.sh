@@ -1,23 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Standalone local release builder for vrtfido: one run produces every package the machine it
-# runs on can contribute to the release. On Linux that is the four Linux archives plus the two
-# Windows ones; on macOS it is the two macOS ones (the Apple SDK may only be used on Apple
-# hardware, so no other host can build them).
+# Standalone release builder for vrtfido on any host: one run produces the four Linux archives
+# plus the two Windows ones, whatever the machine is.
 #
 # Linux: the `gnu` archives carry the daemon plus the prompt window and come out of
 # cargo-zigbuild, so neither a container engine nor a foreign toolchain is needed; the `musl`
-# archives are static CLI-only. The Windows packages are built with cargo-xwin, which needs
-# clang-cl, lld-link, llvm-lib and nasm - mise does not carry those, so they are installed
-# through the system package manager (apt/dnf/... with sudo). `*-pc-windows-gnu` and
+# archives are static CLI-only.
+#
+# Windows: `*-pc-windows-msvc` is built with cargo-xwin, which needs clang-cl, lld-link, llvm-lib
+# and nasm - mise does not carry those, so they are installed through the system package manager
+# (apt/dnf/... with sudo on Linux, Homebrew on macOS). `*-pc-windows-gnu` and
 # `*-pc-windows-gnullvm` need nothing extra, because zig carries the whole toolchain, and they
 # are the fallback when no LLVM can be installed.
 #
-# macOS: the two `*-apple-darwin` packages are built natively, one for each architecture. What
-# has to be present is the Apple command line tools (clang + SDK headers), which the script
-# starts installing through `xcode-select --install` when they are missing; the Windows LLVM
-# packages would come from Homebrew if a windows-msvc target were requested on a Mac.
+# The macOS packages are not built here: they belong to ./build-mac.sh, because the Apple SDK
+# confines that build to a Mac, and every `*-apple-darwin` target is refused with that pointer.
 #
 # Missing tools are installed automatically and the finished archives are moved from
 # dist/packages/ into releases/.
@@ -26,7 +24,6 @@ set -euo pipefail
 #   ./build-cross.sh
 #   TARGETS=x86_64-unknown-linux-gnu,aarch64-unknown-linux-musl ./build-cross.sh
 #   TARGETS=x86_64-pc-windows-gnu ./build-cross.sh   # Windows without the LLVM/nasm install
-#   TARGETS=x86_64-unknown-linux-musl ./build-cross.sh   # on a Mac, to add Linux packages
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
@@ -38,11 +35,10 @@ fi
 
 PROJECT_NAME="vrtfido"
 BIN_NAME="vrtfido"
-# The script runs on Linux and on macOS, and the host decides what it can build and where its
-# extra packages come from: Linux produces the four Linux archives plus the two Windows ones,
-# a Mac produces the two macOS ones (the Apple SDK is only usable on Apple hardware) and can add
-# the other six through TARGETS=. A Windows shell (MSYS/Git Bash) is refused: it has neither the
-# package manager nor the toolchain this script drives.
+# The script runs on Linux and on macOS, and the packages are the same on both - the macOS ones
+# come from build-mac.sh. What the host decides is where the extra packages come from: the
+# distribution's package manager on Linux, Homebrew on macOS. A Windows shell (MSYS/Git Bash) is
+# refused, because it has neither that package manager nor the toolchain this script drives.
 HOST_OS="$(uname -s)"
 case "$HOST_OS" in
   Linux*) HOST_KIND="linux" ;;
@@ -71,17 +67,11 @@ LINUX_TARGETS="x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu,x86_64-unknown
 # GNU mode together with MSVC-style `/imsvc` include flags, which fails inside ring/libz-sys
 # (cargo-xwin 0.23.1), while gnullvm builds the same ARM64 binaries with no extra package.
 WINDOWS_TARGETS="x86_64-pc-windows-msvc,aarch64-pc-windows-gnullvm"
-MACOS_TARGETS="x86_64-apple-darwin,aarch64-apple-darwin"
 
-# The default is "what this machine can add to the release": both flavours of Linux plus the two
-# Windows packages on Linux, the two macOS packages on a Mac. TARGETS= replaces the list - a Mac
-# can also build the Linux and the Windows ones (zig and cargo-xwin run there too), and narrowing
-# it is how a Linux run avoids the MSVC toolchain install.
-if [[ "$HOST_KIND" == "macos" ]]; then
-  DEFAULT_TARGETS="$MACOS_TARGETS"
-else
-  DEFAULT_TARGETS="$LINUX_TARGETS,$WINDOWS_TARGETS"
-fi
+# What this script produces is the same on every host it runs on: both flavours of Linux plus the
+# two Windows packages. The macOS ones come from build-mac.sh, which needs a Mac. TARGETS=
+# replaces the list, which is also how a Linux-only run avoids the MSVC toolchain install.
+DEFAULT_TARGETS="$LINUX_TARGETS,$WINDOWS_TARGETS"
 TARGETS_CSV="${TARGETS:-$DEFAULT_TARGETS}"
 
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -165,17 +155,6 @@ MSVC_PACKAGES_LINUX="clang lld llvm nasm"
 MSVC_PACKAGES_MACOS="llvm nasm"
 msvc_tools_ready() {
   have clang-cl && have lld-link && have llvm-lib && have nasm
-}
-
-# The Apple command line tools carry clang and the SDK headers, and `xcode-select --install` is
-# the only way to get them - a GUI installer, so the script starts it and stops there; the next
-# run finds the tools in place.
-ensure_macos_command_line_tools() {
-  xcode-select -p >/dev/null 2>&1 && return 0
-  echo "[SETUP] The Apple command line tools are missing: no clang, no SDK headers."
-  echo "[SETUP] Starting the installer; finish it and run this script again."
-  xcode-select --install 2>/dev/null || true
-  exit 1
 }
 
 install_system_packages() { # install_system_packages "pkg pkg ..."
@@ -320,19 +299,14 @@ for target in "${BUILD_TARGETS[@]}"; do
       exit 1
       ;;
     *apple-darwin*)
-      if [[ "$HOST_KIND" != "macos" ]]; then
-        # A deliberate refusal instead of a confusing link error late in the build: these targets
-        # need the Apple SDK, which may only be used on Apple hardware.
-        echo "error: $target can only be built on macOS: it needs the Apple SDK, which may not be used off Apple hardware." >&2
-        echo "       Run this script on the Mac, or narrow TARGETS to what this host can build." >&2
-        exit 1
-      fi
-      # A native build: Xcode carries the SDK for both architectures, so one Mac produces the
-      # Intel and the Apple silicon package, with only `rustup target add` (done above) for the
-      # other one.
-      ensure_macos_command_line_tools
-      export RUSTFLAGS="$CROSS_RUSTFLAGS"
-      cargo build --release --features gui --target "$target"
+      # build-mac.sh owns the macOS packages - the Apple command line tools check, both
+      # architectures, the tar with its checksum - and the Apple SDK confines that build to a Mac.
+      # This script builds what is the same on every host, so it points there rather than doing
+      # half of that work here.
+      echo "error: $target is built by ./build-mac.sh, on the Mac itself." >&2
+      echo "       Run that script on the Mac; this one builds the Linux and Windows packages," >&2
+      echo "       which any host can produce." >&2
+      exit 1
       ;;
     *windows*msvc*)
       # The MSVC ABI is what the Windows release archives carry, because mise prefers it when it

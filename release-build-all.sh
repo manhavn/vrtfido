@@ -7,12 +7,13 @@ set -euo pipefail
 #   platforms  -> check-platforms.sh (platform gating, no SDK needed)
 #   extensions -> build-extension.sh (Chrome + Firefox + Safari)
 #   android    -> build-android.sh (release APK)
-#   linux      -> build-cross.sh  (gnu packages with the prompt window, static musl packages,
-#                                  plus the Windows packages, and the macOS ones on a Mac)
+#   linux      -> build-cross.sh  (the four Linux packages and the two Windows ones, on any host)
+#   macos      -> build-mac.sh    (the two macOS packages; a Mac only, so this step exists there)
 #
-# The Windows packages are part of the linux step: build-cross.sh builds them here with
-# cargo-xwin. The macOS packages are the exception - no other host may use the Apple SDK - so
-# run build-cross.sh once on the Mac too and attach its two archives to the same tag.
+# The Windows packages are part of the linux step: build-cross.sh builds them with cargo-xwin. The
+# macOS packages are the exception - no other host may use the Apple SDK - so they come from
+# build-mac.sh, and that step is added above only when this machine is a Mac. Run this script once
+# on each of the two machines and attach both sets of archives to the same tag.
 #
 # Every step stages its own publish-ready files in releases/, so when this command
 # finishes that single directory holds the whole release set. Each step prepares
@@ -38,6 +39,14 @@ STEP_SCRIPTS=(
   ./build-android.sh
   ./build-cross.sh
 )
+
+# The macOS packages come from build-mac.sh, and only a Mac can produce them (the Apple SDK).
+# Anywhere else the step is left out instead of failing before it starts, which is also why this
+# list is built here and not written out above.
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  STEP_NAMES+=(macos)
+  STEP_SCRIPTS+=(./build-mac.sh)
+fi
 
 RELEASES="$ROOT/releases"
 mkdir -p "$RELEASES"

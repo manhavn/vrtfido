@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Standalone release builder for vrtfido on macOS.
+# Standalone release builder for vrtfido on macOS: the one script that has to run on a Mac, since
+# the Apple SDK may not be used off Apple hardware. build-cross.sh builds the Linux and Windows
+# packages on any host and refuses the Apple targets with a pointer here.
 # Builds both Apple Silicon (aarch64-apple-darwin) and Intel (x86_64-apple-darwin),
 # stages the binaries, compresses to .tar.gz, generates .sha256 checksums,
 # and moves the final artifacts to releases/.
@@ -29,6 +31,22 @@ have() { command -v "$1" >/dev/null 2>&1; }
 echo "============================================================"
 echo "          vrtfido - macOS Release Builder                   "
 echo "============================================================"
+
+if [[ "$(uname -s)" != "Darwin" ]]; then
+  echo "error: the macOS packages are built on a Mac, because they need the Apple SDK." >&2
+  echo "       On this host, build the packages it can produce instead: ./build-cross.sh" >&2
+  exit 1
+fi
+
+# The Apple command line tools carry clang and the SDK headers, and `xcode-select --install` is the
+# only way to get them - a GUI installer, so the script starts it and stops there; the next run
+# finds the tools in place. Without them the build fails much later, in the linker.
+if ! xcode-select -p >/dev/null 2>&1; then
+  echo "[SETUP] The Apple command line tools are missing: no clang, no SDK headers."
+  echo "[SETUP] Starting the installer; finish it and run this script again."
+  xcode-select --install 2>/dev/null || true
+  exit 1
+fi
 
 if ! have cargo; then
   echo "error: 'cargo' is required but not found in PATH." >&2
@@ -86,7 +104,8 @@ for target in "${BUILD_TARGETS[@]}"; do
   cp -f "$src" "$gui_src" "$target_dist/"
 
   archive="$ROOT/dist/packages/${PROJECT_NAME}-${target}.tar.gz"
-  stage_dir="$(mktemp -d)"
+  # The template is explicit because BSD/macOS `mktemp` refuses to run without one.
+  stage_dir="$(mktemp -d "${TMPDIR:-/tmp}/vrtfido-package.XXXXXX")"
   cp -f "$src" "$gui_src" "$stage_dir/"
   tar -C "$stage_dir" -czf "${archive}.tmp" .
   mv -f "${archive}.tmp" "$archive"
