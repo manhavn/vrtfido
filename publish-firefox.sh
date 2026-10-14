@@ -92,7 +92,7 @@ get_version() {
 
 valid_version() { [[ "$1" =~ ^[0-9]+(\.[0-9]+){1,3}$ ]]; }
 
-bump_version() { # bump_version "0.3.3" patch|minor|major
+bump_version() { # bump_version "0.3.4" patch|minor|major
   python3 - "$1" "$2" <<'PY'
 import sys
 cur, mode = sys.argv[1], sys.argv[2]
