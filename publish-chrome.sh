@@ -5,7 +5,7 @@
 #
 #   ./publish-chrome.sh                      # tương tác đầy đủ
 #   ./publish-chrome.sh --dry-run            # chỉ build + in lệnh gọi API
-#   ./publish-chrome.sh --version 0.3.7 --yes
+#   ./publish-chrome.sh --version 0.3.8 --yes
 #
 # LƯU Ý QUAN TRỌNG
 #   • Lần đầu phải tạo item thủ công trên Dashboard (upload zip + điền Store listing
@@ -89,7 +89,7 @@ confirm() { # confirm "câu hỏi" -> 0 = đồng ý
 get_version() { python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["version"])' "$MANIFEST"; }
 valid_version() { [[ "$1" =~ ^[0-9]+(\.[0-9]+){1,3}$ ]]; }
 
-bump_version() { # bump_version "0.3.7" patch|minor|major
+bump_version() { # bump_version "0.3.8" patch|minor|major
   python3 - "$1" "$2" <<'PY'
 import sys
 cur, mode = sys.argv[1], sys.argv[2]
@@ -106,7 +106,7 @@ print(".".join(str(x) for x in p[:3]))
 PY
 }
 
-set_version() { # set_version "0.3.7" — chỉ sửa đúng dòng "version"
+set_version() { # set_version "0.3.8" — chỉ sửa đúng dòng "version"
   python3 - "$MANIFEST" "$1" <<'PY'
 import re, sys
 path, new = sys.argv[1], sys.argv[2]
@@ -140,7 +140,7 @@ publish-chrome.sh — Build -> upload -> publish extension lên Chrome Web Store
 
   ./publish-chrome.sh                    # tương tác đầy đủ
   ./publish-chrome.sh --dry-run          # build + in lệnh API, không gọi mạng
-  ./publish-chrome.sh --version 0.3.7 --yes
+  ./publish-chrome.sh --version 0.3.8 --yes
 
 Tùy chọn:
   --publisher-id ID    Publisher ID (Dashboard > Publisher > Settings)
