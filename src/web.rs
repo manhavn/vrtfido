@@ -116,6 +116,8 @@ pub fn create_router(state: AppState) -> Router {
     Router::new()
         .route("/", get(index_html))
         .route("/favicon.ico", get(favicon_ico))
+        .route("/icon.svg", get(icon_svg))
+        .route("/icon-192.png", get(icon_png))
         .route("/api/status", get(get_status))
         // Android must probe the listener without waiting on a stalled primary database.
         .route("/api/health", get(|| async { axum::http::StatusCode::OK }))
@@ -750,7 +752,9 @@ async fn index_html() -> Html<&'static str> {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>VrtFido - Virtual FIDO2 & Passkey Manager</title>
+    <link rel="icon" type="image/svg+xml" href="/icon.svg">
     <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <link rel="apple-touch-icon" href="/icon-192.png">
     <style>
         :root {
             --bg-primary: #0f172a;
@@ -778,6 +782,7 @@ async fn index_html() -> Html<&'static str> {
         /* ---------- Header ---------- */
         header { background: var(--bg-secondary); border-bottom: 1px solid var(--border); padding: 0.85rem 1.5rem; display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap; position: sticky; top: 0; z-index: 50; }
         .logo { display: flex; align-items: center; gap: 0.75rem; font-size: 1.2rem; font-weight: 700; color: var(--accent); min-width: 0; }
+        .logo-mark { width: 1.9rem; height: 1.9rem; border-radius: 0.5rem; flex: 0 0 auto; display: block; }
         .logo span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .status-group { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; justify-content: flex-end; }
         .badge-status { display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.3rem 0.75rem; border-radius: 9999px; font-size: 0.8rem; font-weight: 600; white-space: nowrap; }
@@ -886,6 +891,7 @@ async fn index_html() -> Html<&'static str> {
         .modal-overlay { position: fixed; inset: 0; background: rgba(2, 6, 23, 0.85); backdrop-filter: blur(8px); display: none; justify-content: center; align-items: center; z-index: 100; padding: 1rem; animation: fadeIn 0.2s; }
         .modal-box { background: var(--bg-card); border: 2px solid var(--accent); border-radius: 12px; width: 100%; max-width: 500px; max-height: 90vh; overflow-y: auto; padding: 1.75rem; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 0 50px var(--accent-glow); text-align: center; }
         .modal-icon { font-size: 3rem; margin-bottom: 1rem; }
+        .modal-logo { width: 3rem; height: 3rem; border-radius: 0.75rem; display: block; margin: 0 auto; }
         .modal-title { font-size: 1.3rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--accent); }
         .modal-rp { font-size: 1.05rem; font-weight: 600; color: var(--text-main); background: var(--bg-secondary); padding: 0.5rem 1rem; border-radius: 8px; display: inline-block; margin: 0.75rem 0; word-break: break-word; }
         .modal-box.modal-wide { max-width: 620px; }
@@ -971,7 +977,7 @@ async fn index_html() -> Html<&'static str> {
 
     <header>
         <div class="logo">
-            <span>🛡️</span>
+            <img class="logo-mark" src="/icon.svg" alt="VrtFido">
             <span>VrtFido - WebAuthn CMS</span>
         </div>
         <div class="status-group">
@@ -1197,7 +1203,7 @@ async fn index_html() -> Html<&'static str> {
     <!-- REAL-TIME WEBAUTHN VERIFICATION PROMPT MODAL -->
     <div id="verifyModal" class="modal-overlay">
         <div class="modal-box modal-wide">
-            <div class="modal-icon" id="modalIcon">🛡️</div>
+            <div class="modal-icon"><img class="modal-logo" src="/icon.svg" alt="VrtFido"></div>
             <div class="modal-title" id="modalTitle" data-i18n="verify.title">WebAuthn Verification Request</div>
             <p style="font-size: 0.9rem; color: var(--text-muted);" data-i18n="verify.desc">A website is requesting your security key:</p>
             <div>
@@ -2589,6 +2595,31 @@ async fn favicon_ico() -> impl IntoResponse {
     const FAVICON: &[u8] = include_bytes!("../assets/favicon.ico");
     ([(header::CONTENT_TYPE, "image/x-icon")], FAVICON)
 }
+
+/// The logo the dashboard header draws, and the one a browser uses for the tab
+/// and for "add to home screen". Every one of them comes from the same artwork
+/// as the tray, the extension and the Android launcher (`tools/gen-icons.py`).
+async fn icon_svg() -> impl IntoResponse {
+    const ICON: &[u8] = include_bytes!("../assets/vrtfido.svg");
+    (
+        [
+            (header::CONTENT_TYPE, "image/svg+xml"),
+            (header::CACHE_CONTROL, "public, max-age=3600"),
+        ],
+        ICON,
+    )
+}
+
+async fn icon_png() -> impl IntoResponse {
+    const ICON: &[u8] = include_bytes!("../assets/icon-192.png");
+    (
+        [
+            (header::CONTENT_TYPE, "image/png"),
+            (header::CACHE_CONTROL, "public, max-age=3600"),
+        ],
+        ICON,
+    )
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2788,6 +2819,12 @@ mod tests {
         assert!(status.contains("200 OK"));
         assert!(body.contains("cleanAuditLogs()"));
         assert!(body.contains("cleanDebugLogs()"));
+        // The dashboard header draws the shared logo, never an emoji stand-in.
+        assert!(body.contains(r#"<img class="logo-mark" src="/icon.svg""#));
+        // Same for the verification modal, which the page JS never rewrites.
+        assert!(body.contains(r#"<img class="modal-logo" src="/icon.svg""#));
+        assert!(body.contains(r#"<link rel="icon" type="image/svg+xml" href="/icon.svg">"#));
+        assert!(body.contains(r#"<link rel="apple-touch-icon" href="/icon-192.png">"#));
         assert!(body.contains("cleanAllLogs()"));
         assert!(body.contains("🗑️ Clear Logs"));
         assert!(body.contains("🧹 Clear All"));
@@ -2842,6 +2879,14 @@ mod tests {
         let (status, _body) = send_http_request(addr, "GET", "/favicon.ico", "").await;
         assert!(status.contains("200 OK"));
         assert!(status.contains("image/x-icon"));
+        // Test GET /icon.svg and /icon-192.png - the same artwork, vector first.
+        let (status, body) = send_http_request(addr, "GET", "/icon.svg", "").await;
+        assert!(status.contains("200 OK"));
+        assert!(status.contains("image/svg+xml"));
+        assert!(body.contains(r#"viewBox="0 0 128 128""#));
+        let (status, _body) = send_http_request(addr, "GET", "/icon-192.png", "").await;
+        assert!(status.contains("200 OK"));
+        assert!(status.contains("image/png"));
     }
 
     #[tokio::test]

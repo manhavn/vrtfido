@@ -1,6 +1,6 @@
 [package]
 name = "vrtfido"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 
 [lib]
@@ -65,8 +65,11 @@ eframe = { version = "0.36.2", optional = true, default-features = false, featur
     "x11",
 ] }
 # The prompt-window client is a separate process that talks to the daemon over its local
-# HTTP API, so the `gui` feature pulls a small blocking HTTP client with it.
+# HTTP API, so the `gui` feature pulls a small blocking HTTP client with it - and the PNG
+# decoder that turns the shipped logo into the raw RGBA that `tray_icon::Icon` and the
+# window icon want. The daemon and the Android library never link either.
 ureq = { version = "2", optional = true, features = ["json"] }
+image = { version = "0.25.10", default-features = false, features = ["png"], optional = true }
 
 # The StatusNotifierItem tray is D-Bus, so `ksni` is linked only where it exists: Linux and
 # Android (the daemon's tray, and the library's copy of it). macOS and Windows render their tray
@@ -79,9 +82,6 @@ ksni = "0.3.6"
 # APIs require; Linux keeps the daemon-side `ksni` item, which needs no window at all.
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 tray-icon = "0.26.1"
-# `tray_icon::Icon` takes raw RGBA, so the PNG shipped in the release has to be decoded
-# first; the decoder stays target-gated because the Linux tray path feeds ksni directly.
-image = { version = "0.25.10", default-features = false, features = ["png"] }
 
 # Naming winit is the only way to reach `EventLoopBuilderExtMacOS::with_activation_policy`:
 # eframe exposes the event-loop builder hook but not the trait, and a bare unbundled binary
@@ -103,4 +103,4 @@ windows-sys = { version = "0.61.2", features = [
 [features]
 default = []
 jni-bridge = ["dep:jni"]
-gui = ["dep:eframe", "dep:ureq"]
+gui = ["dep:eframe", "dep:ureq", "dep:image"]

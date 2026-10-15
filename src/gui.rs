@@ -92,6 +92,11 @@ const WINDOW_SIZE: [f32; 2] = [480.0, 440.0];
 /// readable. There is no upper bound - the card fills whatever space the desktop gives it.
 const MIN_WINDOW_WIDTH: f32 = 380.0;
 const MIN_WINDOW_HEIGHT: f32 = 320.0;
+
+/// The card's hero logo: the size the emoji stand-in used to occupy, so the
+/// card's layout is unchanged.
+const CARD_LOGO_SIZE: f32 = 34.0;
+
 /// Padding around the card, inside the window.
 const CARD_OUTER_MARGIN: i8 = 8;
 /// Padding inside the card, between its border and the content.
@@ -573,6 +578,11 @@ struct PromptApp {
     /// A newly arrived request wants the PIN field focused.
     focus_pin: bool,
 
+    /// The card's hero mark: the same PNG the tray and the window icon use,
+    /// uploaded once per process. `None` only if that asset fails to decode,
+    /// which is the one case the card draws without its logo.
+    logo: Option<egui::TextureHandle>,
+
     /// Menu-bar (macOS) / notification-area (Windows) icon; always `None` elsewhere.
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     tray: Option<TrayState>,
@@ -631,19 +641,48 @@ pub fn run(host: &str, port: u16, tray: bool) -> i32 {
     }
 }
 
+/// The logo the prompt window carries: the same PNG the extension and the tray
+/// use, decoded to the raw RGBA eframe wants. The card is a dialog, but on
+/// Windows it still shows up in the taskbar and on X11 in the title bar.
+const WINDOW_ICON_PNG: &[u8] = include_bytes!("../extension/icons/icon-128.png");
+
+fn window_icon() -> Option<egui::IconData> {
+    let image = image::load_from_memory(WINDOW_ICON_PNG).ok()?.into_rgba8();
+    let (width, height) = image.dimensions();
+    Some(egui::IconData {
+        rgba: image.into_raw(),
+        width,
+        height,
+    })
+}
+
+/// The card's hero mark, uploaded from the very icon the window carries, so the
+/// dialog body shows the VrtFido logo and not the emoji stand-in it used to.
+fn logo_texture(ctx: &egui::Context) -> Option<egui::TextureHandle> {
+    let data = window_icon()?;
+    let image =
+        egui::ColorImage::from_rgba_unmultiplied([data.width as usize, data.height as usize], &data.rgba);
+    Some(ctx.load_texture("vrtfido-logo", image, egui::TextureOptions::LINEAR))
+}
+
 /// The native window this client asks eframe for, wherever one is created.
 fn native_options() -> eframe::NativeOptions {
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("WebAuthn Verification Request - VrtFido")
+        .with_inner_size(WINDOW_SIZE)
+        .with_min_inner_size([MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT])
+        .with_resizable(true)
+        // The browser sits on the WebAuthn call while this card is up: it has to be readable.
+        .with_always_on_top()
+        // Wayland/X11 use this as the app id, which is what the window list shows.
+        .with_app_id("dev.vrtfido.prompt");
+    if let Some(icon) = window_icon() {
+        viewport = viewport.with_icon(icon);
+    }
+
     #[allow(unused_mut)]
     let mut native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("WebAuthn Verification Request - VrtFido")
-            .with_inner_size(WINDOW_SIZE)
-            .with_min_inner_size([MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT])
-            .with_resizable(true)
-            // The browser sits on the WebAuthn call while this card is up: it has to be readable.
-            .with_always_on_top()
-            // Wayland/X11 use this as the app id, which is what the window list shows.
-            .with_app_id("dev.vrtfido.prompt"),
+        viewport,
         centered: true,
         ..Default::default()
     };
@@ -803,6 +842,7 @@ impl PromptApp {
             window_shown: false,
             hidden_assertions: HIDE_ASSERTIONS,
             focus_pin: false,
+            logo: logo_texture(&cc.egui_ctx),
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             tray,
         };
@@ -1340,8 +1380,11 @@ impl PromptApp {
         prompt: &PendingPrompt,
         action: &mut Option<UiAction>,
     ) {
+        let logo = self.logo.as_ref();
         ui.vertical_centered(|ui| {
-            ui.label(RichText::new("🛡️").size(34.0));
+            if let Some(logo) = logo {
+                ui.add(egui::Image::new(logo).fit_to_exact_size(egui::Vec2::splat(CARD_LOGO_SIZE)));
+            }
             ui.label(
                 RichText::new("WebAuthn Verification Request")
                     .size(17.0)
@@ -2233,6 +2276,36 @@ mod tests {
             last_used_at: String::new(),
             created_at: String::new(),
         }
+    }
+
+    #[test]
+    fn window_icon_decodes_the_shipped_logo() {
+        // The release ships the PNG next to the binaries; a decoder that cannot
+        // read it - or an asset that is not the rounded-square logo - would
+        // leave the prompt window with no icon at all.
+        let icon = window_icon().expect("the shipped logo must decode");
+        assert_eq!((icon.width, icon.height), (128, 128));
+        assert_eq!(icon.rgba.len(), 128 * 128 * 4);
+        assert_eq!(icon.rgba[3], 0, "the rounded square leaves the corner transparent");
+        let centre = (64 * 128 + 64) * 4 + 3;
+        assert_eq!(icon.rgba[centre], 255, "the middle of the logo is opaque");
+    }
+
+    #[test]
+    fn the_card_uploads_and_draws_the_logo() {
+        // The card cannot be inspected from a test, so the parts that would
+        // fail loudly are exercised here: the upload (egui's RGBA constructor
+        // asserts that the pixel count matches the recorded size) and a pass
+        // that draws the image widget.
+        let ctx = egui::Context::default();
+        let texture = logo_texture(&ctx).expect("the shipped logo must upload");
+        ctx.begin_pass(egui::RawInput::default());
+        egui::Area::new(egui::Id::new("logo-test")).show(&ctx, |ui| {
+            ui.add(egui::Image::new(&texture).fit_to_exact_size(egui::Vec2::splat(CARD_LOGO_SIZE)));
+        });
+        let mut output = ctx.end_pass();
+        // No backend applies the upload here, and epaint panics on unapplied deltas.
+        output.textures_delta.clear();
     }
 
     #[test]

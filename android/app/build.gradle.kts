@@ -12,9 +12,9 @@ android {
         minSdk = 28
         targetSdk = 35
         // Android rejects an APK that keeps the versionCode of an installed one, so the integer
-        // follows the name: 24 pairs with 0.4.0.
-        versionCode = 24
-        versionName = "0.4.0"
+        // follows the name: 25 pairs with 0.4.1.
+        versionCode = 25
+        versionName = "0.4.1"
 
         ndk {
             abiFilters += listOf("arm64-v8a", "x86_64")

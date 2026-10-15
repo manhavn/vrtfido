@@ -273,6 +273,30 @@ The script installs missing host utilities with apt/dnf/pacman, bootstraps Rust 
    - **JSON backup / restore:** with the daemon ON, **Xuất JSON** writes a full backup through the system file picker and **Nhập JSON** imports one. Both use exactly the same file format as the desktop CLI (`--export` / `--import`), so a backup can be moved between the phone and Ubuntu in either direction and restored on either side. Importing merges the file into the current database (credentials, audit logs, debug logs, fingerprint slots and PIN settings), overwriting entries that share an ID, so the same backup can be imported repeatedly.
 ---
 
+## 🎨 Icons & Logos
+
+Every logo in the project - the browser extension, the Web CMS header and favicon, the Linux tray pixmap, the `vrtfido-gui` prompt window and the Android launcher, notification and provider icons - is generated from a single piece of artwork, so no surface can drift away from the others. The mark is the dark navy rounded square with the sky-blue ring over a shield outline and a white key that the extension has always used, in the palette the Web CMS stylesheet already defines (`#0F172A`, `#38BDF8`, `#14233C`).
+
+```bash
+python3 tools/gen-icons.py   # standard library only: no Pillow, no ImageMagick
+```
+
+`tools/gen-icons.py` holds the geometry in 128x128 design units and writes all of it:
+
+| Generated | Consumer |
+|---|---|
+| `extension/icons/icon-{16,32,48,128}.png` | extension manifest, toolbar, popup header |
+| `assets/vrtfido.svg` | Web CMS header (`/icon.svg`) |
+| `assets/favicon.ico`, `assets/icon-192.png` | browser tab (`/favicon.ico`), home-screen icon |
+| `assets/tray-{24,48}.argb` | Linux `StatusNotifierItem` pixmaps, embedded in the daemon |
+| `android/.../res/mipmap-*/ic_launcher{,_round}.png` | Android launcher on API below 26; `_round` is drawn on a disc with a circular rim, so a round mask never cuts a square ring |
+| `android/.../res/mipmap-anydpi-v26/*.xml` | adaptive launcher icon (API 26+) and its themed layer, the rim and mark fitted inside the launcher's mask |
+| `android/.../res/drawable/ic_launcher_foreground.xml`, `ic_launcher_monochrome.xml`, `ic_notification.xml` | adaptive foreground, themed silhouette, status-bar key glyph |
+
+The generated files are committed, so building VrtFido never runs the script. Edit the geometry in the script and run it again - editing a generated file by hand only lasts until the next run. On Linux the daemon also writes `vrtfido.png` into the user's `hicolor` theme when autostart is enabled, which is what lets the `~/.config/autostart/vrtfido.desktop` entry show the same icon in the desktop's startup list.
+
+---
+
 ## 📂 Database & Data Migration
 
 Supported database backends: **SQLite**, **PostgreSQL**, **LibSQL (Turso)**, **MySQL**, **MariaDB**, and **MongoDB**.

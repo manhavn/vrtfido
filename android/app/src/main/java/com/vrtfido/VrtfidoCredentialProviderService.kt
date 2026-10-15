@@ -47,9 +47,11 @@ class VrtfidoCredentialProviderService : CredentialProviderService() {
         serviceScope.launch {
             try {
                 val responseBuilder = BeginGetCredentialResponse.Builder()
+                // The same logo the launcher, the dashboard and the desktop tray
+                // show, rather than Android's generic padlock.
                 val icon = Icon.createWithResource(
                     this@VrtfidoCredentialProviderService,
-                    android.R.drawable.ic_lock_lock
+                    R.mipmap.ic_launcher
                 )
 
                 for (option in request.beginGetCredentialOptions) {

@@ -273,7 +273,9 @@ class VrtfidoService : Service() {
             .setContentTitle(getString(R.string.notification_title))
             .setContentText(message)
             .setStyle(NotificationCompat.BigTextStyle().bigText("$message • ${binding.localUrl}"))
-            .setSmallIcon(android.R.drawable.ic_lock_lock)
+            // The key from the app logo: the status bar tints whatever alpha it
+            // gets, and the stock padlock would be Android's icon, not ours.
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentIntent(mainPendingIntent)
             .addAction(android.R.drawable.ic_menu_view,
                 getString(R.string.open_web_ui, binding.localUrl), openWebPendingIntent)
