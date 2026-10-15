@@ -24,8 +24,17 @@
 //!   of a [`egui::ViewportBuilder`] - so a window that exists is a window the user sees. `run_ephemeral`
 //!   therefore polls the daemon without any window and opens the card per request. The poll that
 //!   keeps the card in sync with the daemon lives in [`eframe::App::logic`], which eframe calls
-//!   for an invisible window too, and every pass asks for the next one through
-//!   `request_repaint_after`.
+//!   for an invisible window too - see the pass cadence below.
+//! * **One pass per poll.** eframe runs an app only when it has been asked to, and the pass is what
+//!   runs the daemon poll, so the interval the window is drawn at and the interval it polls at are
+//!   one and the same - [`PromptApp::poll_interval`] answers both, and [`PromptApp::logic`] asks for
+//!   the next pass with [`egui::Context::request_repaint_after`] at the end of every one of them. A
+//!   card that is on screen is redrawn [`POLL_TICK`] and a hidden window once per [`IDLE_POLL`],
+//!   which is what keeps an idle window at one wake-up per second; a frame drawn in between would
+//!   be painted for nothing, because the card only changes when a poll answers. Two things in this
+//!   file exist to hold that line: the repeated IME pre-edit dropped in
+//!   [`PromptApp::raw_input_hook`], and the wake-up a worker sends when it is the one that finds a
+//!   request for a hidden window (`PromptApp::spawn_waking`).
 //! * **Tray.** On macOS and Windows the menu-bar / notification-area icon is built in this very
 //!   process (see [`TrayState`]), because those APIs need the thread that runs the event loop.
 //!   Linux has no tray here: the daemon owns a `ksni` item that needs no window.
@@ -38,20 +47,23 @@ use eframe::egui;
 use egui::{
     Align, Color32, CornerRadius, FontId, Margin, RichText, Stroke, Vec2, ViewportCommand,
 };
+use std::ops::Range;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-/// How often the window ticks: 200 ms between checks, with [`IDLE_TICKS`] of them skipped while
-/// nothing is on screen.
+/// Interval between daemon polls while the card is on screen. eframe runs an app only when it has
+/// something to do, so this is also the rate the window is drawn at: the pass *is* the wake-up
+/// that runs the poll, and [`PromptApp::logic`] asks for it per pass.
 const POLL_TICK: Duration = Duration::from_millis(200);
-/// Idle ticks to skip before polling again while the window is hidden. 5 x 200 ms means one
-/// request per second (`pending()` plus its answer) for a window that shows nothing - a hidden
-/// prompt must not cost 5 wakeups and 5 round trips per second for the whole day.
-///
-/// The same 200 ms x 5 is the interval the Linux client polls at while it holds no window at all
-/// (`wait_for_prompt`), so an idle client costs the daemon the same once per second on every
-/// platform.
+/// Polls to skip before polling again while the window shows nothing. 5 x 200 ms means one request
+/// per second (`pending()` plus its answer) for a hidden window - a hidden prompt must not cost 5
+/// wakeups and 5 round trips per second for the whole day.
 const IDLE_TICKS: u32 = 5;
+/// The interval a client polls at while it shows nothing: [`POLL_TICK`] x [`IDLE_TICKS`] is one
+/// poll per second for a hidden window (`PromptApp::poll_interval`), and the interval the Linux
+/// client waits with no window at all (`wait_for_prompt`), so an idle client costs the daemon the
+/// same on every platform.
+const IDLE_POLL: Duration = POLL_TICK.saturating_mul(IDLE_TICKS);
 /// Consecutive unreachable polls after which the daemon counts as gone. 10 of them are about ten
 /// seconds at the idle cadence, which covers a daemon that is restarting.
 const UNREACHABLE_POLL_LIMIT: u32 = 10;
@@ -487,6 +499,9 @@ enum UiAction {
 
 struct PromptApp {
     api: PromptApi,
+    /// A clone of the egui context, so a worker thread can ask for a pass the moment its answer is
+    /// ready (see [`PromptApp::spawn_waking`]).
+    waker: egui::Context,
     /// Worker threads report here; `logic()` drains it on the ui thread.
     tx: Sender<WorkerResult>,
     rx: Receiver<WorkerResult>,
@@ -508,10 +523,13 @@ struct PromptApp {
     /// Set while the enrollment panel is open.
     enroll: Option<EnrollmentState>,
 
-    /// Poll bookkeeping for the 200 ms tick.
+    /// When the daemon was last polled: the next poll is due one [`PromptApp::poll_interval`]
+    /// later, and that is also when the next pass is worth running.
     last_tick: Instant,
-    idle_ticks: u32,
     poll_in_flight: bool,
+    /// The pre-edit the IME last handed this window, so an IME that repeats itself every pass can
+    /// be answered with a dropped event (see [`PromptApp::raw_input_hook`]).
+    ime_preedit: Option<(String, Option<Range<usize>>)>,
     unreachable_polls: u32,
     /// The daemon is gone: close the viewport on the next pass.
     quit: bool,
@@ -669,8 +687,8 @@ fn run_ephemeral(api: &PromptApi) -> i32 {
 /// Asks the daemon for a request while no window exists; `None` once the daemon counts as gone.
 ///
 /// The same poll the window runs, at the same one-second cadence a hidden window uses
-/// (`POLL_TICK` x `IDLE_TICKS`), and the same `UNREACHABLE_POLL_LIMIT` before the daemon is
-/// declared gone - so a daemon restart is awaited here exactly like there.
+/// ([`IDLE_POLL`]), and the same `UNREACHABLE_POLL_LIMIT` before the daemon is declared gone - so a
+/// daemon restart is awaited here exactly like there.
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn wait_for_prompt(api: &PromptApi) -> Option<PendingPrompt> {
     let mut unreachable_polls = 0;
@@ -689,7 +707,7 @@ fn wait_for_prompt(api: &PromptApi) -> Option<PendingPrompt> {
                 }
             }
         }
-        std::thread::sleep(POLL_TICK * IDLE_TICKS);
+        std::thread::sleep(IDLE_POLL);
     }
 }
 
@@ -732,6 +750,7 @@ impl PromptApp {
         println!("[GUI] VrtFido prompt window ready on {}.", api.dashboard_url());
         let mut app = Self {
             api,
+            waker: cc.egui_ctx.clone(),
             tx,
             rx,
             prompt: None,
@@ -744,8 +763,8 @@ impl PromptApp {
             sensor_scan: false,
             enroll: None,
             last_tick: Instant::now() - POLL_TICK,
-            idle_ticks: IDLE_TICKS,
             poll_in_flight: false,
+            ime_preedit: None,
             unreachable_polls: 0,
             quit: false,
             closing: false,
@@ -781,6 +800,30 @@ impl PromptApp {
         });
     }
 
+    /// The same, for a worker whose answer has to be seen in a pass of its own.
+    ///
+    /// Only the poll a hidden window runs (`tick`) uses this. eframe runs no pass at all for a
+    /// window that is not visible until something asks it to, and that poll runs once per
+    /// [`IDLE_POLL`] - so the request it may be holding would wait for the next second before it
+    /// could be put on the card. The wake-up costs one pass, and only when the answer has something
+    /// to show: anything else is picked up by the pass that runs the next poll anyway.
+    fn spawn_waking<F>(&self, call: F)
+    where
+        F: FnOnce(PromptApi) -> WorkerResult + Send + 'static,
+    {
+        let api = self.api.clone();
+        let tx = self.tx.clone();
+        let waker = self.waker.clone();
+        std::thread::spawn(move || {
+            let result = call(api);
+            let shows_something = matches!(result, WorkerResult::Pending(Ok(Some(_))));
+            let _ = tx.send(result);
+            if shows_something {
+                waker.request_repaint();
+            }
+        });
+    }
+
     /// Applies everything the worker threads finished since the last pass.
     fn drain_results(&mut self) {
         while let Ok(result) = self.rx.try_recv() {
@@ -796,7 +839,7 @@ impl PromptApp {
                             self.unreachable_polls = 0;
                             // Nothing pending: the window goes away again, and a hidden window
                             // only polls once per second from here on.
-                            if self.prompt.is_some() || self.enroll.is_some() {
+                            if self.is_on_screen() {
                                 self.hide();
                             }
                         }
@@ -921,32 +964,48 @@ impl PromptApp {
         }
     }
 
-    /// The 200 ms tick: enrollment watchdog, enrollment poll, then the pending-request poll.
-    fn tick(&mut self, ctx: &egui::Context) {
-        if self.last_tick.elapsed() < POLL_TICK {
+    /// The poll: enrollment watchdog, enrollment poll, then the pending-request poll.
+    ///
+    /// The window is woken for exactly this ([`PromptApp::poll_interval`]), so one pass carries one
+    /// poll. Only macOS and Windows ever poll a window that shows nothing; on Linux this window is
+    /// up because a request is, and the idle half runs in `run_ephemeral` without any window.
+    fn tick(&mut self) {
+        if self.last_tick.elapsed() < self.poll_interval() {
             return;
         }
         self.last_tick = Instant::now();
 
+        // Both only do anything while the enrollment panel is on screen, which is also the only
+        // time the interval above is `POLL_TICK` - the CMS follows a running scan at 250 ms.
         self.watch_enrollment();
         self.poll_enrollment();
 
-        // A hidden window polls at the idle cadence, a visible one every tick. Only macOS and
-        // Windows own a hidden window; on Linux this window is up because a request is, and the
-        // idle half runs in `run_ephemeral` without any window at all.
-        if !self.window_shown {
-            self.idle_ticks += 1;
-            if self.idle_ticks < IDLE_TICKS {
-                return;
-            }
-        }
-        self.idle_ticks = 0;
-
         if !self.poll_in_flight {
             self.poll_in_flight = true;
-            self.spawn(|api| WorkerResult::Pending(api.pending()));
+            if self.is_on_screen() {
+                self.spawn(|api| WorkerResult::Pending(api.pending()));
+            } else {
+                self.spawn_waking(|api| WorkerResult::Pending(api.pending()));
+            }
         }
-        let _ = ctx;
+    }
+
+    /// How long until the daemon has to be asked again, which is also how long until the window is
+    /// worth drawing again: [`POLL_TICK`] while the card or the enrollment panel is on screen,
+    /// [`IDLE_POLL`] - one poll per second - while the window shows nothing.
+    fn poll_interval(&self) -> Duration {
+        if self.is_on_screen() {
+            POLL_TICK
+        } else {
+            IDLE_POLL
+        }
+    }
+
+    /// `true` while the window has something to show: the card of a request, or the enrollment
+    /// panel. `sync_window` decides the visibility of the window from exactly this, so it is also
+    /// `true` while a hide is still owed to the window manager.
+    fn is_on_screen(&self) -> bool {
+        self.prompt.is_some() || self.enroll.is_some()
     }
 
     /// Gives up on an enrollment nobody continues, and closes a finished panel after its notice.
@@ -1067,7 +1126,7 @@ impl PromptApp {
     /// On Linux the same pass closes the window instead: Wayland ignores the hiding command, so
     /// the card leaves the screen by ceasing to exist, and `run_ephemeral` opens the next one.
     fn sync_window(&mut self, ctx: &egui::Context) {
-        if self.prompt.is_some() || self.enroll.is_some() {
+        if self.is_on_screen() {
             self.hidden_assertions = 0;
             if !self.window_shown {
                 self.window_shown = true;
@@ -1076,6 +1135,11 @@ impl PromptApp {
                 ctx.send_viewport_cmd(ViewportCommand::Minimized(false));
                 ctx.send_viewport_cmd(ViewportCommand::Focus);
                 ctx.send_viewport_cmd(ViewportCommand::WindowLevel(egui::WindowLevel::AlwaysOnTop));
+                // The pass that found the request is a logic-only one (a hidden window is drawn by
+                // nothing else, see `PromptApp::spawn_waking`), and the request it just showed up
+                // with is not on the screen until a ui pass has drawn it - so that pass is asked for
+                // here instead of waiting for the next poll.
+                ctx.request_repaint();
             }
             return;
         }
@@ -1587,13 +1651,9 @@ impl eframe::App for PromptApp {
     /// Runs for a visible *and* a hidden window, which is what keeps the daemon polled for the
     /// next request while the card is away.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Keep the tick coming: eframe may run no ui pass at all for an invisible window, so the
-        // next poll has to be scheduled from here.
-        ctx.request_repaint_after(POLL_TICK);
-
         // Menu clicks arrive on the muda channel; draining them here (rather than in `ui`) means
-        // the tray stays responsive while the window is hidden, which is its normal state. The
-        // repaint timer above is what makes that drain happen at all.
+        // the tray stays responsive while the window is hidden, which is its normal state. The pass
+        // asked for at the end of this function is what makes that drain happen at all.
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         {
             if let Some(tray) = self.tray.as_mut() {
@@ -1603,7 +1663,7 @@ impl eframe::App for PromptApp {
 
         self.drain_results();
         self.sync_window(ctx);
-        self.tick(ctx);
+        self.tick();
 
         // The window manager's "X" has to dismiss the request, not stop the client: the daemon
         // keeps this process for the next prompt, and on macOS and Windows the tray item lives
@@ -1619,6 +1679,26 @@ impl eframe::App for PromptApp {
             self.closing = true;
             ctx.send_viewport_cmd(ViewportCommand::Close);
         }
+
+        // The next pass is the next poll, and nothing else asks for one: eframe runs an app only
+        // when it has been asked to, and it runs no ui pass at all for an invisible window. Asking
+        // here - after the pass has shown or hidden the card, and after a poll may have been sent -
+        // means the delay is measured against the state this pass left behind, and a window with
+        // nothing to show sleeps for the whole idle interval instead of waking up on every
+        // [`POLL_TICK`] to do nothing.
+        //
+        // The frame time `request_repaint_after` takes off the delay (egui shortens a delayed
+        // repaint by the frame time it predicts, so a pass is less likely to overshoot its target)
+        // is added back here, which is what makes the pass land *on* the poll. Without it every
+        // pass lands one frame early, the one after it asks for the remainder of the interval -
+        // which egui rounds down to "right now" - and the card paints at the vsync rate again
+        // (measured: passes 183, 0, 16, 16 ms ... apart for a 200 ms poll).
+        let frame = Duration::from_secs_f32(ctx.input(|i| i.predicted_dt));
+        let due_in = self
+            .poll_interval()
+            .saturating_sub(self.last_tick.elapsed())
+            .saturating_add(frame);
+        ctx.request_repaint_after(due_in);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -1680,6 +1760,55 @@ impl eframe::App for PromptApp {
             self.apply_action(action);
         }
     }
+
+    /// Drops the pre-edit string an IME repeats on every pass.
+    ///
+    /// The card focuses its PIN field, so the desktop IME of the session is engaged, and some of
+    /// them re-send the same pre-edit - usually the empty one - with every pass: ibus on Ubuntu
+    /// GNOME Wayland was measured doing it on each of 60 passes a second. egui counts *any* pending
+    /// event as "repaint immediately", and egui-winit re-sends the IME cursor rectangle whenever a
+    /// pass had events, which the IME answers with the next pre-edit - so the pair of them pins the
+    /// window at the vsync rate, 60 full passes, 60 layouts and 60 OpenGL frames per second for a
+    /// card whose content changes once a second, until the field loses focus.
+    ///
+    /// A repeat carries no state change: egui's `TextEdit` ignores an empty pre-edit unless a
+    /// composition is running, and an identical non-empty one redraws the same composition text.
+    /// Dropping it is therefore invisible, and the pass that ran on nothing but that event stops
+    /// happening. A `Commit` (or any other IME event) ends the composition, so the next pre-edit is
+    /// kept whatever it says - that is what clears the composition when the user deletes the last
+    /// character of it.
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        drop_repeated_ime_preedit(&mut raw_input.events, &mut self.ime_preedit);
+    }
+}
+
+/// The body of [`PromptApp::raw_input_hook`], apart from the app: `last` is the pre-edit egui was
+/// given the previous time round, and it is updated to whatever is passed through here.
+fn drop_repeated_ime_preedit(
+    events: &mut Vec<egui::Event>,
+    last: &mut Option<(String, Option<Range<usize>>)>,
+) {
+    events.retain(|event| match event {
+        egui::Event::Ime(egui::ImeEvent::Preedit {
+            text,
+            active_range_chars,
+        }) => {
+            let repeat = last
+                .as_ref()
+                .is_some_and(|previous| previous.0 == *text && previous.1 == *active_range_chars);
+            if !repeat {
+                *last = Some((text.clone(), active_range_chars.clone()));
+            }
+            !repeat
+        }
+        egui::Event::Ime(_) => {
+            // A commit is the end of the composition: the pre-edit that follows it is a new one,
+            // even when it says exactly what the last one said.
+            *last = None;
+            true
+        }
+        _ => true,
+    });
 }
 
 /// The palette as egui visuals, so widgets that are not drawn by hand (checkbox, combo box, text
@@ -2176,5 +2305,95 @@ mod tests {
         assert_eq!(Palette::ACCENT, Color32::from_rgb(0x38, 0xbd, 0xf8));
         assert_eq!(Palette::BG, Color32::from_rgb(0x0f, 0x17, 0x2a));
         assert_eq!(Palette::DANGER, Color32::from_rgb(0xef, 0x44, 0x44));
+    }
+
+    /// The pre-edit an IME repeats on every pass must not reach egui: an event in the input is what
+    /// makes egui repaint immediately, which would run the window at the vsync rate (measured: 60
+    /// passes and 60 frames per second for a card that changes once a second).
+    #[test]
+    fn repeated_ime_preedits_are_dropped_but_composition_changes_are_not() {
+        fn preedit(text: &str, active_range_chars: Option<Range<usize>>) -> egui::Event {
+            egui::Event::Ime(egui::ImeEvent::Preedit {
+                text: text.to_string(),
+                active_range_chars,
+            })
+        }
+
+        let mut last = None;
+
+        // The same empty pre-edit, three times in one pass: egui gets the first one, and only it.
+        let mut events = vec![preedit("", None), preedit("", None), preedit("", None)];
+        drop_repeated_ime_preedit(&mut events, &mut last);
+        assert_eq!(events, vec![preedit("", None)]);
+
+        // The next pass sends the same one again - the pass that must not be woken by it.
+        let mut events = vec![preedit("", None)];
+        drop_repeated_ime_preedit(&mut events, &mut last);
+        assert!(events.is_empty());
+
+        // A composition that moved on is an event, whichever way it moved.
+        let mut events = vec![preedit("ce", Some(0..2)), preedit("ce", Some(0..2))];
+        drop_repeated_ime_preedit(&mut events, &mut last);
+        assert_eq!(events, vec![preedit("ce", Some(0..2))]);
+
+        // A commit ends the composition, and is never dropped: the empty pre-edit it is followed by
+        // is the one that clears the field, so it passes through even though the same pre-edit was
+        // dropped a moment ago.
+        let commit = egui::Event::Ime(egui::ImeEvent::Commit("ce".to_string()));
+        let mut events = vec![commit.clone(), preedit("", None), preedit("", None)];
+        drop_repeated_ime_preedit(&mut events, &mut last);
+        assert_eq!(events, vec![commit, preedit("", None)]);
+
+        // Only IME pre-edits are filtered at all.
+        let mut events = vec![egui::Event::Copy, egui::Event::Text("1".to_string())];
+        drop_repeated_ime_preedit(&mut events, &mut last);
+        assert_eq!(events.len(), 2);
+    }
+
+    fn prompt() -> PendingPrompt {
+        PendingPrompt {
+            request_id: 1,
+            rp_id: "example.com".to_string(),
+            operation: "GetAssertion".to_string(),
+            user_name: "alice".to_string(),
+            is_security_setup: true,
+            pin_configured: true,
+            fp_count: 0,
+            hardware_sensor_available: false,
+            available_modalities: Vec::new(),
+            created_at_secs: 0,
+            timeout_seconds: 60,
+            accounts: Vec::new(),
+            selected_credential_id: None,
+            session_remembered: false,
+            remember_requested: false,
+        }
+    }
+
+    /// The window polls - and is therefore drawn - one [`POLL_TICK`] apart while a request is on
+    /// screen, and one [`IDLE_POLL`] apart while it shows nothing. That interval is the only thing
+    /// asking for the next pass (`PromptApp::logic`), so this is what keeps a hidden window at one
+    /// wake-up per second instead of one per tick, and it is what the Linux client does without any
+    /// window at all.
+    #[test]
+    fn the_poll_interval_follows_what_is_on_screen() {
+        let cc = eframe::CreationContext::_new_kittest(egui::Context::default());
+        let mut app = PromptApp::new(&cc, PromptApi::new("127.0.0.1", 10209), false, None);
+
+        // Nothing to show: the idle cadence.
+        assert!(!app.is_on_screen());
+        assert_eq!(app.poll_interval(), IDLE_POLL);
+        assert_eq!(IDLE_POLL, Duration::from_secs(1));
+
+        // A request is on the card.
+        app.display_prompt(prompt());
+        assert!(app.is_on_screen());
+        assert_eq!(app.poll_interval(), POLL_TICK);
+
+        // Settled again, and then the enrollment panel, which the CMS follows at 250 ms.
+        app.hide();
+        assert_eq!(app.poll_interval(), IDLE_POLL);
+        app.open_enrollment();
+        assert_eq!(app.poll_interval(), POLL_TICK);
     }
 }
