@@ -197,6 +197,10 @@ impl PromptApi {
             .map(|_| ())
             .map_err(|e| e.to_string())
     }
+    // The autostart pair serves the tray's "Start with the system" item alone, and `TrayState` is
+    // macOS/Windows only - on Linux the daemon owns the startup entry and its `ksni` tray - so both
+    // carry the tray's own gate instead of being compiled as dead code into the Linux window.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     fn get_autostart(&self) -> Result<bool, String> {
         let response = self
             .agent
@@ -214,6 +218,7 @@ impl PromptApi {
         }
     }
 
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     fn set_autostart(&self, enabled: bool) -> Result<(), String> {
         self.post(
             "/api/autostart",
