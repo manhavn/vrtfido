@@ -40,3 +40,29 @@ pub(crate) fn set_enabled(enabled: bool) -> io::Result<()> {
         }
     }
 }
+
+/// Rewrite the value when its command names a different executable than the one running now.
+/// Nothing to do - and nothing created - when autostart is off.
+pub(crate) fn refresh() -> io::Result<()> {
+    let key = match run_key(KEY_READ | KEY_WRITE) {
+        Ok(key) => key,
+        Err(_) => return Ok(()),
+    };
+    let command = match key.get_value::<String, _>(VALUE_NAME) {
+        Ok(command) => command,
+        Err(_) => return Ok(()),
+    };
+
+    let exe = super::startup_exe()?;
+    let (recorded, args) = super::split_exec(&command);
+    if recorded == exe.display().to_string() {
+        return Ok(());
+    }
+
+    // Same shape as `set_enabled`: one quoted word per argument, the stored arguments kept as
+    // they are.
+    key.set_value(
+        VALUE_NAME,
+        &format!("{}{}", super::quote_arg(&exe.display().to_string()), args),
+    )
+}

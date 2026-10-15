@@ -2,9 +2,11 @@ mod db;
 mod platform;
 mod security;
 mod sensor;
-// Autostart in the daemon process is only reached from the virtual-device path (it decides
-// whether `--uhid` also writes the udev rule). On macOS and Windows the toggle lives in the
-// prompt window's tray menu, which uses the library's copy of this module.
+// The daemon reaches autostart from two places: the virtual-device path on Linux, which decides
+// whether `--uhid` also writes the udev rule, and the startup-entry refresh below. `tray.rs` and
+// `uhid.rs` reach the module through the crate root, so Linux and Android compile this copy; on
+// macOS and Windows the daemon uses the library's - the same module, and the one the prompt
+// window's tray menu toggles - because nothing else in this binary needs the rest of it.
 #[cfg(any(target_os = "linux", target_os = "android"))]
 mod autostart;
 // The kernel virtual device and its StatusNotifier tray item are Linux/Android features: a
@@ -165,6 +167,28 @@ fn spawn_gui_client(host: &str, port: u16, tray: bool) -> Option<std::process::C
 
     println!("[GUI] vrtfido-gui not found; continuing headless.");
     None
+}
+
+/// Bring an enabled startup entry in step with the binary that is running now.
+///
+/// An upgrade can move that binary - a mise version directory, a Homebrew Cellar, a reinstall into
+/// another prefix - and the entry would otherwise start the release the user has already replaced,
+/// or nothing at all once the old path is pruned. Only the executable is replaced: the arguments
+/// the entry carries are the ones the user configured, never the ones this process was started
+/// with.
+///
+/// The daemon links its own copy of the module on Linux, where `tray.rs` and `uhid.rs` reach it
+/// through the crate root, and the library's copy elsewhere, where the prompt window's tray menu
+/// already links it.
+fn refresh_autostart_entry() {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    let refreshed = autostart::refresh_entry_path();
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    let refreshed = vrtfido_core::autostart::refresh_entry_path();
+
+    if let Err(e) = refreshed {
+        eprintln!("[AUTOSTART] Could not bring the startup entry up to date: {}", e);
+    }
 }
 
 /// Asks the prompt window to quit, then reaps it. A window that ignores the stop signal is killed
@@ -611,6 +635,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         db
     };
+
+    // A startup entry that names a binary the user has since replaced is brought up to date here
+    // (see `refresh_autostart_entry`).
+    refresh_autostart_entry();
 
     // 3. Check and grant /dev/uhid access via sudo if needed - only when the virtual device is
     // requested, so a Web-CMS-only run never prompts for a password. The unsupported platforms

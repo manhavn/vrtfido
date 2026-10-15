@@ -135,6 +135,58 @@ pub fn set_autostart_at_path(
     Ok(())
 }
 
+/// Rewrite the entry when its `Exec=` names a different executable than the one running now.
+/// Nothing to do - and nothing created - when autostart is off or the entry cannot be read.
+pub(crate) fn refresh() -> std::io::Result<()> {
+    let path = match get_autostart_desktop_path() {
+        Some(path) => path,
+        None => return Ok(()),
+    };
+    let content = match std::fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(_) => return Ok(()),
+    };
+
+    match rewrite_exec(&content, &startup_exe()?) {
+        Some(updated) => std::fs::write(&path, updated),
+        None => Ok(()),
+    }
+}
+
+/// Put `exe` at the front of the `Exec=` line, keeping its arguments and every other line byte
+/// for byte. `None` when the line already names `exe`, which is the normal case at every start
+/// between upgrades.
+fn rewrite_exec(content: &str, exe: &Path) -> Option<String> {
+    let current = exe.display().to_string();
+    let mut lines: Vec<String> = Vec::new();
+    let mut rewritten = false;
+
+    for line in content.lines() {
+        match line.strip_prefix("Exec=") {
+            Some(value) if !rewritten => {
+                let (recorded, args) = super::split_exec(value);
+                if recorded == current {
+                    return None;
+                }
+                lines.push(format!("Exec={}{}", quote_arg(&current), args));
+                rewritten = true;
+            }
+            _ => lines.push(line.to_string()),
+        }
+    }
+
+    if !rewritten {
+        return None;
+    }
+
+    let mut updated = lines.join("\n");
+    // `lines()` drops the newline `generate_desktop_entry` ends the file with.
+    if content.ends_with('\n') {
+        updated.push('\n');
+    }
+    Some(updated)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,5 +240,39 @@ mod tests {
 
         // Clean up test dir
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_rewrite_exec_replaces_only_the_executable() {
+        let old_exe =
+            Path::new("/home/dev/.local/share/mise/installs/github-manhavn-vrtfido/0.3.7/vrtfido");
+        let entry = generate_desktop_entry(
+            old_exe,
+            &["--db-type".to_string(), "mongodb".to_string()],
+        );
+
+        let shim = Path::new("/home/dev/.local/share/mise/shims/vrtfido");
+        let updated = rewrite_exec(&entry, shim).expect("the entry names the superseded install");
+
+        assert!(updated.contains("Exec=/home/dev/.local/share/mise/shims/vrtfido --db-type mongodb --daemon"));
+        assert!(!updated.contains("0.3.7"));
+        assert_eq!(updated.matches("Exec=").count(), 1);
+
+        // The arguments and every other line survive the rewrite, byte for byte.
+        let unchanged = |content: &str| {
+            content
+                .lines()
+                .filter(|line| !line.starts_with("Exec="))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        assert_eq!(unchanged(&updated), unchanged(&entry));
+
+        // A path with spaces keeps the quoting the FreeDesktop spec (and `split_exec`) expects.
+        let spaced = rewrite_exec(&entry, Path::new("/opt/my tools/vrtfido")).expect("rewrite");
+        assert!(spaced.contains("Exec=\"/opt/my tools/vrtfido\" --db-type mongodb --daemon"));
+
+        // A second pass changes nothing: the entry already names the running binary.
+        assert!(rewrite_exec(&updated, shim).is_none());
     }
 }
