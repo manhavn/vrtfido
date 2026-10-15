@@ -197,6 +197,30 @@ impl PromptApi {
             .map(|_| ())
             .map_err(|e| e.to_string())
     }
+    fn get_autostart(&self) -> Result<bool, String> {
+        let response = self
+            .agent
+            .get(&self.url("/api/autostart"))
+            .timeout(Duration::from_secs(2))
+            .call()
+            .map_err(|e| e.to_string())?;
+        let body: ApiResponse<bool> = response
+            .into_json()
+            .map_err(|e| format!("invalid daemon response: {}", e))?;
+        if body.success {
+            Ok(body.data.unwrap_or(false))
+        } else {
+            Err(body.error.unwrap_or_else(|| "request failed".into()))
+        }
+    }
+
+    fn set_autostart(&self, enabled: bool) -> Result<(), String> {
+        self.post(
+            "/api/autostart",
+            &crate::web::SetAutostartRequest { enabled },
+            Duration::from_secs(5),
+        )
+    }
 
     /// The request the daemon is waiting for, `None` when none is pending. An error means the
     /// daemon could not be reached at all.
@@ -2073,9 +2097,7 @@ struct TrayState {
     quit: tray_icon::menu::MenuId,
     /// Kept to update the checkmark after a toggle.
     autostart_item: tray_icon::menu::CheckMenuItem,
-    /// Where the Web CMS answers, for the "Dashboard" item.
-    host: String,
-    port: u16,
+    api: PromptApi,
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -2092,10 +2114,13 @@ impl TrayState {
         let dashboard = MenuItem::new("Dashboard", true, None);
         // The checkmark reports the real state of the startup entry, so the menu never lies
         // after the entry was changed elsewhere.
+        let initial_enabled = api
+            .get_autostart()
+            .unwrap_or_else(|_| crate::autostart::is_autostart_enabled());
         let autostart = CheckMenuItem::new(
             "Start with the system",
             true,
-            crate::autostart::is_autostart_enabled(),
+            initial_enabled,
             None,
         );
         let quit = MenuItem::new("Quit", true, None);
@@ -2130,8 +2155,7 @@ impl TrayState {
             autostart: autostart_id,
             quit: quit_id,
             autostart_item: autostart,
-            host: api.host.clone(),
-            port: api.port,
+            api: api.clone(),
         })
     }
 
@@ -2139,13 +2163,20 @@ impl TrayState {
     fn drain_menu(&mut self) {
         while let Ok(event) = tray_icon::menu::MenuEvent::receiver().try_recv() {
             if event.id == self.dashboard {
-                let url = format!("http://{}:{}", self.host, self.port);
+                let url = self.api.dashboard_url();
                 if let Err(e) = open::that(&url) {
                     eprintln!("[GUI] Could not open {} in a browser: {}", url, e);
                 }
             } else if event.id == self.autostart {
                 let enable = !crate::autostart::is_autostart_enabled();
-                match crate::autostart::set_autostart_enabled(enable) {
+                let toggle_res = self.api.set_autostart(enable).or_else(|e| {
+                    eprintln!(
+                        "[GUI] Daemon autostart API failed ({}), falling back to local toggle",
+                        e
+                    );
+                    crate::autostart::set_autostart_enabled(enable).map_err(|io_err| io_err.to_string())
+                });
+                match toggle_res {
                     Ok(()) => self.autostart_item.set_checked(enable),
                     Err(e) => {
                         eprintln!(
@@ -2231,7 +2262,7 @@ mod tests {
         let width = card_content_width();
         let mut rects: Vec<egui::Rect> = Vec::new();
 
-        let _ = ctx.run_ui(
+        let mut output = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -2248,6 +2279,7 @@ mod tests {
                 });
             },
         );
+        output.textures_delta.clear();
 
         assert_eq!(rects.len(), 3);
         // One line: a row that wrapped would mean the buttons no longer fit side by side.
@@ -2271,7 +2303,7 @@ mod tests {
             - SCROLL_BAR_RESERVE;
         let mut rects: Vec<egui::Rect> = Vec::new();
 
-        let _ = ctx.run_ui(
+        let mut output = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -2288,6 +2320,7 @@ mod tests {
                 });
             },
         );
+        output.textures_delta.clear();
 
         assert_eq!(rects.len(), 3);
         assert!(

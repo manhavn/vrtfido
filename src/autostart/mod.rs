@@ -32,7 +32,12 @@ pub fn is_autostart_enabled() -> bool {
 
 /// Enable or disable autostart for the current user.
 pub fn set_autostart_enabled(enabled: bool) -> std::io::Result<()> {
-    backend::set_enabled(enabled)
+    set_autostart_enabled_with_args(enabled, None)
+}
+
+/// Enable or disable autostart for the current user with optional custom retained arguments.
+pub fn set_autostart_enabled_with_args(enabled: bool, custom_args: Option<&[String]>) -> std::io::Result<()> {
+    backend::set_enabled_with_args(enabled, custom_args)
 }
 
 /// The executable to register. Every backend needs an absolute path: the startup entry runs
@@ -97,8 +102,9 @@ fn daemon_binary(exe: PathBuf) -> PathBuf {
 /// release is picked up without touching the entry, and `mise prune` cannot leave it dangling.
 /// `None` for anything that is not an installed copy of the tool.
 fn mise_shim(exe: &Path, data_dir: &Path) -> Option<PathBuf> {
-    let exe = std::fs::canonicalize(exe).unwrap_or_else(|_| exe.to_path_buf());
-    let relative = exe.strip_prefix(data_dir.join("installs")).ok()?;
+    let canon_exe = std::fs::canonicalize(exe).unwrap_or_else(|_| exe.to_path_buf());
+    let canon_data_dir = std::fs::canonicalize(data_dir).unwrap_or_else(|_| data_dir.to_path_buf());
+    let relative = canon_exe.strip_prefix(canon_data_dir.join("installs")).ok()?;
     // `installs/<tool>/<version>/<binary>`: one level less and this is not an install path, so a
     // shim of that name would be a guess rather than the shim that launched this binary.
     if relative.components().count() < 3 {
@@ -153,11 +159,8 @@ pub fn refresh_entry_path() -> std::io::Result<()> {
 
 /// Quotes one command-line word for the backends that keep their whole command in a single
 /// string: the FreeDesktop `Exec=` line and the Windows `Run` value. The LaunchAgent stores one
-/// array element per word and needs no quoting, which is why macOS - and only macOS - does not
-/// compile this. Written as "not macOS" rather than a list of the three platforms that quote, so
-/// that a new backend gets the helper instead of a missing-import error, and the one platform
-/// that does not use it says so right here.
-#[cfg(not(target_os = "macos"))]
+/// array element per word and needs no quoting.
+#[allow(dead_code)]
 pub(crate) fn quote_arg(arg: &str) -> String {
     if arg.contains(' ') {
         format!("\"{}\"", arg)
@@ -169,7 +172,7 @@ pub(crate) fn quote_arg(arg: &str) -> String {
 /// The inverse of `quote_arg` for the first word of a command: the executable and everything
 /// after it, which is the part a rewrite has to leave alone. Used by the two backends that keep
 /// their command in one string.
-#[cfg(not(target_os = "macos"))]
+#[allow(dead_code)]
 pub(crate) fn split_exec(command: &str) -> (String, String) {
     if let Some(rest) = command.strip_prefix('"') {
         if let Some(end) = rest.find('"') {
@@ -187,13 +190,19 @@ pub(crate) fn split_exec(command: &str) -> (String, String) {
 /// excluding one-off commands like `--quit`, `--export`, `--import`, or `--help`.
 pub fn get_retained_startup_args() -> Vec<String> {
     let raw_args: Vec<String> = std::env::args().skip(1).collect();
+    filter_retained_args(&raw_args)
+}
+
+/// Filter command-line arguments to preserve configuration options for autostart,
+/// excluding one-off commands like `--quit`, `--export`, `--import`, `--help`, or `--autostart`.
+pub fn filter_retained_args(raw_args: &[String]) -> Vec<String> {
     let mut retained = Vec::new();
     let mut i = 0;
 
     while i < raw_args.len() {
         let arg = &raw_args[i];
 
-        // Skip transient / one-off commands
+        // Skip transient / one-off commands and autostart toggle flags
         if matches!(
             arg.as_str(),
             "--daemon"
@@ -203,6 +212,10 @@ pub fn get_retained_startup_args() -> Vec<String> {
                 | "--stop"
                 | "--help"
                 | "-h"
+                | "--autostart"
+                | "--enable-autostart"
+                | "--no-autostart"
+                | "--disable-autostart"
                 | "--exit-after-import"
                 | "clean-logs"
                 | "--clean-logs"
@@ -320,6 +333,33 @@ mod tests {
         assert_eq!(
             split_exec("/usr/bin/vrtfido"),
             ("/usr/bin/vrtfido".to_string(), String::new())
+        );
+    }
+
+    #[test]
+    fn test_filter_retained_args_preserves_db_and_feature_flags() {
+        let args = vec![
+            "--db-type".to_string(),
+            "mongodb".to_string(),
+            "--database".to_string(),
+            "mongodb://localhost:27017/test".to_string(),
+            "--daemon".to_string(),
+            "--unlimited-fps".to_string(),
+            "--google-aaguid".to_string(),
+            "--autostart".to_string(),
+            "--quit".to_string(),
+        ];
+        let retained = filter_retained_args(&args);
+        assert_eq!(
+            retained,
+            vec![
+                "--db-type".to_string(),
+                "mongodb".to_string(),
+                "--database".to_string(),
+                "mongodb://localhost:27017/test".to_string(),
+                "--unlimited-fps".to_string(),
+                "--google-aaguid".to_string(),
+            ]
         );
     }
 }

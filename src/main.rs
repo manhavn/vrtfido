@@ -2,12 +2,6 @@ mod db;
 mod platform;
 mod security;
 mod sensor;
-// The daemon reaches autostart from two places: the virtual-device path on Linux, which decides
-// whether `--uhid` also writes the udev rule, and the startup-entry refresh below. `tray.rs` and
-// `uhid.rs` reach the module through the crate root, so Linux and Android compile this copy; on
-// macOS and Windows the daemon uses the library's - the same module, and the one the prompt
-// window's tray menu toggles - because nothing else in this binary needs the rest of it.
-#[cfg(any(target_os = "linux", target_os = "android"))]
 mod autostart;
 // The kernel virtual device and its StatusNotifier tray item are Linux/Android features: a
 // desktop tray on macOS and Windows belongs to the prompt window, which owns the menu-bar /
@@ -181,12 +175,7 @@ fn spawn_gui_client(host: &str, port: u16, tray: bool) -> Option<std::process::C
 /// through the crate root, and the library's copy elsewhere, where the prompt window's tray menu
 /// already links it.
 fn refresh_autostart_entry() {
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    let refreshed = autostart::refresh_entry_path();
-    #[cfg(not(any(target_os = "linux", target_os = "android")))]
-    let refreshed = vrtfido_core::autostart::refresh_entry_path();
-
-    if let Err(e) = refreshed {
+    if let Err(e) = autostart::refresh_entry_path() {
         eprintln!("[AUTOSTART] Could not bring the startup entry up to date: {}", e);
     }
 }
@@ -226,6 +215,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let uhid_enabled = args.iter().any(|a| a == "--uhid");
     let exit_after_import = args.iter().any(|a| a == "--exit-after-import");
     let no_tray = args.iter().any(|a| a == "--no-tray");
+    let enable_autostart = args.iter().any(|a| a == "--autostart" || a == "--enable-autostart");
+    let disable_autostart = args.iter().any(|a| a == "--no-autostart" || a == "--disable-autostart");
     // The identity is process-wide and a credential records it at creation time, so fix it before
     // anything can serve a WebAuthn request - including the daemon child, which inherits the flags.
     passkey::set_google_aaguid(google_aaguid);
@@ -401,6 +392,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("      --uhid                    Unsupported on {}: the virtual FIDO2 device needs the Linux /dev/uhid interface", std::env::consts::OS);
         }
         println!("      --no-tray                 Disable the tray icon (on macOS/Windows it is shown by the prompt window)");
+        println!("      --autostart               Enable start with system (runs daemon at login with current configuration)");
+        println!("      --no-autostart            Disable start with system");
         println!("  -H, --host <HOST>             Bind address for the Web CMS and API (default: 0.0.0.0, every interface)");
         println!("  -p, --port <PORT>             Port for the Web CMS and API (default: 10209)");
         println!("  -D, --database, --db <SPEC>   Database path or connection URL (default: authenticator.db)");
@@ -636,9 +629,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         db
     };
 
-    // A startup entry that names a binary the user has since replaced is brought up to date here
-    // (see `refresh_autostart_entry`).
-    refresh_autostart_entry();
+    // Handle startup entry registration or refresh
+    if enable_autostart {
+        match autostart::set_autostart_enabled(true) {
+            Ok(()) => println!("[AUTOSTART] Autostart with system enabled."),
+            Err(e) => eprintln!("[AUTOSTART] Failed to enable autostart: {}", e),
+        }
+    } else if disable_autostart {
+        match autostart::set_autostart_enabled(false) {
+            Ok(()) => println!("[AUTOSTART] Autostart with system disabled."),
+            Err(e) => eprintln!("[AUTOSTART] Failed to disable autostart: {}", e),
+        }
+    } else {
+        refresh_autostart_entry();
+    }
 
     // 3. Check and grant /dev/uhid access via sudo if needed - only when the virtual device is
     // requested, so a Web-CMS-only run never prompts for a password. The unsupported platforms

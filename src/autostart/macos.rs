@@ -23,14 +23,25 @@ pub(crate) fn is_enabled() -> bool {
     matches!(plist_path(), Ok(path) if path.exists())
 }
 
+#[allow(dead_code)]
 pub(crate) fn set_enabled(enabled: bool) -> io::Result<()> {
+    set_enabled_with_args(enabled, None)
+}
+
+pub(crate) fn set_enabled_with_args(enabled: bool, custom_args: Option<&[String]>) -> io::Result<()> {
     let path = plist_path()?;
 
     if enabled {
         let exe = super::startup_exe()?;
         let mut program = vec![exe.display().to_string()];
-        program.extend(super::get_retained_startup_args());
-        program.push("--daemon".to_string());
+        let retained = match custom_args {
+            Some(args) => args.to_vec(),
+            None => super::get_retained_startup_args(),
+        };
+        program.extend(retained);
+        if !program.iter().any(|a| a == "--daemon") {
+            program.push("--daemon".to_string());
+        }
 
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -40,6 +51,11 @@ pub(crate) fn set_enabled(enabled: bool) -> io::Result<()> {
         // Loading it right away is best effort: what matters is that launchd reads the agent
         // at the next login. A GUI session is not always present (ssh, CI), and an agent that
         // is already loaded makes `launchctl load` fail, neither of which is an error here.
+        let _ = std::process::Command::new("launchctl")
+            .arg("unload")
+            .arg("-w")
+            .arg(&path)
+            .status();
         let _ = std::process::Command::new("launchctl")
             .arg("load")
             .arg("-w")
@@ -57,11 +73,8 @@ pub(crate) fn set_enabled(enabled: bool) -> io::Result<()> {
     Ok(())
 }
 
-/// Rewrite the agent so it launches the daemon that is running now, keeping the arguments the
-/// property list already carries. Everything is rebuilt from those arguments, which is also what
-/// repairs an agent written before the executable was resolved correctly (it named
-/// `vrtfido-gui`) and one without `AbandonProcessGroup`. Nothing to do - and nothing created -
-/// when autostart is off or the plist cannot be read.
+/// Rewrite the agent so it launches the daemon that is running now, updating the arguments
+/// when configuration flags are provided, or keeping existing arguments otherwise.
 pub(crate) fn refresh() -> io::Result<()> {
     let path = plist_path()?;
     let content = match std::fs::read_to_string(&path) {
@@ -69,19 +82,45 @@ pub(crate) fn refresh() -> io::Result<()> {
         Err(_) => return Ok(()),
     };
 
-    match rewrite_plist(&content, &super::startup_exe()?) {
-        Some(updated) => std::fs::write(&path, updated),
+    let exe = super::startup_exe()?;
+    let retained = super::get_retained_startup_args();
+    match rewrite_plist(&content, &exe, Some(&retained)) {
+        Some(updated) => {
+            std::fs::write(&path, &updated)?;
+            let _ = std::process::Command::new("launchctl")
+                .arg("unload")
+                .arg("-w")
+                .arg(&path)
+                .status();
+            let _ = std::process::Command::new("launchctl")
+                .arg("load")
+                .arg("-w")
+                .arg(&path)
+                .status();
+            Ok(())
+        }
         None => Ok(()),
     }
 }
 
-/// The property list this backend renders for `exe`, given the one on disk. `None` when the file
-/// already is what a toggle would write.
-fn rewrite_plist(content: &str, exe: &Path) -> Option<String> {
+/// The property list this backend renders for `exe`, given the one on disk and optional new arguments.
+fn rewrite_plist(content: &str, exe: &Path, new_args: Option<&[String]>) -> Option<String> {
     let arguments = program_arguments(content)?;
-    let program = std::iter::once(exe.display().to_string())
-        .chain(arguments.into_iter().skip(1))
-        .collect::<Vec<_>>();
+    let program = match new_args {
+        Some(args) if !args.is_empty() => {
+            let mut p = vec![exe.display().to_string()];
+            p.extend(args.iter().cloned());
+            if !p.iter().any(|a| a == "--daemon") {
+                p.push("--daemon".to_string());
+            }
+            p
+        }
+        _ => {
+            std::iter::once(exe.display().to_string())
+                .chain(arguments.into_iter().skip(1))
+                .collect::<Vec<_>>()
+        }
+    };
 
     let updated = render_plist(&program);
     (updated != content).then_some(updated)
@@ -176,7 +215,7 @@ mod tests {
         let (content, client) = agent_written_by_the_client();
         let daemon = Path::new("/Applications/VrtFido.app/Contents/MacOS/vrtfido");
 
-        let updated = rewrite_plist(&content, daemon).expect("the agent names the client");
+        let updated = rewrite_plist(&content, daemon, None).expect("the agent names the client");
 
         assert!(!updated.contains(client.as_str()));
         assert_eq!(
@@ -192,7 +231,7 @@ mod tests {
         );
 
         // A second pass changes nothing: the agent already names the running daemon.
-        assert!(rewrite_plist(&updated, daemon).is_none());
+        assert!(rewrite_plist(&updated, daemon, None).is_none());
     }
 
     #[test]
@@ -213,7 +252,7 @@ mod tests {
                      </dict>\n\
                      </plist>\n";
 
-        let updated = rewrite_plist(older, Path::new(daemon)).expect("the key is missing");
+        let updated = rewrite_plist(older, Path::new(daemon), None).expect("the key is missing");
 
         assert!(updated.contains("  <key>AbandonProcessGroup</key>"));
         assert_eq!(
@@ -233,5 +272,34 @@ mod tests {
         let parsed = program_arguments(&render_plist(&program)).expect("the array is there");
 
         assert_eq!(parsed, program);
+    }
+
+    #[test]
+    fn test_rewrite_plist_updates_arguments_when_provided() {
+        let (content, _) = agent_written_by_the_client();
+        let daemon = Path::new("/usr/local/bin/vrtfido");
+        let new_args = vec![
+            "--db-type".to_string(),
+            "mongodb".to_string(),
+            "--database".to_string(),
+            "mongodb://localhost:27017/db".to_string(),
+            "--unlimited-fps".to_string(),
+            "--google-aaguid".to_string(),
+        ];
+        let updated = rewrite_plist(&content, daemon, Some(&new_args)).expect("plist updated");
+        let args = program_arguments(&updated).expect("args parsed");
+        assert_eq!(
+            args,
+            vec![
+                daemon.display().to_string(),
+                "--db-type".to_string(),
+                "mongodb".to_string(),
+                "--database".to_string(),
+                "mongodb://localhost:27017/db".to_string(),
+                "--unlimited-fps".to_string(),
+                "--google-aaguid".to_string(),
+                "--daemon".to_string(),
+            ]
+        );
     }
 }

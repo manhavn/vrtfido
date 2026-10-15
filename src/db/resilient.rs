@@ -487,13 +487,15 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    static TEST_WS_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     struct Workspace(PathBuf);
     impl Workspace {
         fn new() -> Self {
-            let id = format!("vrtfido-resilient-{}-{}", std::process::id(),
+            let seq = TEST_WS_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let id = format!("vrtfido-resilient-{}-{}-{}", std::process::id(), seq,
                 std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
             let dir = std::env::temp_dir().join(id);
-            std::fs::create_dir(&dir).unwrap();
+            std::fs::create_dir_all(&dir).unwrap();
             Self(dir)
         }
         fn path(&self, name: &str) -> String { self.0.join(name).to_str().unwrap().to_owned() }

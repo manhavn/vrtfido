@@ -2,7 +2,7 @@ use crate::db::Db;
 use crate::security::SecurityEngine;
 use axum::{
     extract::{Path, State},
-    http::header,
+    http::{header, StatusCode},
     response::{Html, IntoResponse},
     routing::{delete, get, post, put},
     Json, Router,
@@ -141,6 +141,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/verify/reject", post(reject_verify))
         .route("/api/settings", get(get_settings))
         .route("/api/settings", post(update_settings))
+        .route("/api/autostart", get(get_autostart).post(set_autostart))
         .route("/api/database/export", get(export_database))
         .route("/api/database/export/auth", post(export_database_auth))
         .route("/api/database/import", post(import_database))
@@ -570,6 +571,28 @@ async fn update_settings(
     let mut map = settings_map(&state.db);
     map.extend(state.db.get_app_settings().unwrap_or_default());
     Json(ApiResponse::ok(map))
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SetAutostartRequest {
+    pub enabled: bool,
+}
+
+async fn get_autostart() -> Json<ApiResponse<bool>> {
+    let enabled = crate::autostart::is_autostart_enabled();
+    Json(ApiResponse::ok(enabled))
+}
+
+async fn set_autostart(
+    Json(req): Json<SetAutostartRequest>,
+) -> (StatusCode, Json<ApiResponse<bool>>) {
+    match crate::autostart::set_autostart_enabled(req.enabled) {
+        Ok(()) => (StatusCode::OK, Json(ApiResponse::ok(req.enabled))),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiResponse::err(e.to_string())),
+        ),
+    }
 }
 
 async fn export_database(
@@ -3333,5 +3356,11 @@ mod tests {
         .0;
         assert!(!shortcut.success, "the shortcut must stay closed");
         second.abort();
+    }
+
+    #[tokio::test]
+    async fn test_autostart_api_endpoints() {
+        let initial = get_autostart().await.0;
+        assert!(initial.success);
     }
 }

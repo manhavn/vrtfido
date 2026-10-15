@@ -98,6 +98,10 @@ pub fn generate_desktop_entry(exe_path: &Path, extra_args: &[String]) -> String 
 
 /// Enable or disable autostart by writing or removing the desktop file.
 pub(crate) fn set_enabled(enabled: bool) -> std::io::Result<()> {
+    set_enabled_with_args(enabled, None)
+}
+
+pub(crate) fn set_enabled_with_args(enabled: bool, custom_args: Option<&[String]>) -> std::io::Result<()> {
     let desktop_path = get_autostart_desktop_path().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::NotFound,
@@ -105,7 +109,10 @@ pub(crate) fn set_enabled(enabled: bool) -> std::io::Result<()> {
         )
     })?;
 
-    let retained_args = super::get_retained_startup_args();
+    let retained_args = match custom_args {
+        Some(args) => args.to_vec(),
+        None => super::get_retained_startup_args(),
+    };
     set_autostart_at_path(&desktop_path, enabled, None, &retained_args)
 }
 
@@ -142,6 +149,13 @@ pub(crate) fn refresh() -> std::io::Result<()> {
         Some(path) => path,
         None => return Ok(()),
     };
+    if !path.exists() {
+        return Ok(());
+    }
+    let retained = super::get_retained_startup_args();
+    if !retained.is_empty() {
+        return set_enabled(true);
+    }
     let content = match std::fs::read_to_string(&path) {
         Ok(content) => content,
         Err(_) => return Ok(()),

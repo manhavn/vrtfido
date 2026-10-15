@@ -18,6 +18,10 @@ pub(crate) fn is_enabled() -> bool {
 }
 
 pub(crate) fn set_enabled(enabled: bool) -> io::Result<()> {
+    set_enabled_with_args(enabled, None)
+}
+
+pub(crate) fn set_enabled_with_args(enabled: bool, custom_args: Option<&[String]>) -> io::Result<()> {
     let key = run_key(KEY_READ | KEY_WRITE)?;
 
     if enabled {
@@ -25,12 +29,18 @@ pub(crate) fn set_enabled(enabled: bool) -> io::Result<()> {
         // The value is one command line, so every word is quoted on its own before it is
         // joined: a path like `C:\Program Files\...` would otherwise split into two arguments.
         let mut command = vec![super::quote_arg(&exe.display().to_string())];
+        let retained = match custom_args {
+            Some(args) => args.to_vec(),
+            None => super::get_retained_startup_args(),
+        };
         command.extend(
-            super::get_retained_startup_args()
+            retained
                 .iter()
                 .map(|argument| super::quote_arg(argument)),
         );
-        command.push("--daemon".to_string());
+        if !command.iter().any(|a| a == "--daemon") {
+            command.push("--daemon".to_string());
+        }
         key.set_value(VALUE_NAME, &command.join(" "))
     } else {
         match key.delete_value(VALUE_NAME) {
@@ -52,6 +62,11 @@ pub(crate) fn refresh() -> io::Result<()> {
         Ok(command) => command,
         Err(_) => return Ok(()),
     };
+
+    let retained = super::get_retained_startup_args();
+    if !retained.is_empty() {
+        return set_enabled(true);
+    }
 
     let exe = super::startup_exe()?;
     let (recorded, args) = super::split_exec(&command);
