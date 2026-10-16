@@ -30,6 +30,9 @@ enum Action {
     Credential(CredentialRow),
     ClearAuthLogs,
     ClearDebugLogs,
+    /// Drops log rows older than the timestamp it carries. Idempotent and safe to replay late: a
+    /// queued retention sweep deletes at most what the cutoff already designated.
+    PurgeLogs { cutoff: String },
     Security(SecuritySettingsData),
     Pin { hash: String, salt: String, now: String },
     RemovePin { now: String },
@@ -61,6 +64,7 @@ impl Action {
             Self::Credential(c) => insert_credential(db, c),
             Self::ClearAuthLogs => db.clear_auth_logs().map(|_| ()),
             Self::ClearDebugLogs => db.clear_debug_logs().map(|_| ()),
+            Self::PurgeLogs { cutoff } => db.purge_logs_before(cutoff).map(|_| ()),
             Self::Security(s) => db.set_security_settings_all(s),
             Self::Pin { hash, salt, now } => db.set_pin(hash, salt, now),
             Self::RemovePin { now } => db.remove_pin(now),
@@ -451,6 +455,17 @@ impl DbBackend for ResilientBackend {
     fn get_debug_logs(&self, limit: usize) -> Result<Vec<DebugLogRow>> { self.read(|s| s.get_debug_logs(limit)) }
     fn clear_auth_logs(&self) -> Result<usize> { self.write(|s, _| Ok((Action::ClearAuthLogs, s.get_auth_logs(None, usize::MAX)?.len()))) }
     fn clear_debug_logs(&self) -> Result<usize> { self.write(|s, _| Ok((Action::ClearDebugLogs, s.get_debug_logs(usize::MAX)?.len()))) }
+    fn purge_logs_before(&self, cutoff: &str) -> Result<usize> {
+        // Retention runs unattended, so an empty sweep stays entirely local: one COUNT on the
+        // shadow, no queue row and no traffic to a remote primary. When there is something to
+        // drop the cutoff travels through the queue like every other mutation, which keeps the
+        // shadow and the primary in step and lets an offline daemon still expire its old logs.
+        let removed = self.read(|shadow| shadow.count_old_logs(cutoff))?;
+        if removed == 0 {
+            return Ok(0);
+        }
+        self.write(|_, _| Ok((Action::PurgeLogs { cutoff: cutoff.to_string() }, removed)))
+    }
     fn get_security_settings_raw(&self) -> Result<SecuritySettingsData> { self.read(|s| s.get_security_settings_raw()) }
     fn get_fingerprint_count(&self) -> Result<usize> { self.read(|s| s.get_fingerprint_count()) }
     fn set_pin(&self, hash: &str, salt: &str, now: &str) -> Result<()> { self.write(|_, _| Ok((Action::Pin { hash: hash.into(), salt: salt.into(), now: now.into() }, ()))) }

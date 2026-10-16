@@ -2,6 +2,7 @@ pub mod autostart;
 pub mod db;
 pub mod passkey;
 pub mod platform;
+pub mod retention;
 pub mod security;
 pub mod sensor;
 // Linux/Android only: the StatusNotifier item needs D-Bus, and the two udev helpers below
@@ -61,7 +62,7 @@ fn google_aaguid_default() -> bool {
 /// daemon this way; the desktop binary builds its own `AppState` because it shares the debug/UHID
 /// flags with the UHID thread and the tray.
 #[cfg(feature = "jni-bridge")]
-fn server_router(options: &DaemonOptions) -> Result<axum::Router, db::DbError> {
+fn server_router(options: &DaemonOptions) -> Result<(axum::Router, Db), db::DbError> {
     passkey::set_google_aaguid(options.google_aaguid);
     let db = Db::open_resilient(
         &options.database,
@@ -72,14 +73,17 @@ fn server_router(options: &DaemonOptions) -> Result<axum::Router, db::DbError> {
     )?;
     let sensor = sensor::UsbSensor::new();
     let security = SecurityEngine::new(db.clone(), sensor, options.unlimited_fingerprints);
-    Ok(web::create_router(AppState {
+    Ok((
+        web::create_router(AppState {
+            db: db.clone(),
+            security,
+            debug_mode: Arc::new(AtomicBool::new(options.debug_mode)),
+            uhid_connected: Arc::new(AtomicBool::new(false)),
+            unlimited_fps: options.unlimited_fingerprints,
+            port: options.port,
+        }),
         db,
-        security,
-        debug_mode: Arc::new(AtomicBool::new(options.debug_mode)),
-        uhid_connected: Arc::new(AtomicBool::new(false)),
-        unlimited_fps: options.unlimited_fingerprints,
-        port: options.port,
-    }))
+    ))
 }
 
 #[cfg(feature = "jni-bridge")]
@@ -139,15 +143,19 @@ pub mod jni_bridge {
                 };
                 runtime.block_on(async move {
                     let result = async {
-                        let router = server_router(&options).map_err(|e| e.to_string())?;
+                        let (router, db) = server_router(&options).map_err(|e| e.to_string())?;
                         let listener = tokio::net::TcpListener::bind((ip, port))
                             .await
                             .map_err(|e| format!("Cannot listen on {ip}:{port}: {e}"))?;
-                        Ok::<_, String>((router, listener))
+                        Ok::<_, String>((router, listener, db))
                     }
                     .await;
                     match result {
-                        Ok((router, listener)) => {
+                        Ok((router, listener, db)) => {
+                            // Retention belongs to the running service, not to the process: the
+                            // first sweep lands 30 seconds after the app's switch went ON, then
+                            // once a day, and stopping the service stops the sweeps with it.
+                            let _retention = retention::LogRetention::start(db);
                             let _ = ready_tx.send(Ok(()));
                             tokio::select! {
                                 result = axum::serve(listener, router) => {

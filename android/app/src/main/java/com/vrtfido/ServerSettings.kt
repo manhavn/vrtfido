@@ -30,7 +30,9 @@ data class ServerBinding(
 
 object ServerSettings {
     private const val PREFS = "vrtfido_server"
-    const val DEFAULT_HOST = "0.0.0.0"
+    // Loopback by default: the Web CMS has no authentication, so reaching it from the LAN is an
+    // explicit choice (`0.0.0.0`) rather than something a fresh install is exposed to.
+    const val DEFAULT_HOST = "127.0.0.1"
     const val DEFAULT_PORT = 10209
     const val DEFAULT_DATABASE = "authenticator.db"
     const val DEFAULT_LANGUAGE = "en"

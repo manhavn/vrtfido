@@ -185,8 +185,17 @@ class VrtfidoService : Service() {
         }
         // Different remote (or externally located) primaries must not share an offline queue.
         // Hashing the spec gives stable filenames without exposing URL credentials in a filename.
+        //
+        // A local primary gets its own sidecar pair per chosen type as well, because the daemon
+        // binds its shadow and queue to (db_type, spec) and refuses to open a queue that a
+        // different binding left behind ("queue belongs to another primary database"). The default
+        // empty value keeps the plain `<primary>.shadow.db` / `<primary>.queue.db` names, so an
+        // existing install keeps the pair it already has, and the picker's one-tap type changes
+        // switch to a pair of their own instead of bricking the daemon.
+        val typeTag = binding.dbType.trim().lowercase().filter { it.isLetterOrDigit() }
         val stem = if (privatePrimary != null) {
-            primaryFile.name.removeSuffix(".db").ifEmpty { "authenticator" }
+            val base = primaryFile.name.removeSuffix(".db").ifEmpty { "authenticator" }
+            if (typeTag.isEmpty()) base else "$base-$typeTag"
         } else {
             val digest = MessageDigest.getInstance("SHA-256")
                 .digest("${binding.dbType.trim()}:$database".toByteArray(Charsets.UTF_8))

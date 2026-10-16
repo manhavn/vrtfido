@@ -389,6 +389,16 @@ impl DbBackend for MySqlBackend {
         Ok(conn.affected_rows() as usize)
     }
 
+    fn purge_logs_before(&self, cutoff: &str) -> Result<usize, DbError> {
+        let mut conn = self.pool.get_conn().map_err(|e| DbError::MySql(e.to_string()))?;
+        conn.exec_drop("DELETE FROM auth_logs WHERE created_at < ?", (cutoff,))
+            .map_err(|e| DbError::MySql(e.to_string()))?;
+        let auth = conn.affected_rows();
+        conn.exec_drop("DELETE FROM debug_logs WHERE created_at < ?", (cutoff,))
+            .map_err(|e| DbError::MySql(e.to_string()))?;
+        Ok((auth + conn.affected_rows()) as usize)
+    }
+
     fn get_security_settings_raw(&self) -> Result<SecuritySettingsData, DbError> {
         let mut conn = self.pool.get_conn().map_err(|e| DbError::MySql(e.to_string()))?;
         let row: Option<(Option<String>, Option<String>, i8, i8, i8, String)> = conn.query_first(

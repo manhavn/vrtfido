@@ -703,6 +703,28 @@ impl DbBackend for MongoBackend {
         })
     }
 
+    fn purge_logs_before(&self, cutoff: &str) -> Result<usize, DbError> {
+        let client = self.client.clone();
+        let db_name = self.db_name.clone();
+        let cutoff = cutoff.to_string();
+        self.worker.run(move |rt| {
+            rt.block_on(async move {
+                // created_at is stored as the same fixed-width UTC text as the cutoff, so a range
+                // query on the string orders chronologically.
+                let mut removed = 0usize;
+                for name in [COLL_AUTH_LOGS, COLL_DEBUG_LOGS] {
+                    let col: Collection<Document> = client.database(&db_name).collection(name);
+                    let res = col
+                        .delete_many(doc! { "created_at": { "$lt": &cutoff } })
+                        .await
+                        .map_err(mongo_err)?;
+                    removed += res.deleted_count as usize;
+                }
+                Ok(removed)
+            })
+        })
+    }
+
     fn get_security_settings_raw(&self) -> Result<SecuritySettingsData, DbError> {
         let client = self.client.clone();
         let db_name = self.db_name.clone();

@@ -523,6 +523,30 @@ impl DbBackend for LibSqlBackend {
         })
     }
 
+    fn purge_logs_before(&self, cutoff: &str) -> Result<usize, DbError> {
+        let conn = self.conn.clone();
+        let cutoff = cutoff.to_string();
+        self.worker.run(move |rt| {
+            rt.block_on(async move {
+                let auth = conn
+                    .execute(
+                        "DELETE FROM auth_logs WHERE datetime(created_at) < datetime(?1)",
+                        libsql::params![cutoff.clone()],
+                    )
+                    .await
+                    .map_err(|e| DbError::LibSql(e.to_string()))?;
+                let debug = conn
+                    .execute(
+                        "DELETE FROM debug_logs WHERE datetime(created_at) < datetime(?1)",
+                        libsql::params![cutoff],
+                    )
+                    .await
+                    .map_err(|e| DbError::LibSql(e.to_string()))?;
+                Ok((auth + debug) as usize)
+            })
+        })
+    }
+
     fn get_security_settings_raw(&self) -> Result<SecuritySettingsData, DbError> {
         let conn = self.conn.clone();
         self.worker.run(move |rt| {

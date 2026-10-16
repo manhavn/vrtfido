@@ -60,7 +60,13 @@ impl From<serde_json::Error> for DbError {
 pub type Result<T, E = DbError> = std::result::Result<T, E>;
 
 fn current_timestamp() -> String {
-    Utc::now().format("%Y-%m-%d %H:%M:%S").to_string()
+    timestamp_at(chrono::Duration::zero())
+}
+
+/// Timestamp for the `created_at`/`updated_at` columns (UTC, second precision), shifted by
+/// `offset`. One definition keeps comparisons between stored values and cutoffs meaningful.
+pub fn timestamp_at(offset: chrono::Duration) -> String {
+    (Utc::now() + offset).format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
@@ -210,6 +216,10 @@ pub trait DbBackend: Send + Sync {
 
     fn clear_debug_logs(&self) -> Result<usize>;
 
+    /// Deletes auth and debug log rows older than `cutoff` (`YYYY-MM-DD HH:MM:SS`, UTC) and
+    /// returns how many rows were removed.
+    fn purge_logs_before(&self, cutoff: &str) -> Result<usize>;
+
     fn get_security_settings_raw(&self) -> Result<SecuritySettingsData>;
 
     fn get_fingerprint_count(&self) -> Result<usize>;
@@ -266,7 +276,8 @@ pub trait DbBackend: Send + Sync {
 
 #[derive(Clone)]
 pub struct Db {
-    backend: Arc<dyn DbBackend>,
+    /// Crate-visible so tests can seed rows with the timestamps they need to exercise retention.
+    pub(crate) backend: Arc<dyn DbBackend>,
 }
 
 #[allow(dead_code)]
@@ -537,6 +548,11 @@ impl Db {
         let auth = self.backend.clear_auth_logs()?;
         let debug = self.backend.clear_debug_logs()?;
         Ok((auth, debug))
+    }
+
+    /// Drops auth and debug log entries older than `cutoff` (`YYYY-MM-DD HH:MM:SS`, UTC).
+    pub fn purge_logs_before(&self, cutoff: &str) -> Result<usize> {
+        self.backend.purge_logs_before(cutoff)
     }
 
     pub fn get_security_settings(&self, unlimited_fps: bool) -> Result<SecuritySettings> {
@@ -1260,6 +1276,31 @@ mod tests {
             return;
         }
         // If all three connections succeeded somehow (unlikely) the test still passes silently.
+    }
+
+    #[test]
+    fn test_purge_logs_before_cutoff() {
+        let db = create_test_db();
+        let expired = timestamp_at(chrono::Duration::days(-8));
+        let kept = timestamp_at(chrono::Duration::days(-6));
+
+        db.backend.insert_auth_log_full(1, Some("cred_1"), "rp.test", "MakeCredential", "SUCCESS", "PIN", None, &expired).unwrap();
+        db.backend.insert_auth_log_full(2, Some("cred_2"), "rp.test", "GetAssertion", "SUCCESS", "PIN", None, &kept).unwrap();
+        db.backend.insert_debug_log_full(1, "INFO", "TEST", "expired entry", &expired).unwrap();
+        db.backend.insert_debug_log_full(2, "INFO", "TEST", "kept entry", &kept).unwrap();
+
+        let cutoff = timestamp_at(chrono::Duration::days(-7));
+        assert_eq!(db.purge_logs_before(&cutoff).unwrap(), 2);
+
+        let auth = db.get_auth_logs(None, 10).unwrap();
+        assert_eq!(auth.len(), 1);
+        assert_eq!(auth[0].created_at, kept);
+        let debug = db.get_debug_logs(10).unwrap();
+        assert_eq!(debug.len(), 1);
+        assert_eq!(debug[0].message, "kept entry");
+
+        // Sweeping again with the same cutoff finds nothing left to remove.
+        assert_eq!(db.purge_logs_before(&cutoff).unwrap(), 0);
     }
 
     #[test]

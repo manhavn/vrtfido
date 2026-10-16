@@ -1,5 +1,6 @@
 mod db;
 mod platform;
+mod retention;
 mod security;
 mod sensor;
 mod autostart;
@@ -424,6 +425,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Default runtime directory: {}", platform::runtime_dir().display());
         println!("A temporary directory can be cleared at reboot: use --shadow-db/--queue-db for durable storage.");
         println!("One-off --export, --import and --clean-logs require the primary database online.");
+        println!("Logs older than {} days are deleted automatically: 30 seconds after the daemon starts, then once a day.", retention::RETENTION_DAYS);
         return Ok(());
     }
 
@@ -678,6 +680,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         unlimited_fps,
         port,
     };
+
+    // Keep the log tables bounded: entries older than seven days are removed 30 seconds after
+    // the daemon starts, then once a day. The handle lives as long as this process, so the worker
+    // stops when the daemon does.
+    let _log_retention = retention::LogRetention::start(db.clone());
 
     // 5. Start Web CMS Server on the configured address
     let app = web::create_router(app_state);

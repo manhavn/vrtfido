@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Chevron shown at the end of the DB type field: tapping the field or the chevron opens the
+     picker dialog. A dialog is used instead of the Material exposed-dropdown popup because that
+     popup is capped to the space below its anchor, which is a few pixels at the bottom of this
+     scrollable form, leaving the list unreadable. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="@color/text_secondary">
+    <path
+        android:fillColor="@android:color/white"
+        android:pathData="M16.59,8.59L12,13.17 7.41,8.59 6,10l6,6 6,-6z" />
+</vector>

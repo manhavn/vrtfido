@@ -142,17 +142,18 @@
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
-        <!-- Battery Optimization Warning & Settings Card -->
+        <!-- Background/battery setup: kept visible on purpose. The restriction state can change
+             at any time (a ROM update, a battery-app reset, the user's own settings), so the way
+             back to the configuration stays one tap away instead of being shown once. -->
         <com.google.android.material.card.MaterialCardView
             android:id="@+id/card_battery_warning"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            app:cardBackgroundColor="#2A1810"
+            app:cardBackgroundColor="@color/surface_dark"
             app:cardCornerRadius="16dp"
             app:cardElevation="4dp"
             app:strokeWidth="1dp"
-            app:strokeColor="#B45309"
-            android:visibility="gone"
+            app:strokeColor="#334155"
             android:layout_marginBottom="16dp">
 
             <LinearLayout
@@ -166,7 +167,7 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:text="@string/battery_warning_title"
-                    android:textColor="#FBBF24"
+                    android:textColor="@color/text_primary"
                     android:textSize="14sp"
                     android:textStyle="bold"
                     android:layout_marginBottom="4dp" />
@@ -182,14 +183,14 @@
 
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/btn_battery_settings"
-                    style="@style/Widget.Material3.Button.TonalButton"
+                    style="@style/Widget.Material3.Button.OutlinedButton"
                     android:layout_width="match_parent"
-                    android:layout_height="44dp"
+                    android:layout_height="56dp"
                     android:text="@string/battery_settings_btn"
-                    android:textColor="#FFFFFF"
-                    android:textSize="13sp"
-                    app:cornerRadius="10dp"
-                    app:backgroundTint="#B45309" />
+                    android:textColor="@color/text_secondary"
+                    android:textSize="14sp"
+                    app:cornerRadius="12dp"
+                    app:strokeColor="#475569" />
 
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
@@ -255,20 +256,31 @@
                         android:contentDescription="@string/database_toggle_show" />
                 </LinearLayout>
 
-                <TextView
+                <!-- Picked from a dialog instead of typed, and instead of the Material
+                     exposed-dropdown popup: that popup is capped to the space below its anchor,
+                     which is a few pixels at the bottom of this scrollable form, so the list
+                     would open one row tall. -->
+                <com.google.android.material.textfield.TextInputLayout
+                    android:id="@+id/layout_db_type"
+                    style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="@string/db_type_label"
-                    android:textColor="@color/text_secondary" />
-                <EditText
-                    android:id="@+id/edit_db_type"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:singleLine="true"
-                    android:inputType="textNoSuggestions"
-                    android:textColor="@color/text_primary"
-                    android:hint="@string/db_type_hint"
-                    android:layout_marginBottom="12dp" />
+                    android:layout_marginBottom="12dp"
+                    android:hint="@string/db_type_label"
+                    app:endIconContentDescription="@string/db_type_pick"
+                    app:endIconDrawable="@drawable/ic_dropdown"
+                    app:endIconMode="custom">
+
+                    <com.google.android.material.textfield.TextInputEditText
+                        android:id="@+id/edit_db_type"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:clickable="true"
+                        android:cursorVisible="false"
+                        android:focusable="false"
+                        android:inputType="none"
+                        android:textColor="@color/text_primary" />
+                </com.google.android.material.textfield.TextInputLayout>
 
                 <TextView
                     android:layout_width="match_parent"

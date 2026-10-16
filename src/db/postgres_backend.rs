@@ -528,6 +528,21 @@ impl DbBackend for PostgresBackend {
         })
     }
 
+    fn purge_logs_before(&self, cutoff: &str) -> Result<usize, DbError> {
+        let cutoff = cutoff.to_string();
+        self.worker.run(move |client| {
+            // created_at is a VARCHAR, so the cutoff compares as text: both sides use the
+            // `YYYY-MM-DD HH:MM:SS` UTC form, which orders chronologically.
+            let auth = client
+                .execute("DELETE FROM auth_logs WHERE created_at < $1", &[&cutoff])
+                .map_err(|e| DbError::Postgres(e.to_string()))?;
+            let debug = client
+                .execute("DELETE FROM debug_logs WHERE created_at < $1", &[&cutoff])
+                .map_err(|e| DbError::Postgres(e.to_string()))?;
+            Ok((auth + debug) as usize)
+        })
+    }
+
     fn get_security_settings_raw(&self) -> Result<SecuritySettingsData, DbError> {
         self.worker.run(|client| {
             let rows = client.query(

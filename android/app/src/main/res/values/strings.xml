@@ -37,7 +37,16 @@
     <string name="database_toggle_show">Show database string</string>
     <string name="database_toggle_hide">Hide database string</string>
     <string name="db_type_label">DB type (optional, --db-type)</string>
-    <string name="db_type_hint">sqlite, postgresql, mysql, mariadb, libsql, mongodb (leave empty to auto-detect)</string>
+    <!-- Rows of the DB type dropdown; the first row carries the empty value the daemon
+         auto-detects from the spec, the rest are the literal db-type values. -->
+    <string name="db_type_auto">Auto-detect (SQLite for a file path)</string>
+    <string name="db_type_sqlite">SQLite</string>
+    <string name="db_type_postgresql">PostgreSQL</string>
+    <string name="db_type_mysql">MySQL</string>
+    <string name="db_type_mariadb">MariaDB</string>
+    <string name="db_type_libsql">LibSQL / Turso</string>
+    <string name="db_type_mongodb">MongoDB</string>
+    <string name="db_type_pick">Choose DB type</string>
     <string name="auth_token_label">Auth token (LibSQL/Turso, --auth-token)</string>
     <string name="auth_token_hint">leave empty when unused (MongoDB creds live in the URL)</string>
     <string name="flag_debug">--debug: log packet details</string>
@@ -59,8 +68,8 @@
     <string name="create_error">Could not create the new passkey</string>
 
     <!-- Battery optimization & background execution -->
-    <string name="battery_warning_title">Background Battery Restriction Active</string>
-    <string name="battery_warning_desc">Battery optimization is active. Remote database connections (PostgreSQL/MySQL/MongoDB) may disconnect when the screen turns off or the app is minimized.</string>
+    <string name="battery_warning_title">Background &amp; battery setup</string>
+    <string name="battery_warning_desc">Android can stop the daemon while the screen is off or the app is minimized. Review the battery and background restrictions here — worth doing right after installing, and whenever the service stops on its own.</string>
     <string name="battery_settings_btn">Configure Battery &amp; Background Usage</string>
     <string name="battery_dialog_title">Background Battery Usage</string>
     <string name="battery_dialog_message">To maintain remote database connectivity when the app is in the background:\n\n1. Exemption from battery optimization (Doze Whitelist).\n2. On Vivo/Xiaomi/Samsung devices: open App Info → Battery → enable \"Allow background battery usage\" (or \"No restrictions\").</string>

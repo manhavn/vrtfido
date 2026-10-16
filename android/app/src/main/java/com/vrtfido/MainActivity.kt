@@ -10,9 +10,6 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
-import android.os.PowerManager
-import android.view.View
-import com.google.android.material.card.MaterialCardView
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import android.text.InputType
 import android.widget.EditText
@@ -27,6 +24,7 @@ import androidx.core.os.LocaleListCompat
 import androidx.core.content.ContextCompat
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.checkbox.MaterialCheckBox
+import com.google.android.material.textfield.TextInputLayout
 import org.json.JSONObject
 import com.google.android.material.materialswitch.MaterialSwitch
 import kotlinx.coroutines.CoroutineScope
@@ -48,7 +46,15 @@ class MainActivity : AppCompatActivity() {
     private lateinit var editPort: EditText
     private lateinit var editDatabase: EditText
     private lateinit var btnToggleDatabase: ImageButton
+    private lateinit var layoutDbType: TextInputLayout
     private lateinit var editDbType: EditText
+    /**
+     * `--db-type` value written for the current picker row. Seeded from the stored value itself
+     * rather than from the canonical row value, so an untouched configuration is saved back
+     * byte-identical: the daemon derives its shadow/queue identity from that string and rejects a
+     * queue left by a different one ("queue belongs to another primary database").
+     */
+    private var dbTypeValue: String = ""
     private lateinit var editAuthToken: EditText
     private lateinit var checkDebug: MaterialCheckBox
     private lateinit var btnLangEn: MaterialButton
@@ -60,7 +66,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnSettings: MaterialButton
     private lateinit var btnExport: MaterialButton
     private lateinit var btnImport: MaterialButton
-    private lateinit var cardBatteryWarning: MaterialCardView
     private lateinit var btnBatterySettings: MaterialButton
 
     private val exportLauncher = registerForActivityResult(
@@ -102,22 +107,25 @@ class MainActivity : AppCompatActivity() {
         editPort = findViewById(R.id.edit_port)
         editDatabase = findViewById(R.id.edit_database)
         btnToggleDatabase = findViewById(R.id.btn_toggle_database)
+        layoutDbType = findViewById(R.id.layout_db_type)
         editDbType = findViewById(R.id.edit_db_type)
+        // The field is read-only, so the whole box is the tap target: the text area as well as the
+        // chevron end icon open the picker.
+        editDbType.setOnClickListener { showDbTypePicker() }
+        layoutDbType.setEndIconOnClickListener { showDbTypePicker() }
         editAuthToken = findViewById(R.id.edit_auth_token)
         checkDebug = findViewById(R.id.check_debug)
         btnLangEn = findViewById(R.id.btn_lang_en)
         btnLangVi = findViewById(R.id.btn_lang_vi)
-        cardBatteryWarning = findViewById(R.id.card_battery_warning)
         btnBatterySettings = findViewById(R.id.btn_battery_settings)
         btnBatterySettings.setOnClickListener {
             showBatterySettingsDialog()
         }
-        checkBatteryOptimizationStatus()
         ServerSettings.load(this).let { binding ->
             editHost.setText(binding.host)
             editPort.setText(binding.port.toString())
             editDatabase.setText(binding.database)
-            editDbType.setText(binding.dbType)
+            showDbType(binding.dbType)
             editAuthToken.setText(binding.authToken)
             checkDebug.isChecked = binding.debugMode
             currentLanguage = binding.language
@@ -173,7 +181,6 @@ class MainActivity : AppCompatActivity() {
         }
 
         startPollingStatus()
-        checkBatteryOptimizationStatus()
     }
 
     override fun onPause() {
@@ -215,6 +222,42 @@ class MainActivity : AppCompatActivity() {
         editDatabase.setSelection(caret.coerceAtMost(editDatabase.text.length))
     }
 
+    /**
+     * Shows the row matching [stored] in the field. Aliases the daemon also accepts (`postgres`,
+     * `mongo`, `turso`) land on their canonical row, and an unknown value falls back to the first
+     * row — the empty value the daemon auto-detects from the spec.
+     */
+    private fun showDbType(stored: String) {
+        dbTypeValue = stored.trim()
+        editDbType.setText(getString(DB_TYPE_ROWS[dbTypeRow(dbTypeValue)].second))
+    }
+
+    /** Index of the row representing [value], i.e. of its canonical form. */
+    private fun dbTypeRow(value: String): Int {
+        val canonical = when (value.lowercase()) {
+            "postgres" -> "postgresql"
+            "mongo" -> "mongodb"
+            "turso" -> "libsql"
+            else -> value.lowercase()
+        }
+        return DB_TYPE_ROWS.indexOfFirst { it.first == canonical }.takeIf { it >= 0 } ?: 0
+    }
+
+    /** One-tap backend choice: a single-choice dialog, fully visible wherever the field sits. */
+    private fun showDbTypePicker() {
+        if (!layoutDbType.isEnabled) return
+        val labels = DB_TYPE_ROWS.map { getString(it.second) }
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.db_type_label)
+            .setSingleChoiceItems(labels.toTypedArray(), dbTypeRow(dbTypeValue)) { dialog, which ->
+                dbTypeValue = DB_TYPE_ROWS[which].first
+                editDbType.setText(labels[which])
+                dialog.dismiss()
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
     private fun toggleDaemon(checked: Boolean) {
         val intent = Intent(this, VrtfidoService::class.java)
         if (checked) {
@@ -233,7 +276,7 @@ class MainActivity : AppCompatActivity() {
                 host = host,
                 port = port,
                 database = database,
-                dbType = editDbType.text.toString().trim(),
+                dbType = dbTypeValue,
                 authToken = editAuthToken.text.toString().trim(),
                 debugMode = checkDebug.isChecked,
                 // Kept from the stored configuration: the phone has no USB sensor, so the
@@ -302,7 +345,7 @@ class MainActivity : AppCompatActivity() {
         editHost.isEnabled = !checked
         editPort.isEnabled = !checked
         editDatabase.isEnabled = !checked
-        editDbType.isEnabled = !checked
+        layoutDbType.isEnabled = !checked
         editAuthToken.isEnabled = !checked
         checkDebug.isEnabled = !checked
         val binding = ServerSettings.load(this)
@@ -457,7 +500,7 @@ class MainActivity : AppCompatActivity() {
                 editHost.setText(adopted.host)
                 editPort.setText(adopted.port.toString())
                 editDatabase.setText(adopted.database)
-                editDbType.setText(adopted.dbType)
+                showDbType(adopted.dbType)
                 editAuthToken.setText(adopted.authToken)
                 checkDebug.isChecked = adopted.debugMode
                 toast(getString(R.string.settings_restored))
@@ -510,16 +553,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun isIgnoringBatteryOptimizations(): Boolean {
-        val pm = getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return true
-        return pm.isIgnoringBatteryOptimizations(packageName)
-    }
-
-    private fun checkBatteryOptimizationStatus() {
-        if (!::cardBatteryWarning.isInitialized) return
-        cardBatteryWarning.visibility = if (isIgnoringBatteryOptimizations()) View.GONE else View.VISIBLE
-    }
-
     private fun showBatterySettingsDialog() {
         MaterialAlertDialogBuilder(this)
             .setTitle(R.string.battery_dialog_title)
@@ -558,5 +591,22 @@ class MainActivity : AppCompatActivity() {
         } catch (_: Exception) {
             Toast.makeText(this, "Could not open settings", Toast.LENGTH_SHORT).show()
         }
+    }
+
+    companion object {
+        /**
+         * DB type picker rows: the value stored as the daemon's `db_type` paired with its label.
+         * Row 0 keeps that option empty so the daemon detects the backend from the spec, which is
+         * SQLite for a plain file path; every other row is one of the literals `--db-type` accepts.
+         */
+        private val DB_TYPE_ROWS = listOf(
+            "" to R.string.db_type_auto,
+            "sqlite" to R.string.db_type_sqlite,
+            "postgresql" to R.string.db_type_postgresql,
+            "mysql" to R.string.db_type_mysql,
+            "mariadb" to R.string.db_type_mariadb,
+            "libsql" to R.string.db_type_libsql,
+            "mongodb" to R.string.db_type_mongodb
+        )
     }
 }

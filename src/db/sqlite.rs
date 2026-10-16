@@ -114,6 +114,19 @@ impl SqliteBackend {
             name,
         })
     }
+    /// How many log rows the retention window would drop, used by the resilient backend to answer
+    /// a sweep from the local shadow without touching the queue or the primary.
+    pub(super) fn count_old_logs(&self, cutoff: &str) -> Result<usize, DbError> {
+        let conn = self.conn.lock();
+        let auth: i64 = conn
+            .query_row("SELECT COUNT(*) FROM auth_logs WHERE datetime(created_at) < datetime(?1)", [cutoff], |r| r.get(0))
+            .map_err(DbError::Sqlite)?;
+        let debug: i64 = conn
+            .query_row("SELECT COUNT(*) FROM debug_logs WHERE datetime(created_at) < datetime(?1)", [cutoff], |r| r.get(0))
+            .map_err(DbError::Sqlite)?;
+        Ok((auth + debug) as usize)
+    }
+
     pub(super) fn bind_primary(&self, identity: &str) -> Result<(), DbError> {
         let conn = self.conn.lock();
         conn.execute_batch("CREATE TABLE IF NOT EXISTS resilient_metadata
@@ -467,6 +480,19 @@ impl DbBackend for SqliteBackend {
         let conn = self.conn.lock();
         let rows = conn.execute("DELETE FROM debug_logs", []).map_err(DbError::Sqlite)?;
         Ok(rows)
+    }
+
+    fn purge_logs_before(&self, cutoff: &str) -> Result<usize, DbError> {
+        let conn = self.conn.lock();
+        // datetime() normalizes both sides, so rows written by any earlier release compare
+        // correctly against the cutoff regardless of the exact text format they carry.
+        let auth = conn
+            .execute("DELETE FROM auth_logs WHERE datetime(created_at) < datetime(?1)", [cutoff])
+            .map_err(DbError::Sqlite)?;
+        let debug = conn
+            .execute("DELETE FROM debug_logs WHERE datetime(created_at) < datetime(?1)", [cutoff])
+            .map_err(DbError::Sqlite)?;
+        Ok(auth + debug)
     }
 
     fn get_security_settings_raw(&self) -> Result<SecuritySettingsData, DbError> {
