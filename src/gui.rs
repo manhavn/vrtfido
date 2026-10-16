@@ -86,8 +86,9 @@ const HIDE_ASSERTIONS: u8 = 2;
 /// resizable, because the card is the only surface for a verification request on this host and the
 /// space it gets differs from desktop to desktop; the content follows the size (the rows wrap, the
 /// account picker and the fields take the width they are given) and scrolls when the card is
-/// shorter than the request needs.
-const WINDOW_SIZE: [f32; 2] = [480.0, 440.0];
+/// shorter than the request needs. The height leaves room for the security warning above the
+/// prompt, so the warning does not push the buttons below the fold.
+const WINDOW_SIZE: [f32; 2] = [480.0, 500.0];
 /// Smallest the card may be dragged to: below this a wrapped row and the account picker stop being
 /// readable. There is no upper bound - the card fills whatever space the desktop gives it.
 const MIN_WINDOW_WIDTH: f32 = 380.0;
@@ -116,6 +117,11 @@ fn card_content_width() -> f32 {
 const ESCAPE_REASON: &str = "Dismissed via Escape";
 const CLOSE_REASON: &str = "Window closed by the user";
 const REJECT_REASON: &str = "Rejected in the VrtFido prompt window";
+
+/// The security warning every UI of the project carries, in the language that surface speaks: the
+/// dashboard, the extension popup, the in-page approval prompt, the Android screen (its two
+/// translations) and the README. The prompt window is English-only, like its other labels.
+const SECURITY_WARNING: &str = "⚠️ SECURITY WARNING — THIS APP IS FOR SECURITY PROFESSIONALS ONLY AND IS NOT FOR GENERAL USE. Using it or granting it permissions can get every account it stores stolen, permanently and unrecoverably. Delete it now and move to a trusted manager such as Google Password Manager. We accept no responsibility if your accounts are stolen.";
 
 /// The Web CMS dark palette, so the window and the dashboard look like one product: slate
 /// surfaces with a sky-blue accent (the CSS variables of `index_html`).
@@ -148,6 +154,9 @@ impl Palette {
     const DANGER_BG: Color32 = Color32::from_rgba_unmultiplied_const(0xef, 0x44, 0x44, 46);
     /// rgba(239, 68, 68, 0.4) - resting danger button border.
     const DANGER_BORDER: Color32 = Color32::from_rgba_unmultiplied_const(0xef, 0x44, 0x44, 102);
+    /// #fecaca - text on the red security warning, the same shade the dashboard and the
+    /// extension popup use.
+    const DANGER_TEXT: Color32 = Color32::from_rgb(0xfe, 0xca, 0xca);
     /// #f59e0b - warnings ("security is not configured yet").
     const WARNING: Color32 = Color32::from_rgb(0xf5, 0x9e, 0x0b);
     /// #10b981 - the "this app run is already verified" notice.
@@ -1788,6 +1797,7 @@ impl eframe::App for PromptApp {
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
                         ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
+                        draw_security_warning(ui);
                         egui::ScrollArea::vertical()
                             .auto_shrink([false; 2])
                             .show(ui, |ui| {
@@ -1999,6 +2009,25 @@ fn button_width(ui: &egui::Ui, label: &str) -> f32 {
         .size()
         .x;
     text.ceil() + 2.0 * ui.spacing().button_padding.x
+}
+
+/// The red security warning box, drawn above every state of the prompt window: it belongs to the
+/// product, not to one request. Same red as the dashboard's `.security-warning` banner.
+fn draw_security_warning(ui: &mut egui::Ui) {
+    egui::Frame::new()
+        .fill(Palette::DANGER_BG)
+        .stroke(Stroke::new(1.0, Palette::DANGER_BORDER))
+        .corner_radius(CornerRadius::same(8))
+        .inner_margin(Margin::same(8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(
+                RichText::new(SECURITY_WARNING)
+                    .size(11.5)
+                    .strong()
+                    .color(Palette::DANGER_TEXT),
+            );
+        });
 }
 
 /// Places a row of buttons on the card's centre line; `labels` are what the buttons added by `add`

@@ -747,7 +747,7 @@ async fn passkey_get(
 
 async fn index_html() -> Html<&'static str> {
     Html(r#"<!DOCTYPE html>
-<html lang="vi">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -797,6 +797,12 @@ async fn index_html() -> Html<&'static str> {
         .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; flex: 0 0 auto; }
 
         .container { max-width: 1280px; width: 100%; margin: 0 auto; padding: 1.75rem 1.5rem 3rem; flex: 1; }
+
+        /* ---------- Security warning ---------- */
+        /* Deliberately loud and never dismissible: this dashboard hands out every stored account,
+             and the daemon ships without authentication, so the warning is part of the UI. */
+        .security-warning { display: flex; gap: 0.6rem; align-items: flex-start; background: rgba(239, 68, 68, 0.15); border: 1px solid var(--danger); border-radius: var(--radius); padding: 0.85rem 1rem; margin-bottom: 1.5rem; color: #fecaca; font-size: 0.85rem; font-weight: 600; line-height: 1.5; }
+        .security-warning.compact { margin: 0.5rem 0 1rem 0; font-size: 0.78rem; font-weight: 500; padding: 0.6rem 0.75rem; }
 
         /* ---------- Tabs ---------- */
         .tabs { display: flex; gap: 0.5rem; border-bottom: 1px solid var(--border); margin-bottom: 1.75rem; overflow-x: auto; scrollbar-width: none; }
@@ -1006,6 +1012,9 @@ async fn index_html() -> Html<&'static str> {
     </header>
 
     <div class="container">
+        <!-- Security warning: for security professionals only. Never hidden, never dismissed. -->
+        <div class="security-warning" role="alert" data-i18n="warn.security">⚠️ SECURITY WARNING — THIS APP IS FOR SECURITY PROFESSIONALS ONLY AND IS NOT FOR GENERAL USE. Using it or granting it permissions can get every account it stores stolen, permanently and unrecoverably. Delete it now and move to a trusted manager such as Google Password Manager. We accept no responsibility if your accounts are stolen.</div>
+
         <!-- Navigation -->
         <div class="tabs">
             <button class="tab-btn active" onclick="switchTab('tab-creds')"><span data-i18n="tab.creds">🔑 Passkey Credentials</span> (<span id="credCount">0</span>)</button>
@@ -1206,6 +1215,7 @@ async fn index_html() -> Html<&'static str> {
             <div class="modal-icon"><img class="modal-logo" src="/icon.svg" alt="VrtFido"></div>
             <div class="modal-title" id="modalTitle" data-i18n="verify.title">WebAuthn Verification Request</div>
             <p style="font-size: 0.9rem; color: var(--text-muted);" data-i18n="verify.desc">A website is requesting your security key:</p>
+            <div class="security-warning compact" role="alert" data-i18n="warn.security">⚠️ SECURITY WARNING — THIS APP IS FOR SECURITY PROFESSIONALS ONLY AND IS NOT FOR GENERAL USE. Using it or granting it permissions can get every account it stores stolen, permanently and unrecoverably. Delete it now and move to a trusted manager such as Google Password Manager. We accept no responsibility if your accounts are stolen.</div>
             <div>
                 <span class="modal-rp" id="modalRpId">webauthn.io</span>
             </div>
@@ -1481,6 +1491,7 @@ async fn index_html() -> Html<&'static str> {
         // ---------------------------------------------------------------------------
         const I18N = {
             en: {
+                'warn.security': '⚠️ SECURITY WARNING — THIS APP IS FOR SECURITY PROFESSIONALS ONLY AND IS NOT FOR GENERAL USE. Using it or granting it permissions can get every account it stores stolen, permanently and unrecoverably. Delete it now and move to a trusted manager such as Google Password Manager. We accept no responsibility if your accounts are stolen.',
                 'tab.creds': '🔑 Passkey Credentials',
                 'tab.security': '🛡️ Security & Biometrics',
                 'tab.logs': '📜 Audit Trail',
@@ -1618,6 +1629,7 @@ async fn index_html() -> Html<&'static str> {
                 'export.noFp': 'No fingerprints enrolled — set up the USB sensor first or use the PIN.'
             },
             vi: {
+                'warn.security': '⚠️ CẢNH BÁO BẢO MẬT — ỨNG DỤNG NÀY CHỈ DÀNH RIÊNG CHO CHUYÊN GIA BẢO MẬT, KHÔNG DÀNH CHO NGƯỜI DÙNG PHỔ THÔNG. Cấp quyền hoặc sử dụng ứng dụng có thể khiến toàn bộ tài khoản bị đánh cắp vĩnh viễn, không thể phục hồi. Hãy xoá ứng dụng ngay và chuyển sang ứng dụng đáng tin cậy hơn như Google Password Manager. Chúng tôi không chịu trách nhiệm nếu tài khoản của bạn bị đánh cắp.',
                 'tab.creds': '🔑 Khoá Passkey',
                 'tab.security': '🛡️ Bảo mật & Sinh trắc học',
                 'tab.logs': '📜 Nhật ký hoạt động',

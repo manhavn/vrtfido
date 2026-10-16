@@ -34,6 +34,7 @@ const toastMsg = document.getElementById("toastMsg");
 
 // Text elements for translation
 const txtTagline = document.getElementById("txtTagline");
+const txtSecurityWarning = document.getElementById("txtSecurityWarning");
 const txtStatusTitle = document.getElementById("txtStatusTitle");
 const txtRefresh = document.getElementById("txtRefresh");
 const txtLblServer = document.getElementById("txtLblServer");
@@ -68,6 +69,7 @@ const REPO_URL = "https://github.com/manhavn/vrtfido";
 // I18N dictionary
 const TRANSLATIONS = {
   vi: {
+    securityWarning: "⚠️ CẢNH BÁO BẢO MẬT — ỨNG DỤNG NÀY CHỈ DÀNH RIÊNG CHO CHUYÊN GIA BẢO MẬT, KHÔNG DÀNH CHO NGƯỜI DÙNG PHỔ THÔNG. Cấp quyền hoặc sử dụng ứng dụng có thể khiến toàn bộ tài khoản bị đánh cắp vĩnh viễn, không thể phục hồi. Hãy xoá ứng dụng ngay và chuyển sang ứng dụng đáng tin cậy hơn như Google Password Manager. Chúng tôi không chịu trách nhiệm nếu tài khoản của bạn bị đánh cắp.",
     tagline: "Trình xác thực Passkey ảo",
     statusTitle: "Trạng thái dịch vụ",
     refresh: "Làm mới",
@@ -125,6 +127,7 @@ const TRANSLATIONS = {
     helpOpenBtn: "Mở GitHub — hướng dẫn đầy đủ"
   },
   en: {
+    securityWarning: "⚠️ SECURITY WARNING — THIS APP IS FOR SECURITY PROFESSIONALS ONLY AND IS NOT FOR GENERAL USE. Using it or granting it permissions can get every account it stores stolen, permanently and unrecoverably. Delete it now and move to a trusted manager such as Google Password Manager. We accept no responsibility if your accounts are stolen.",
     tagline: "Virtual Passkey Provider",
     statusTitle: "Service Status",
     refresh: "Refresh",
@@ -154,6 +157,12 @@ const TRANSLATIONS = {
     exportJsonTitle: "Download JSON backup",
     importJsonTitle: "Import JSON backup",
     actionsTitle: "Quick Actions",
+    openWeb: "Open Web CMS Dashboard",
+    exportJson: "Export JSON",
+    importJson: "Import JSON",
+    passkeysTitle: "Passkeys stored on the server",
+    searchPlaceholder: "🔍 Search by domain or account...",
+    loading: "Loading the Passkey list...",
     empty: "No passkeys found.",
     online: (url) => `VrtFido is active at ${url}`,
     offline: "Cannot connect to VrtFido server",
@@ -177,11 +186,11 @@ const TRANSLATIONS = {
   }
 };
 
-let currentLang = "vi";
+let currentLang = "en";
 let allCredentials = [];
 
 function t(key, ...args) {
-  const dict = TRANSLATIONS[currentLang] || TRANSLATIONS.vi;
+  const dict = TRANSLATIONS[currentLang] || TRANSLATIONS.en;
   const val = dict[key];
   if (typeof val === "function") {
     return val(...args);
@@ -210,6 +219,7 @@ function applyLanguage(lang) {
   btnLangEn.classList.toggle("active", lang === "en");
 
   txtTagline.textContent = t("tagline");
+  if (txtSecurityWarning) txtSecurityWarning.textContent = t("securityWarning");
   txtStatusTitle.textContent = t("statusTitle");
   txtRefresh.textContent = t("refresh");
   txtLblServer.textContent = t("lblServer");
@@ -398,7 +408,7 @@ runtime.storage.sync.get(["protocol", "host", "port", "apiBaseUrl", "requireAppr
   const saved = data || {};
 
   // Language
-  const lang = saved.language || (navigator.language && navigator.language.startsWith("vi") ? "vi" : "en");
+  const lang = saved.language || "en";
   applyLanguage(lang);
 
   // Host & Port

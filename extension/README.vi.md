@@ -1,5 +1,8 @@
 # VrtFido Browser Extension (Platform Passkey Provider)
 
+> [!WARNING]
+> ⚠️ **CẢNH BÁO BẢO MẬT — ỨNG DỤNG NÀY CHỈ DÀNH RIÊNG CHO CHUYÊN GIA BẢO MẬT, KHÔNG DÀNH CHO NGƯỜI DÙNG PHỔ THÔNG.** Cài đặt, cấp quyền hoặc sử dụng tiện ích này có thể khiến **toàn bộ tài khoản bị đánh cắp vĩnh viễn, không thể phục hồi**. Hãy xoá ngay và chuyển sang ứng dụng đáng tin cậy hơn như **Google Password Manager**; chúng tôi không chịu trách nhiệm nếu tài khoản của bạn bị đánh cắp.
+
 Tiện ích mở rộng đa trình duyệt (**Google Chrome**, **Chromium**, **Brave**, **Microsoft Edge**, **Mozilla Firefox**, **Apple Safari**) kết nối trực tiếp với máy chủ **VrtFido HTTP API** để hoạt động như một **Platform Passkey Authenticator** nội bộ (`authenticatorAttachment: "platform"`, `transports: ["internal", "hybrid"]`).
 
 ---

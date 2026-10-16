@@ -76,6 +76,31 @@
                 android:layout_marginStart="8dp" />
         </LinearLayout>
 
+        <!-- Security warning: for security professionals only. Always on screen and never
+             dismissible. -->
+        <com.google.android.material.card.MaterialCardView
+            android:id="@+id/card_security_warning"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            app:cardBackgroundColor="#2A1418"
+            app:cardCornerRadius="16dp"
+            app:cardElevation="4dp"
+            app:strokeWidth="1dp"
+            app:strokeColor="#EF4444"
+            android:layout_marginBottom="16dp">
+
+            <TextView
+                android:id="@+id/tv_security_warning"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:padding="16dp"
+                android:lineSpacingExtra="2dp"
+                android:text="@string/security_warning"
+                android:textColor="#FECACA"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+        </com.google.android.material.card.MaterialCardView>
+
         <!-- Card with the daemon ON / OFF switch and bind address -->
         <com.google.android.material.card.MaterialCardView
             android:layout_width="match_parent"

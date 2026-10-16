@@ -50,6 +50,9 @@
     <string name="auth_token_hint">bỏ trống nếu không dùng (MongoDB để thông tin đăng nhập trong URL)</string>
     <string name="flag_debug">--debug: ghi log gói tin chi tiết</string>
 
+    <!-- Cảnh báo bảo mật, có mặt trên mọi giao diện của dự án -->
+    <string name="security_warning">⚠️ CẢNH BÁO BẢO MẬT — ỨNG DỤNG NÀY CHỈ DÀNH RIÊNG CHO CHUYÊN GIA BẢO MẬT, KHÔNG DÀNH CHO NGƯỜI DÙNG PHỔ THÔNG. Cấp quyền hoặc sử dụng ứng dụng có thể khiến toàn bộ tài khoản bị đánh cắp vĩnh viễn, không thể phục hồi. Hãy xoá ứng dụng ngay và chuyển sang ứng dụng đáng tin cậy hơn như Google Password Manager. Chúng tôi không chịu trách nhiệm nếu tài khoản của bạn bị đánh cắp.</string>
+
     <!-- Language switch -->
     <string name="app_tagline">Trình xác thực Passkey ảo</string>
     <string name="language_en">EN</string>

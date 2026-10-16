@@ -19,6 +19,7 @@
   const I18N = {
     vi: {
       appName: "VrtFido Passkey",
+      securityWarning: "⚠️ CẢNH BÁO BẢO MẬT — ỨNG DỤNG NÀY CHỈ DÀNH RIÊNG CHO CHUYÊN GIA BẢO MẬT, KHÔNG DÀNH CHO NGƯỜI DÙNG PHỔ THÔNG. Cấp quyền hoặc sử dụng ứng dụng có thể khiến toàn bộ tài khoản bị đánh cắp vĩnh viễn, không thể phục hồi. Hãy xoá ứng dụng ngay và chuyển sang ứng dụng đáng tin cậy hơn như Google Password Manager. Chúng tôi không chịu trách nhiệm nếu tài khoản của bạn bị đánh cắp.",
       createTitle: "Tạo Passkey mới",
       getTitle: "Đăng nhập bằng Passkey",
       createDesc: "Trang web yêu cầu tạo và lưu trữ Passkey mới vào VrtFido.",
@@ -42,6 +43,7 @@
     },
     en: {
       appName: "VrtFido Passkey",
+      securityWarning: "⚠️ SECURITY WARNING — THIS APP IS FOR SECURITY PROFESSIONALS ONLY AND IS NOT FOR GENERAL USE. Using it or granting it permissions can get every account it stores stolen, permanently and unrecoverably. Delete it now and move to a trusted manager such as Google Password Manager. We accept no responsibility if your accounts are stolen.",
       createTitle: "Create New Passkey",
       getTitle: "Sign In with Passkey",
       createDesc: "This website requests to create and store a Passkey in VrtFido.",
@@ -83,7 +85,7 @@
         activePrompt.cancel("Superseded by new request");
       }
 
-      const t = I18N[langCode] || I18N.vi;
+      const t = I18N[langCode] || I18N.en;
       const logoUrl = runtime.runtime.getURL("icons/icon-32.png");
 
       const host = document.createElement("div");
@@ -330,6 +332,19 @@
             align-items: flex-start;
             gap: 8px;
           }
+          /* Security warning: the prompt is where a website's request is approved, so the risk
+             stays on screen for every create/sign-in, in both languages. */
+          .vrtfido-security-warning {
+            background: rgba(239, 68, 68, 0.14);
+            border: 1px solid rgba(239, 68, 68, 0.55);
+            border-radius: 8px;
+            padding: 8px 10px;
+            margin-top: 10px;
+            color: #fecaca;
+            font-size: 11px;
+            line-height: 1.45;
+            font-weight: 600;
+          }
           .vrtfido-error {
             display: none;
             background: rgba(239, 68, 68, 0.12);
@@ -439,6 +454,7 @@
       card.appendChild(header);
       card.appendChild(badgeRow);
       card.appendChild(titleBlock);
+      card.appendChild(el("div", "vrtfido-security-warning", t.securityWarning));
 
       if (isGetWithNoCreds) {
         const alertBox = el("div", "vrtfido-alert");
@@ -660,7 +676,7 @@
     // Check stored settings
     const cfg = await getStoredSettings();
     const requireApproval = cfg.requireApproval !== false;
-    const langCode = cfg.language || (navigator.language && navigator.language.startsWith("vi") ? "vi" : "en");
+    const langCode = cfg.language || "en";
     const serverUrl = cfg.apiBaseUrl || `${cfg.protocol || "http"}://${cfg.host || "127.0.0.1"}:${cfg.port || 10209}`;
 
     // For GET: always query candidates to know accounts available on this domain

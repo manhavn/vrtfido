@@ -1,5 +1,8 @@
 # VrtFido
 
+> [!WARNING]
+> ⚠️ **SECURITY WARNING — THIS APP IS FOR SECURITY PROFESSIONALS ONLY AND IS NOT FOR GENERAL USE.** Installing, granting permissions to, or using this application can get **every account it stores stolen, permanently and unrecoverably**. Delete it now and move to a trusted manager such as **Google Password Manager**; we accept no responsibility if your accounts are stolen. This is a research tool for virtual FIDO2/WebAuthn authenticators, not a daily password manager; the Web CMS it ships has no authentication, so anyone who can reach the port can read and export every credential.
+
 **VrtFido** is a **Virtual FIDO2 / WebAuthn Authenticator** hardware emulator for **Linux, macOS and Windows**. On Linux it presents itself to browsers as a real USB security key through the kernel character device `/dev/uhid`; on macOS and Windows it runs as the daemon, the Web CMS and the prompt window, without a virtual device (see **Platform support** under the installation section).
 
 The application includes an embedded **Web CMS Dashboard** on port **10209**, supports multiple database backends (**SQLite**, **PostgreSQL**, **LibSQL/Turso**, **MySQL**, **MariaDB**, **MongoDB**), features **100% Data Export / Import to JSON** for migration, and supports multi-factor authentication policies (6-digit passkey PIN, hardware USB fingerprint sensor management, and future biometric modalities).

@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="vi">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -127,6 +127,20 @@
       padding: 14px;
       margin-bottom: 12px;
       box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+    }
+
+    /* Security warning: always shown, never dismissible - the popup approves every account the
+       daemon holds, so the risk stays in front of the user. */
+    .security-warning {
+      background: var(--danger-bg);
+      border: 1px solid var(--danger);
+      border-radius: 12px;
+      padding: 10px 12px;
+      margin-bottom: 12px;
+      color: #fecaca;
+      font-size: 11.5px;
+      font-weight: 600;
+      line-height: 1.45;
     }
     .card-title {
       font-size: 12px;
@@ -545,11 +559,14 @@
       </div>
     </div>
     <div class="header-controls">
-      <button class="lang-btn active" id="btnLangVi">VI</button>
-      <button class="lang-btn" id="btnLangEn">EN</button>
+      <button class="lang-btn" id="btnLangVi">VI</button>
+      <button class="lang-btn active" id="btnLangEn">EN</button>
       <button class="icon-btn" id="btnExpandTab" title="Mở trang đầy đủ">↗</button>
     </div>
   </header>
+
+  <!-- Security warning: for security professionals only. -->
+  <div class="security-warning" id="txtSecurityWarning" role="alert">⚠️ SECURITY WARNING — THIS APP IS FOR SECURITY PROFESSIONALS ONLY AND IS NOT FOR GENERAL USE. Using it or granting it permissions can get every account it stores stolen, permanently and unrecoverably. Delete it now and move to a trusted manager such as Google Password Manager. We accept no responsibility if your accounts are stolen.</div>
 
   <!-- Service Status Card -->
   <section class="card">

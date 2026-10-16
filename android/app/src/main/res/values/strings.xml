@@ -51,6 +51,10 @@
     <string name="auth_token_hint">leave empty when unused (MongoDB creds live in the URL)</string>
     <string name="flag_debug">--debug: log packet details</string>
 
+    <!-- Security warning, carried by every UI of the project (dashboard, extension popup, in-page
+         prompt, desktop prompt window). -->
+    <string name="security_warning">⚠️ SECURITY WARNING — THIS APP IS FOR SECURITY PROFESSIONALS ONLY AND IS NOT FOR GENERAL USE. Using it or granting it permissions can get every account it stores stolen, permanently and unrecoverably. Delete it now and move to a trusted manager such as Google Password Manager. We accept no responsibility if your accounts are stolen.</string>
+
     <!-- Language switch -->
     <string name="app_tagline">Virtual Passkey Authenticator</string>
     <string name="language_en">EN</string>

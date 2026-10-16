@@ -1,5 +1,8 @@
 # VrtFido Browser Extension (Platform Passkey Provider)
 
+> [!WARNING]
+> ⚠️ **SECURITY WARNING — THIS APP IS FOR SECURITY PROFESSIONALS ONLY AND IS NOT FOR GENERAL USE.** Installing, granting permissions to, or using this extension can get **every account it stores stolen, permanently and unrecoverably**. Delete it now and move to a trusted manager such as **Google Password Manager**; we accept no responsibility if your accounts are stolen.
+
 Cross-browser extension (**Google Chrome**, **Chromium**, **Brave**, **Microsoft Edge**, **Mozilla Firefox**, **Apple Safari**) connecting directly to the **VrtFido HTTP REST API** to act as a native **Platform Passkey Authenticator** (`authenticatorAttachment: "platform"`, `transports: ["internal", "hybrid"]`).
 
 ---
